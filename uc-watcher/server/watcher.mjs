@@ -306,6 +306,9 @@ function ausschuettungStand(state) {
 
 /* ========================= PUSH ========================= */
 
+// ntfy-Prioritäten sind Zahlen: 1 min ... 5 max
+const PRIO = { min: 1, low: 2, default: 3, high: 4, urgent: 5 };
+
 async function push(thema, titel, text, state, prio = 'high') {
   const now = Date.now();
   if (now - (state.lastPush[thema] || 0) < CFG.ERINNERUNG_MIN * MIN) return log('Cooldown:', thema);
@@ -315,14 +318,23 @@ async function push(thema, titel, text, state, prio = 'high') {
   log(text);
   if (!CFG.NTFY_TOPIC) return console.warn('  (kein UC_NTFY_TOPIC gesetzt – nicht gesendet)');
 
+  // Als JSON, nicht über HTTP-Header: Header dürfen nur Latin-1 enthalten,
+  // unsere Titel haben Emojis und Umlaute ("🚨 Steuerprüfung").
   try {
-    const res = await fetch(`${CFG.NTFY_SERVER}/${CFG.NTFY_TOPIC}`, {
+    const res = await fetch(CFG.NTFY_SERVER, {
       method: 'POST',
-      headers: { Title: titel, Priority: prio, Tags: 'office', Click: CFG.DASHBOARD_URL },
-      body: text,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        topic: CFG.NTFY_TOPIC,
+        title: titel,
+        message: text,
+        priority: PRIO[prio] || 4,
+        tags: ['office'],
+        click: CFG.DASHBOARD_URL,
+      }),
     });
-    if (!res.ok) console.error('  ntfy-Fehler:', res.status);
-  } catch (e) { console.error('  ntfy-Fehler:', e.message); }
+    if (!res.ok) console.error('  ntfy antwortete:', res.status, await res.text());
+  } catch (e) { console.error('  ntfy nicht erreichbar:', e.message); }
 }
 
 const fmt = n => n.toLocaleString('de-DE', { maximumFractionDigits: 2 }) + ' $';
@@ -446,6 +458,14 @@ async function durchlauf() {
 /* ========================= START ========================= */
 
 const args = process.argv.slice(2);
+
+if (args.includes('--push-test')) {
+  const state = load();
+  state.lastPush.selftest = 0;
+  await push('selftest', '✅ UC-Watcher Test',
+    'Wenn du das auf dem Handy siehst, funktioniert die Benachrichtigung.', state, 'default');
+  process.exit(0);
+}
 
 if (args.includes('--ausschuettung')) {
   console.table(ausschuettungStand(load()));

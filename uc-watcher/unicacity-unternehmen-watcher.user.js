@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         UnicaCity Unternehmen-Watcher
 // @namespace    https://unicacity.eu/
-// @version      3.1.0
+// @version      3.2.0
 // @description  Überwacht Lager, Personal, Kasse und Vorfälle, trackt Online-Zeiten der Spieler und pusht aufs Handy (ntfy.sh).
 // @match        https://unicacity.eu/dashboard/*
 // @grant        GM_xmlhttpRequest
@@ -94,6 +94,10 @@
   ];
 
   /* ====================== AB HIER NICHTS ÄNDERN ====================== */
+
+  // Tampermonkey läuft in einer Sandbox. Für Konsolen-Befehle und window.focus()
+  // brauchen wir das echte Seitenfenster.
+  const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
 
   const KEY = 'uc_watcher_v3';
   const log = (...a) => CONFIG.DEBUG && console.log('[UC-Watcher]', ...a);
@@ -388,6 +392,9 @@
 
   /* ---------- Push ---------- */
 
+  // ntfy-Prioritäten sind Zahlen: 1 min ... 5 max
+  const PRIO = { min: 1, low: 2, default: 3, high: 4, urgent: 5 };
+
   function push(thema, titel, text, state, prio = 'high') {
     const now = Date.now();
     if (now - (state.lastPush[thema] || 0) < CONFIG.ERINNERUNG_MIN * MIN) {
@@ -396,16 +403,32 @@
     state.lastPush[thema] = now;
 
     if (CONFIG.NTFY_TOPIC && !CONFIG.NTFY_TOPIC.startsWith('HIER-')) {
+      // Titel und Text werden als JSON gesendet, NICHT als HTTP-Header:
+      // Header dürfen nur Latin-1 enthalten, unsere Titel haben Emojis
+      // und Umlaute ("🚨 Steuerprüfung") – das lässt die Anfrage scheitern.
       GM_xmlhttpRequest({
         method: 'POST',
-        url: `${CONFIG.NTFY_SERVER}/${CONFIG.NTFY_TOPIC}`,
-        headers: { Title: titel, Priority: prio, Tags: 'office', Click: location.href },
-        data: text,
-        onerror: e => console.error('[UC-Watcher] ntfy-Fehler', e),
+        url: CONFIG.NTFY_SERVER,
+        headers: { 'Content-Type': 'application/json' },
+        data: JSON.stringify({
+          topic: CONFIG.NTFY_TOPIC,
+          title: titel,
+          message: text,
+          priority: PRIO[prio] || 4,
+          tags: ['office'],
+          click: location.href,
+        }),
+        onload: r => {
+          if (r.status >= 200 && r.status < 300) log('ntfy ok:', titel);
+          else console.error('[UC-Watcher] ntfy antwortete', r.status, r.responseText);
+        },
+        onerror: () => console.error(
+          '[UC-Watcher] ntfy nicht erreichbar. Prüfe: Topic gesetzt? ' +
+          'Adblocker/DNS blockiert ntfy.sh? Internet da?'),
       });
     } else console.warn('[UC-Watcher] Kein ntfy-Topic gesetzt – nur Browser-Hinweis.');
 
-    try { GM_notification({ title: titel, text, timeout: 20000, onclick: () => window.focus() }); } catch (_) {}
+    try { GM_notification({ title: titel, text, timeout: 20000, onclick: () => W.focus() }); } catch (_) {}
     log('PUSH:', titel, '\n' + text);
   }
 
@@ -535,10 +558,6 @@
 
   /* ---------- Konsolen-Werkzeuge ---------- */
 
-  // Tampermonkey läuft in einer Sandbox. Damit die Befehle in der normalen
-  // DevTools-Konsole erreichbar sind, müssen sie ins echte Seitenfenster.
-  const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
-
   W.ucWatcherTest = function () {
     const p = readPersonal(document);
     console.table({
@@ -587,6 +606,16 @@
     return stand;
   };
 
+  // Schickt sofort eine Testnachricht – prüft Topic und Verbindung
+  W.ucWatcherPushTest = function () {
+    const s = load();
+    s.lastPush.selftest = 0;
+    push('selftest', '✅ UC-Watcher Test',
+      'Wenn du das auf dem Handy siehst, funktioniert die Benachrichtigung.', s, 'default');
+    save(s);
+    return 'Testnachricht abgeschickt – schau aufs Handy.';
+  };
+
   W.ucWatcherReset = function () { save(leererStand()); console.log('Zustand zurückgesetzt.'); };
 
   check(document);
@@ -596,7 +625,7 @@
 
   console.log(
     '%c UC-Watcher aktiv %c Befehle: ucWatcherTest() · ucWatcherZeiten() · ' +
-    'ucWatcherAusschuettung() · ucWatcherDump() · ucWatcherReset()',
+    'ucWatcherAusschuettung() · ucWatcherDump() · ucWatcherPushTest() · ucWatcherReset()',
     'background:#2dd4bf;color:#000;font-weight:bold;border-radius:3px',
     'color:inherit');
 })();
