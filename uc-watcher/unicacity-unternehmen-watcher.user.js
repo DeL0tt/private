@@ -1,13 +1,14 @@
 // ==UserScript==
 // @name         UnicaCity Unternehmen-Watcher
 // @namespace    https://unicacity.eu/
-// @version      3.0.0
+// @version      3.1.0
 // @description  Überwacht Lager, Personal, Kasse und Vorfälle, trackt Online-Zeiten der Spieler und pusht aufs Handy (ntfy.sh).
 // @match        https://unicacity.eu/dashboard/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_notification
+// @grant        unsafeWindow
 // @connect      unicacity.eu
 // @connect      ntfy.sh
 // @run-at       document-idle
@@ -534,7 +535,11 @@
 
   /* ---------- Konsolen-Werkzeuge ---------- */
 
-  window.ucWatcherTest = function () {
+  // Tampermonkey läuft in einer Sandbox. Damit die Befehle in der normalen
+  // DevTools-Konsole erreichbar sind, müssen sie ins echte Seitenfenster.
+  const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
+
+  W.ucWatcherTest = function () {
     const p = readPersonal(document);
     console.table({
       Lager:       read(document, 'lager'),
@@ -545,7 +550,7 @@
     console.log('Vorfälle erkannt:', readVorfaelle(document));
   };
 
-  window.ucWatcherZeiten = function () {
+  W.ucWatcherZeiten = function () {
     const s = load();
     const rows = {};
     for (const [name, p] of Object.entries(s.spieler)) {
@@ -561,7 +566,7 @@
   };
 
   // Zeigt pro Spieler die gemessenen Farben – zum Nachjustieren von GRUEN_ABSTAND
-  window.ucWatcherDump = function () {
+  W.ucWatcherDump = function () {
     for (const name of CONFIG.SPIELER) {
       const karte = findeKarte(document.body, name);
       if (!karte) { console.log(name, '– Karte nicht gefunden'); continue; }
@@ -576,17 +581,22 @@
     }
   };
 
-  window.ucWatcherAusschuettung = function () {
+  W.ucWatcherAusschuettung = function () {
     const stand = ausschuettungStand(load());
     console.table(stand);
     return stand;
   };
 
-  window.ucWatcherReset = function () { save(leererStand()); console.log('Zustand zurückgesetzt.'); };
+  W.ucWatcherReset = function () { save(leererStand()); console.log('Zustand zurückgesetzt.'); };
 
   check(document);
   setInterval(() => check(document), CONFIG.POLL_INTERVAL_MS);
   beobachte();
   starteReload();
-  log('aktiv – ucWatcherTest() / ucWatcherZeiten() / ucWatcherAusschuettung() / ucWatcherDump()');
+
+  console.log(
+    '%c UC-Watcher aktiv %c Befehle: ucWatcherTest() · ucWatcherZeiten() · ' +
+    'ucWatcherAusschuettung() · ucWatcherDump() · ucWatcherReset()',
+    'background:#2dd4bf;color:#000;font-weight:bold;border-radius:3px',
+    'color:inherit');
 })();
