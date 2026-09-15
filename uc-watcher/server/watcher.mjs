@@ -24,6 +24,7 @@ const CFG = {
 
   AUSSCHUETTUNG_STD:             +(process.env.UC_AUSSCHUETTUNG_STD || 12),
   AUSSCHUETTUNG_GEWINN_SCHWELLE: +(process.env.UC_AUSSCHUETTUNG_SCHWELLE || 1000),
+  AUSSCHUETTUNG_STUNDENMELDUNG:  process.env.UC_AUSSCHUETTUNG_STUNDENMELDUNG !== '0',
   ERINNERUNG_MIN: +(process.env.UC_ERINNERUNG_MIN || 60),
 
   STEUER_NORMAL_PCT:    4,
@@ -74,7 +75,7 @@ const info = (...a) => console.log(new Date().toISOString(), ...a);
 const leer = () => ({
   lager: null, personal: null, kasse: null, gewinn: null,
   vorfaelle: [], spieler: {},
-  teamOnlineMs: 0, letzteAusschuettung: null, letzterTick: null,
+  teamOnlineMs: 0, gemeldeteStunde: 0, faelligGemeldet: false, letzteAusschuettung: null, letzterTick: null,
   lastPush: {},
 });
 
@@ -294,6 +295,8 @@ async function pruefeAusschuettung(state, text) {
         && g.value < CFG.AUSSCHUETTUNG_GEWINN_SCHWELLE) {
       state.letzteAusschuettung = Date.now();
       state.teamOnlineMs = 0;
+      state.gemeldeteStunde = 0;
+      state.faelligGemeldet = false;
       state.lastPush.ausschuettung_faellig = 0;
       await push('ausschuettung_erfolgt', '💰 Ausschüttung erfolgt',
         `Gewinn zurückgesetzt: ${fmt(vorher)} → ${fmt(g.value)}\n` +
@@ -303,7 +306,24 @@ async function pruefeAusschuettung(state, text) {
     state.gewinn = g.value;
   } else log('Gewinn seit Ausschüttung nicht gefunden');
 
-  if (state.teamOnlineMs >= ziel) {
+  // Jede volle Online-Stunde melden
+  const stunden = Math.floor(state.teamOnlineMs / 3_600_000);
+  if (CFG.AUSSCHUETTUNG_STUNDENMELDUNG
+      && stunden > (state.gemeldeteStunde || 0)
+      && stunden < CFG.AUSSCHUETTUNG_STD) {
+    state.gemeldeteStunde = stunden;
+    const wer = Object.entries(state.spieler).filter(([, p]) => p.online).map(([n]) => n);
+    await push(`ausschuettung_std_${stunden}`,
+      `⏱️ ${stunden} von ${CFG.AUSSCHUETTUNG_STD} Std. bis zur Ausschüttung`,
+      `Team-Onlinezeit: ${dauer(state.teamOnlineMs)}\n` +
+      `Noch ${dauer(ziel - state.teamOnlineMs)} bis zur nächsten Ausschüttung.` +
+      (state.gewinn !== null ? `\nGewinn bisher: ${fmt(state.gewinn)}` : '') +
+      (wer.length ? `\n\nGerade online: ${wer.join(', ')}` : ''),
+      state, 'low');
+  }
+
+  if (state.teamOnlineMs >= ziel && !state.faelligGemeldet) {
+    state.faelligGemeldet = true;
     await push('ausschuettung_faellig', '💰 Ausschüttung ist fällig',
       `${CFG.AUSSCHUETTUNG_STD} Std. Team-Onlinezeit erreicht (${dauer(state.teamOnlineMs)}).` +
       (state.gewinn !== null ? `\nAktueller Gewinn: ${fmt(state.gewinn)}` : ''),
@@ -319,6 +339,7 @@ function ausschuettungStand(state) {
     Ziel: `${CFG.AUSSCHUETTUNG_STD} Std.`,
     Fehlt: rest ? dauer(rest) : 'fällig',
     Fortschritt: Math.min(100, Math.round(state.teamOnlineMs / ziel * 100)) + ' %',
+    ZuletztGemeldet: (state.gemeldeteStunde || 0) + ' Std.',
     Letzte: state.letzteAusschuettung
       ? new Date(state.letzteAusschuettung).toLocaleString('de-DE') : 'unbekannt',
     Gewinn: state.gewinn,

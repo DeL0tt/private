@@ -72,8 +72,23 @@ zur nächsten Ausschüttung:
 > Wandzeit, in der *mindestens ein* Spieler online war — keine Aufsummierung
 > über die Spieler.
 
-Bei 12 Std. kommt „Ausschüttung ist fällig". Den Zwischenstand siehst du
-jederzeit:
+**Bei jeder vollen Online-Stunde** kommt eine Fortschrittsmeldung:
+
+```
+⏱️ 3 von 12 Std. bis zur Ausschüttung
+Team-Onlinezeit: 3 Std. 0 Min.
+Noch 9 Std. 0 Min. bis zur nächsten Ausschüttung.
+Gewinn bisher: 157.285 $
+
+Gerade online: LottiMi, maaxxyyy
+```
+
+Bei 12 Std. kommt „Ausschüttung ist fällig" — **einmalig**, nicht stündlich
+wiederholt. Erst nach der nächsten Ausschüttung beginnt der Zähler von vorn.
+Abschalten lässt sich die Stundenmeldung mit
+`AUSSCHUETTUNG_STUNDENMELDUNG: false` bzw. `UC_AUSSCHUETTUNG_STUNDENMELDUNG=0`.
+
+Den Zwischenstand siehst du jederzeit:
 
 ```js
 ucWatcherAusschuettung()              // im Browser
@@ -221,6 +236,7 @@ Wochen, manchmal nur Tage.
 | `SPIELER` | `UC_SPIELER` | 6 Namen | getrackte Spieler |
 | `AUSSCHUETTUNG_STD` | `UC_AUSSCHUETTUNG_STD` | 12 | Teamzeit bis zur Ausschüttung |
 | `AUSSCHUETTUNG_GEWINN_SCHWELLE` | `UC_AUSSCHUETTUNG_SCHWELLE` | 1000 | darunter = ausgeschüttet |
+| `AUSSCHUETTUNG_STUNDENMELDUNG` | `UC_AUSSCHUETTUNG_STUNDENMELDUNG` | an | Meldung bei jeder vollen Online-Stunde |
 | `TAGESWECHSEL_STD` | – | 4 | Tageszähler-Reset um 04:00 |
 | `LUECKE_MIN` | `UC_LUECKE_MIN` | 10 | Pause, ab der eine neue Sitzung zählt |
 | `ERINNERUNG_MIN` | `UC_ERINNERUNG_MIN` | 60 | Cooldown je Thema |

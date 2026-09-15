@@ -64,6 +64,7 @@
     // ---- Ausschüttung ----
     AUSSCHUETTUNG_STD:     12,    // benötigte Team-Onlinezeit bis zur nächsten
     AUSSCHUETTUNG_GEWINN_SCHWELLE: 1000, // Gewinn darunter = es wurde ausgeschüttet
+    AUSSCHUETTUNG_STUNDENMELDUNG: true,  // bei jeder vollen Online-Stunde melden
 
     // ---- Takt ----
     POLL_INTERVAL_MS:   60 * 1000,   // wie oft der Zustand gelesen wird
@@ -112,6 +113,7 @@
     spieler: {},      // name -> { online, seit, sitzungMs, gesamtMs, zuletzt, tag }
     gewinn: null,
     teamOnlineMs: 0,  // Team-Onlinezeit seit der letzten Ausschüttung (ohne Doppelzählung)
+    gemeldeteStunde: 0, faelligGemeldet: false, // bis zu welcher vollen Stunde schon gemeldet wurde
     letzteAusschuettung: null,
     letzterTick: null,
     lastPush: {},
@@ -177,13 +179,25 @@
 
   // "Gewinn seit Ausschüttung" steht als Label ÜBER seinem Wert:
   //     <p>Gewinn seit Ausschüttung</p><p>157.285$</p>
+  // Das Label muss EXAKT stimmen – sonst greift die Suche auch auf
+  // Eltern-Elemente zu, die den Text nur enthalten, und landet im Kassenbuch.
   function leseGewinn(doc) {
-    for (const el of doc.querySelectorAll('p, span')) {
-      if (!/^Gewinn seit Ausschüttung/i.test((el.textContent || '').trim())) continue;
-      const wert = el.nextElementSibling;
-      if (!wert) continue;
-      const n = toNumber(wert.textContent);
-      if (n !== null) return { value: n, text: wert.textContent.trim() };
+    for (const el of doc.querySelectorAll('p, span, div, dt, th')) {
+      const t = (el.textContent || '').trim();
+      if (!/^Gewinn seit Ausschüttung$/i.test(t)) continue;
+      if (el.closest('table')) continue;              // Kassenbuch ausschließen
+
+      // Wert steht im Geschwister-Element – erst dahinter, dann davor
+      const geschwister = el.parentElement
+        ? [...el.parentElement.children].filter(k => k !== el)
+        : [el.nextElementSibling, el.previousElementSibling].filter(Boolean);
+
+      for (const k of geschwister) {
+        const roh = (k.textContent || '').trim();
+        if (!roh || roh.length > 30) continue;
+        const n = toNumber(roh);
+        if (n !== null) return { value: n, text: roh, quelle: `${t} → ${roh}` };
+      }
     }
     return null;
   }
@@ -380,6 +394,8 @@
       if (vorher !== null && vorher >= schwelle && g.value < schwelle) {
         state.letzteAusschuettung = Date.now();
         state.teamOnlineMs = 0;
+        state.gemeldeteStunde = 0;
+        state.faelligGemeldet = false;
         state.lastPush.ausschuettung_faellig = 0;   // Cooldown für die nächste freigeben
         push('ausschuettung_erfolgt', '💰 Ausschüttung erfolgt',
           `Gewinn zurückgesetzt: ${fmt(vorher)} → ${fmt(g.value)}\n` +
@@ -390,8 +406,26 @@
       state.gewinn = g.value;
     } else log('Gewinn seit Ausschüttung nicht gefunden');
 
+    // Jede volle Online-Stunde melden (1/12, 2/12, ...)
+    const stunden = Math.floor(state.teamOnlineMs / 3_600_000);
+    if (CONFIG.AUSSCHUETTUNG_STUNDENMELDUNG
+        && stunden > (state.gemeldeteStunde || 0)
+        && stunden < CONFIG.AUSSCHUETTUNG_STD) {
+      state.gemeldeteStunde = stunden;
+      const rest = ziel - state.teamOnlineMs;
+      const wer = Object.entries(state.spieler).filter(([, p]) => p.online).map(([n]) => n);
+      // eigenes Thema je Stunde, damit der Cooldown nicht dazwischenfunkt
+      push(`ausschuettung_std_${stunden}`, `⏱️ ${stunden} von ${CONFIG.AUSSCHUETTUNG_STD} Std. bis zur Ausschüttung`,
+        `Team-Onlinezeit: ${dauer(state.teamOnlineMs)}\n` +
+        `Noch ${dauer(rest)} bis zur nächsten Ausschüttung.` +
+        (state.gewinn !== null ? `\nGewinn bisher: ${fmt(state.gewinn)}` : '') +
+        (wer.length ? `\n\nGerade online: ${wer.join(', ')}` : ''),
+        state, 'low');
+    }
+
     // Ziel erreicht?
-    if (state.teamOnlineMs >= ziel) {
+    if (state.teamOnlineMs >= ziel && !state.faelligGemeldet) {
+    state.faelligGemeldet = true;
       push('ausschuettung_faellig', '💰 Ausschüttung ist fällig',
         `${CONFIG.AUSSCHUETTUNG_STD} Std. Team-Onlinezeit erreicht ` +
         `(${dauer(state.teamOnlineMs)}).` +
@@ -409,6 +443,7 @@
       ziel: `${CONFIG.AUSSCHUETTUNG_STD} Std.`,
       fehlt: rest ? dauer(rest) : 'fällig',
       prozent: Math.min(100, Math.round(state.teamOnlineMs / ziel * 100)) + ' %',
+      zuletztGemeldet: (state.gemeldeteStunde || 0) + ' Std.',
       letzteAusschuettung: state.letzteAusschuettung
         ? new Date(state.letzteAusschuettung).toLocaleString('de-DE') : 'unbekannt',
       gewinn: state.gewinn,
@@ -625,11 +660,14 @@
 
   W.ucWatcherTest = function () {
     const k = leseKacheln(document);
+    const g = leseGewinn(document);
+    const zeile = (o, wert, quelle) => o ? { Wert: wert, Quelle: quelle } : { Wert: '— NICHT GEFUNDEN —', Quelle: '' };
+
     console.table({
-      Lager:       k.lager    ? { Wert: k.lager.value, Kapazitaet: k.lager.kapazitaet, Quelle: k.lager.text } : 'NICHT GEFUNDEN',
-      Personal:    k.personal ? { Wert: `${k.personal.ist}/${k.personal.soll}`, Quelle: k.personal.quelle }   : 'NICHT GEFUNDEN',
-      Firmenkasse: k.kasse    ? { Wert: k.kasse.value, Quelle: k.kasse.text }                                 : 'NICHT GEFUNDEN',
-      Gewinn:      leseGewinn(document) || 'NICHT GEFUNDEN',
+      Lager:       zeile(k.lager,    k.lager    && `${k.lager.value} / ${k.lager.kapazitaet}`,     k.lager && k.lager.text),
+      Personal:    zeile(k.personal, k.personal && `${k.personal.ist}/${k.personal.soll}`,          k.personal && k.personal.quelle),
+      Firmenkasse: zeile(k.kasse,    k.kasse    && k.kasse.value,                                   k.kasse && k.kasse.text),
+      Gewinn:      zeile(g,          g          && g.value,                                         g && g.quelle),
     });
 
     const chips = spielerChips(document);
