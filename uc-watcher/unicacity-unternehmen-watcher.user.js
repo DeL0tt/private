@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         UnicaCity Unternehmen-Watcher
 // @namespace    https://unicacity.eu/
-// @version      3.4.0
+// @version      4.0.0
 // @description  Überwacht Lager, Personal, Kasse und Vorfälle, trackt Online-Zeiten der Spieler und pusht aufs Handy (ntfy.sh).
 // @match        https://unicacity.eu/dashboard/*
 // @grant        GM_xmlhttpRequest
@@ -88,10 +88,12 @@
     gewinn:   ['gewinn seit ausschüttung', 'gewinn seit', 'gewinn', 'profit'],
   };
 
+  // Nur eindeutige Vorfall-Begriffe. Harmlose Wörter wie "Kontrolle" oder
+  // "Brand" sind draußen, weil sie sonst im Kassenbuch Fehlalarme auslösen.
   const VORFALL_WORTE = [
     'vorfall', 'vorfälle', 'steuerprüfung', 'steuerpruefung', 'razzia',
-    'überfall', 'ueberfall', 'einbruch', 'diebstahl', 'brand', 'kontrolle',
-    'abwerbung', 'abgeworben', 'beschwerde', 'strafe', 'bußgeld', 'bussgeld',
+    'überfall', 'ueberfall', 'einbruch', 'diebstahl', 'abwerbung', 'abgeworben',
+    'bußgeld', 'bussgeld', 'sabotage', 'streik',
   ];
 
   /* ====================== AB HIER NICHTS ÄNDERN ====================== */
@@ -130,7 +132,7 @@
     return h ? `${h} Std. ${m} Min.` : `${m} Min.`;
   }
 
-  /* ---------- Zahlen-Parsing ---------- */
+  /* ---------- Werte aus dem Dashboard lesen ---------- */
 
   function toNumber(raw) {
     if (raw == null) return null;
@@ -143,30 +145,55 @@
     return Number.isFinite(n) ? n : null;
   }
 
-  // Eine Zeile/Element, das nur aus einer Zahl (mit Einheit) besteht.
-  const nurZahl = t => /^[\s\d.,/%$€+-]+$/.test(t) && /\d/.test(t);
+  // Die drei Kacheln oben sind aufgebaut als
+  //     <div>473.238$</div><p>Firmenkasse · reicht 79 Std 20 Min</p>
+  //     <div>1284 / 1500</div><p>Lager · 36 Einheiten/Min Absatz</p>
+  //     <div>6 / 6</div><p>Personal · 131% Effizienz</p>
+  // Der Wert steht also IMMER im Element direkt VOR dem Label.
+  function leseKacheln(doc) {
+    const res = {};
+    for (const el of doc.querySelectorAll('p, span')) {
+      const label = (el.textContent || '').trim();
+      const vorher = el.previousElementSibling;
+      if (!vorher) continue;
+      const wert = (vorher.textContent || '').trim();
+      if (!wert || wert.length > 30) continue;
 
-  // Findet das Label und nimmt die Zahl daraus. Steht dort keine, werden die
-  // Nachbarn geprüft – zuerst DAVOR (Kachel-Layout: "412" über "LAGERBESTAND"),
-  // dann dahinter. Nachbarn zählen nur, wenn sie reine Zahlen sind, damit nicht
-  // der Wert der nächsten Kachel erwischt wird.
-  function findByLabel(doc, words) {
-    for (const el of doc.querySelectorAll('*')) {
-      if (el.children.length > 2) continue;
-      const t = (el.textContent || '').trim();
-      if (!t || t.length > 60) continue;
-      if (!words.some(w => t.toLowerCase().includes(w))) continue;
-
-      const own = toNumber(t.replace(new RegExp(words.join('|'), 'gi'), ''));
-      if (own !== null) return { value: own, text: t };
-
-      for (const nachbar of [el.previousElementSibling, el.nextElementSibling]) {
-        if (!nachbar) continue;
-        const nt = (nachbar.textContent || '').trim();
-        if (!nurZahl(nt)) continue;
-        const n = toNumber(nt);
-        if (n !== null) return { value: n, text: `${nt} | ${t}` };
+      if (res.kasse === undefined && /^Firmenkasse\b/i.test(label)) {
+        const n = toNumber(wert);
+        if (n !== null) res.kasse = { value: n, text: `${wert} | ${label}` };
+      } else if (res.lager === undefined && /^Lager\b/i.test(label)) {
+        // "1284 / 1500" – uns interessiert der Bestand, nicht die Kapazität
+        const f = wert.match(/(\d[\d.,]*)\s*\/\s*(\d[\d.,]*)/);
+        if (f) res.lager = { value: toNumber(f[1]), kapazitaet: toNumber(f[2]),
+                             text: `${wert} | ${label}` };
+      } else if (res.personal === undefined && /^Personal\b/i.test(label)) {
+        const f = wert.match(/(\d+)\s*\/\s*(\d+)/);
+        if (f) res.personal = { ist: +f[1], soll: +f[2], quelle: `${wert} | ${label}` };
       }
+    }
+    return res;
+  }
+
+  // "Gewinn seit Ausschüttung" steht als Label ÜBER seinem Wert:
+  //     <p>Gewinn seit Ausschüttung</p><p>157.285$</p>
+  function leseGewinn(doc) {
+    for (const el of doc.querySelectorAll('p, span')) {
+      if (!/^Gewinn seit Ausschüttung/i.test((el.textContent || '').trim())) continue;
+      const wert = el.nextElementSibling;
+      if (!wert) continue;
+      const n = toNumber(wert.textContent);
+      if (n !== null) return { value: n, text: wert.textContent.trim() };
+    }
+    return null;
+  }
+
+  // Die Karte, deren Kopfzeile den angegebenen Titel trägt (z.B. "Meldungen")
+  function findeKarte(doc, titel) {
+    for (const el of doc.querySelectorAll('span')) {
+      if ((el.textContent || '').trim().toLowerCase() !== titel.toLowerCase()) continue;
+      const karte = el.closest('.bg-card');
+      if (karte) return karte;
     }
     return null;
   }
@@ -178,44 +205,32 @@
       if (el) return { value: toNumber(el.textContent), text: el.textContent.trim() };
       log('Selektor liefert nichts:', key, sel);
     }
-    return findByLabel(doc, LABELS[key] || []);
+    if (key === 'gewinn') return leseGewinn(doc);
+    const k = leseKacheln(doc);
+    return k[key] || null;
   }
 
-  // Liest die PERSONAL-Kachel (NPCs), z.B.
-  //     6/6
-  //     PERSONAL · 131% EFFIZIENZ
-  // Die Zahl steht ÜBER dem Label, deshalb wird in beide Richtungen gesucht.
-  // Die TEAM-Leiste ("TEAM · 5 / 8") wird ausdrücklich ausgeschlossen –
-  // das sind die Spieler, nicht die abwerbbaren NPCs.
   function readPersonal(doc) {
     if (CONFIG.SEL.personal) {
       const el = doc.querySelector(CONFIG.SEL.personal);
-      if (el) {
-        const f = (el.textContent || '').match(/(\d+)\s*\/\s*(\d+)/);
-        if (f) return { ist: +f[1], soll: +f[2], quelle: el.textContent.trim() };
-      }
+      const f = el && (el.textContent || '').match(/(\d+)\s*\/\s*(\d+)/);
+      if (f) return { ist: +f[1], soll: +f[2], quelle: el.textContent.trim() };
     }
+    return leseKacheln(doc).personal || null;
+  }
 
-    const text = (doc.body?.innerText || doc.body?.textContent || '');
-    const lines = text.split('\n').map(l => l.trim());
+  /* ---------- Online-Spieler aus der Team-Leiste ---------- */
 
-    for (let i = 0; i < lines.length; i++) {
-      if (!/personal/i.test(lines[i])) continue;
-      if (/\bteam\b/i.test(lines[i])) continue;           // TEAM-Leiste überspringen
-
-      // Zahl in der Label-Zeile selbst, sonst 2 Zeilen davor/danach
-      for (const j of [i, i - 1, i - 2, i + 1, i + 2]) {
-        if (j < 0 || j >= lines.length) continue;
-        if (/\bteam\b/i.test(lines[j])) continue;
-        const f = lines[j].match(/(\d+)\s*\/\s*(\d+)/);
-        if (f) return { ist: +f[1], soll: +f[2], quelle: `${lines[j]} | ${lines[i]}` };
-      }
+  // Nur die Team-Leiste durchsuchen! Die NPC-Mitarbeiter darüber haben
+  // ebenfalls grüne Punkte – die dürfen nicht als Spieler gezählt werden.
+  function teamLeiste(doc) {
+    if (CONFIG.SEL_ONLINE) return doc.querySelector(CONFIG.SEL_ONLINE);
+    for (const el of doc.querySelectorAll('p, span')) {
+      if (/^\s*Team\s*·/i.test((el.textContent || '').trim())) return el.parentElement;
     }
     return null;
   }
 
-  // Ein Spieler gilt als online, wenn das Kästchen vor seinem Namen grün ist.
-  // Grau/dunkel = offline. Gemessen wird die tatsächlich gerenderte Farbe.
   function istGruen(farbe) {
     const m = String(farbe).match(/rgba?\(([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:[,\s/]+([\d.]+))?/i);
     if (!m) return false;
@@ -227,44 +242,39 @@
         && g - b >= CONFIG.GRUEN_MIN_B_ABSTAND;
   }
 
-  // Farbquellen eines Kästchens: Hintergrund, Textfarbe, SVG-fill, Rahmen
   function kaestchenGruen(el) {
     const cs = getComputedStyle(el);
-    if ([cs.backgroundColor, cs.color, cs.fill, cs.borderColor].some(istGruen)) return true;
-    const vor = getComputedStyle(el, '::before');
-    const nach = getComputedStyle(el, '::after');
-    return [vor.backgroundColor, vor.color, nach.backgroundColor, nach.color].some(istGruen);
+    return [cs.backgroundColor, cs.color, cs.borderColor].some(istGruen);
+  }
+
+  // Ein Chip sieht so aus:
+  //   <span>  <span class="bg-emerald-400"></span> halo361 <span>Manager</span>  </span>
+  // Der erste leere Unter-Span ist der Statuspunkt.
+  function spielerChips(doc) {
+    const box = teamLeiste(doc);
+    if (!box) return [];
+
+    const chips = [];
+    for (const chip of box.querySelectorAll('span')) {
+      const txt = (chip.textContent || '').trim();
+      if (!txt) continue;
+      const name = CONFIG.SPIELER.find(n =>
+        new RegExp('^' + n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').test(txt));
+      if (!name) continue;
+      const punkt = [...chip.querySelectorAll('span')].find(s => !(s.textContent || '').trim());
+      if (!punkt) continue;
+      chips.push({ name, chip, punkt });
+    }
+    return chips;
   }
 
   function readOnlineSpieler(doc) {
-    // Farben gibt es nur im echten, gerenderten Dokument.
-    if (doc !== document) return null;
-
-    const root = (CONFIG.SEL_ONLINE && document.querySelector(CONFIG.SEL_ONLINE)) || document.body;
-    if (!root) return [];
-
-    const online = [];
-    for (const name of CONFIG.SPIELER) {
-      const karte = findeKarte(root, name);
-      if (!karte) continue;
-      // Das Kästchen ist ein kleines Element in der Karte – alle Kandidaten prüfen
-      const kandidaten = [karte, ...karte.querySelectorAll('*')];
-      if (kandidaten.some(kaestchenGruen)) online.push(name);
+    if (doc !== document) return null;          // Farben nur im echten DOM
+    const online = new Set();
+    for (const { name, punkt } of spielerChips(document)) {
+      if (kaestchenGruen(punkt)) online.add(name);
     }
-    return online;
-  }
-
-  // Kleinstes Element, das genau diesen Spielernamen enthält
-  function findeKarte(root, name) {
-    const re = new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
-    let treffer = null;
-    for (const el of root.querySelectorAll('*')) {
-      const txt = (el.textContent || '').trim();
-      if (txt.length > 120 || !re.test(txt)) continue;
-      if (!treffer || txt.length < (treffer.textContent || '').trim().length) treffer = el;
-    }
-    // eine Ebene hoch: dort sitzt meist das Kästchen neben dem Namen
-    return treffer ? (treffer.closest('li, td, .card, [class*="member"], [class*="team"]') || treffer.parentElement || treffer) : null;
+    return [...online];
   }
 
   /* ---------- Online-Zeiten fortschreiben ---------- */
@@ -325,18 +335,32 @@
 
   /* ---------- Vorfälle ---------- */
 
+  // Die Meldungen-Karte sagt im Normalfall "Alles ruhig". Steht dort etwas
+  // anderes, ist ein Vorfall aktiv – das ist viel zuverlässiger als eine
+  // Stichwortsuche über die ganze Seite.
   function readVorfaelle(doc) {
-    const root = (CONFIG.SEL.vorfaelle && doc.querySelector(CONFIG.SEL.vorfaelle))
-      || doc.querySelector('main') || doc.body;
-    if (!root) return [];
-    const found = [];
-    for (const el of root.querySelectorAll('tr, li, p, .alert, .notification, [class*="vorfall"], [class*="event"]')) {
-      if (el.children.length > 4) continue;
-      const txt = (el.textContent || '').replace(/\s+/g, ' ').trim();
-      if (!txt || txt.length > 250) continue;
-      if (VORFALL_WORTE.some(w => txt.toLowerCase().includes(w))) found.push(txt);
+    const karte = findeKarte(doc, 'Meldungen');
+    const gefunden = [];
+
+    if (karte) {
+      const titel = (karte.querySelector('h2')?.textContent || '').trim();
+      const unter = (karte.querySelector('h2')?.nextElementSibling?.textContent || '').trim();
+      if (titel && !/^alles ruhig/i.test(titel)) {
+        gefunden.push(unter ? `${titel} — ${unter}` : titel);
+      }
+    } else log('Meldungen-Karte nicht gefunden');
+
+    // Zusätzlich: Stichwörter irgendwo auf der Seite (z.B. Steuerprüfung)
+    const root = doc.querySelector('main') || doc.body;
+    if (root) {
+      for (const el of root.querySelectorAll('p, h2, td, li')) {
+        if (el.children.length > 2) continue;
+        const txt = (el.textContent || '').replace(/\s+/g, ' ').trim();
+        if (!txt || txt.length > 200) continue;
+        if (VORFALL_WORTE.some(w => txt.toLowerCase().includes(w))) gefunden.push(txt);
+      }
     }
-    return [...new Set(found)];
+    return [...new Set(gefunden)];
   }
 
   /* ---------- Ausschüttung ---------- */
@@ -491,7 +515,8 @@
     if (lager && lager.value !== null) {
       if (lager.value < CONFIG.LAGER_SCHWELLE) {
         push('lager', '⚠️ Lagerbestand niedrig',
-          `Lager: ${lager.value} (Schwelle ${CONFIG.LAGER_SCHWELLE}) – nachfüllen.`, state);
+          `Lager: ${lager.value}${lager.kapazitaet ? ' / ' + lager.kapazitaet : ''} ` +
+          `(Schwelle ${CONFIG.LAGER_SCHWELLE}) – nachfüllen.`, state);
       } else if (state.lager !== null && state.lager < CONFIG.LAGER_SCHWELLE) {
         state.lastPush.lager = 0;
       }
@@ -599,14 +624,27 @@
   /* ---------- Konsolen-Werkzeuge ---------- */
 
   W.ucWatcherTest = function () {
-    const p = readPersonal(document);
+    const k = leseKacheln(document);
     console.table({
-      Lager:       read(document, 'lager'),
-      Personal:    p,
-      Firmenkasse: read(document, 'kasse'),
+      Lager:       k.lager    ? { Wert: k.lager.value, Kapazitaet: k.lager.kapazitaet, Quelle: k.lager.text } : 'NICHT GEFUNDEN',
+      Personal:    k.personal ? { Wert: `${k.personal.ist}/${k.personal.soll}`, Quelle: k.personal.quelle }   : 'NICHT GEFUNDEN',
+      Firmenkasse: k.kasse    ? { Wert: k.kasse.value, Quelle: k.kasse.text }                                 : 'NICHT GEFUNDEN',
+      Gewinn:      leseGewinn(document) || 'NICHT GEFUNDEN',
     });
-    console.log('Online erkannt (grünes Kästchen):', readOnlineSpieler(document));
-    console.log('Vorfälle erkannt:', readVorfaelle(document));
+
+    const chips = spielerChips(document);
+    const spieler = {};
+    for (const { name, punkt } of chips) {
+      spieler[name] = {
+        Status: kaestchenGruen(punkt) ? '🟢 online' : '⚪ offline',
+        Farbe:  getComputedStyle(punkt).backgroundColor,
+      };
+    }
+    if (chips.length) console.table(spieler);
+    else console.warn('Keine Spieler-Chips gefunden – Team-Leiste nicht erkannt.');
+
+    console.log('Online:', readOnlineSpieler(document));
+    console.log('Vorfälle:', readVorfaelle(document));
   };
 
   W.ucWatcherZeiten = function () {

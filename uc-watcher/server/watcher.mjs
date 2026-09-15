@@ -49,11 +49,21 @@ const LABELS = {
   gewinn:   ['gewinn seit ausschüttung', 'gewinn seit', 'gewinn', 'profit'],
 };
 
+// Nur eindeutige Begriffe – "Kontrolle"/"Brand" lösen sonst im Kassenbuch aus.
 const VORFALL_WORTE = [
   'vorfall', 'vorfälle', 'steuerprüfung', 'steuerpruefung', 'razzia', 'überfall',
-  'ueberfall', 'einbruch', 'diebstahl', 'brand', 'kontrolle', 'abwerbung',
-  'abgeworben', 'beschwerde', 'strafe', 'bußgeld', 'bussgeld',
+  'ueberfall', 'einbruch', 'diebstahl', 'abwerbung', 'abgeworben',
+  'bußgeld', 'bussgeld', 'sabotage', 'streik',
 ];
+
+// Die Meldungen-Karte meldet im Normalfall "Alles ruhig".
+function meldungAuffaellig(text) {
+  const lines = text.split('\n').map(l => l.trim());
+  const i = lines.findIndex(l => /^Meldungen$/i.test(l));
+  if (i < 0) return null;
+  const titel = lines.slice(i + 1, i + 4).find(l => l && !/^Meldungen$/i.test(l));
+  return (titel && !/^alles ruhig/i.test(titel)) ? titel : null;
+}
 
 const MIN = 60_000;
 const log = (...a) => CFG.DEBUG && console.log(new Date().toISOString(), ...a);
@@ -132,15 +142,19 @@ function readValue(text, words) {
     const low = lines[i].toLowerCase();
     if (!words.some(w => low.includes(w))) continue;
 
-    const own = toNumber(lines[i].replace(new RegExp(words.join('|'), 'gi'), ''));
-    if (own !== null) return { value: own, text: lines[i] };
-
+    // ZUERST die Nachbarzeilen: In den Kacheln steht der Wert über dem Label
+    // ("1284 / 1500" über "Lager · 36 Einheiten/Min Absatz"). Würde man die
+    // Label-Zeile zuerst nehmen, käme die Absatzrate 36 statt des Bestands.
     for (const j of [i - 1, i - 2, i + 1, i + 2]) {
       if (j < 0 || j >= lines.length) continue;
       if (!nurZahl(lines[j])) continue;
       const n = toNumber(lines[j]);
       if (n !== null) return { value: n, text: `${lines[j]} | ${lines[i]}` };
     }
+
+    // Erst danach eine Zahl aus der Label-Zeile selbst
+    const own = toNumber(lines[i].replace(new RegExp(words.join('|'), 'gi'), ''));
+    if (own !== null) return { value: own, text: lines[i] };
   }
   return null;
 }
@@ -183,7 +197,12 @@ function istGruenerCode(s) {
 
 // Das Kästchen steht direkt VOR dem Namen. Damit die Farbe des Nachbarn nicht
 // mitgelesen wird, reicht das Fenster nur bis zum vorigen Spielernamen zurück.
-function readOnline(html) {
+function readOnline(htmlRoh) {
+  // Nur ab der Team-Leiste suchen! Die NPC-Mitarbeiter darüber haben ebenfalls
+  // grüne Punkte (bg-emerald-400) und würden sonst mitgezählt.
+  const start = htmlRoh.search(/Team\s*(&middot;|·|&#183;)/i);
+  const html = start >= 0 ? htmlRoh.slice(start) : htmlRoh;
+
   const positionen = CFG.SPIELER
     .map(name => {
       const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -204,10 +223,12 @@ function readOnline(html) {
 }
 
 function readVorfaelle(text) {
+  const auffaellig = meldungAuffaellig(text);
   return [...new Set(
+    (auffaellig ? [auffaellig] : []).concat(
     text.split('\n')
       .map(l => l.trim())
-      .filter(l => l && l.length <= 250 && VORFALL_WORTE.some(w => l.toLowerCase().includes(w)))
+      .filter(l => l && l.length <= 250 && VORFALL_WORTE.some(w => l.toLowerCase().includes(w))))
   )];
 }
 
@@ -376,7 +397,7 @@ async function durchlauf() {
   updateSpieler(state, online);
   updateTeamzeit(state, online.length > 0);
 
-  // 1) Lager
+  // 1) Lager – die Kachel zeigt "1284 / 1500", uns interessiert der Bestand
   const lager = readValue(text, LABELS.lager);
   if (lager?.value != null) {
     if (lager.value < CFG.LAGER_SCHWELLE) {

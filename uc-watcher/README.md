@@ -20,9 +20,9 @@ Server-Variante umziehen.
 
 | # | Regel | Auslöser |
 |---|---|---|
-| 1 | **Lagerbestand** | fällt unter 500 |
+| 1 | **Lagerbestand** | fällt unter 500 (von aktuell `1284 / 1500`) |
 | 2 | **Personal (NPCs)** | Änderung der `6/6`-Kachel, z. B. 6/6 → 5/6 |
-| 3a | **Vorfall** | neue Meldung mit Vorfall-Stichwort |
+| 3a | **Vorfall** | Meldungen-Karte zeigt nicht mehr „Alles ruhig" |
 | 3b | **Ignorierte Steuerprüfung** | Firmenkasse sinkt um ≈ 8 % statt 4 % |
 | 4 | **Ausschüttung** | Gewinn wurde zurückgesetzt / 12 Std. Teamzeit erreicht |
 
@@ -88,8 +88,10 @@ Fortschritt  61 %
 ```
 
 ### Online-Zeiten
-Ein Spieler gilt als online, wenn sein **Kästchen in der Team-Leiste grün**
-ist (Türkis `#2dd4bf` zählt, Grau `#4b5563` nicht). Pro Spieler wird geführt:
+Ein Spieler gilt als online, wenn sein **Punkt in der Team-Leiste grün** ist
+(`bg-emerald-400`, grau ist `bg-foreground/30`). Gesucht wird **nur innerhalb
+der Team-Leiste** — die NPC-Mitarbeiter darüber haben ebenfalls grüne Punkte
+und dürfen nicht mitgezählt werden. Pro Spieler wird geführt:
 laufende Sitzung, Tagessumme und „zuletzt gesehen". Eine Lücke über 10 Minuten
 gilt als neue Sitzung. **Der Tageszähler setzt um 04:00 zurück**, nicht um
 Mitternacht.
@@ -130,8 +132,10 @@ ucWatcherAusschuettung()   // Fortschritt bis zur Ausschüttung
 ucWatcherReset()           // alles zurücksetzen
 ```
 
-Stimmt ein Wert nicht, trägst du den passenden Selektor nach (Rechtsklick auf
-den Wert → *Untersuchen* → Rechtsklick auf die Zeile → *Copy → Copy selector*):
+Die Werte werden über ihre Beschriftung gefunden (Kachel-Aufbau:
+`<div>1284 / 1500</div><p>Lager · …</p>`, der Wert steht immer VOR dem Label).
+Ändert die Seite ihren Aufbau, kannst du feste Selektoren nachtragen
+(Rechtsklick auf den Wert → *Untersuchen* → *Copy → Copy selector*):
 
 ```js
 SEL: {
