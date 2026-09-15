@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         UnicaCity Unternehmen-Watcher
 // @namespace    https://unicacity.eu/
-// @version      3.2.0
+// @version      3.3.0
 // @description  Überwacht Lager, Personal, Kasse und Vorfälle, trackt Online-Zeiten der Spieler und pusht aufs Handy (ntfy.sh).
 // @match        https://unicacity.eu/dashboard/*
 // @grant        GM_xmlhttpRequest
@@ -395,6 +395,59 @@
   // ntfy-Prioritäten sind Zahlen: 1 min ... 5 max
   const PRIO = { min: 1, low: 2, default: 3, high: 4, urgent: 5 };
 
+  function ntfyBody(titel, text, prio) {
+    return JSON.stringify({
+      topic: CONFIG.NTFY_TOPIC,
+      title: titel,
+      message: text,
+      priority: PRIO[prio] || 4,
+      tags: ['office'],
+      click: location.href,
+    });
+  }
+
+  // Weg 1: normales fetch der Seite. ntfy erlaubt CORS, das funktioniert also
+  // direkt und umgeht die Tampermonkey-Brücke komplett.
+  function sendeFetch(body) {
+    return fetch(CONFIG.NTFY_SERVER, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+    }).then(r => {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return 'fetch';
+    });
+  }
+
+  // Weg 2: GM_xmlhttpRequest. Greift, wenn die Seite per CSP kein fetch
+  // nach außen zulässt.
+  function sendeGM(body) {
+    return new Promise((ok, fehler) => {
+      GM_xmlhttpRequest({
+        method: 'POST',
+        url: CONFIG.NTFY_SERVER,
+        headers: { 'Content-Type': 'application/json' },
+        data: body,
+        timeout: 15000,
+        onload: r => (r.status >= 200 && r.status < 300)
+          ? ok('GM_xmlhttpRequest')
+          : fehler(new Error('HTTP ' + r.status + ' ' + r.responseText)),
+        onerror:   () => fehler(new Error('Verbindung fehlgeschlagen')),
+        ontimeout: () => fehler(new Error('Zeitüberschreitung')),
+      });
+    });
+  }
+
+  async function sendeNtfy(titel, text, prio) {
+    const body = ntfyBody(titel, text, prio);
+    const fehler = [];
+    for (const [name, fn] of [['fetch', sendeFetch], ['GM_xmlhttpRequest', sendeGM]]) {
+      try { return await fn(body); }
+      catch (e) { fehler.push(`${name}: ${e.message}`); }
+    }
+    throw new Error(fehler.join(' | '));
+  }
+
   function push(thema, titel, text, state, prio = 'high') {
     const now = Date.now();
     if (now - (state.lastPush[thema] || 0) < CONFIG.ERINNERUNG_MIN * MIN) {
@@ -402,34 +455,20 @@
     }
     state.lastPush[thema] = now;
 
-    if (CONFIG.NTFY_TOPIC && !CONFIG.NTFY_TOPIC.startsWith('HIER-')) {
-      // Titel und Text werden als JSON gesendet, NICHT als HTTP-Header:
-      // Header dürfen nur Latin-1 enthalten, unsere Titel haben Emojis
-      // und Umlaute ("🚨 Steuerprüfung") – das lässt die Anfrage scheitern.
-      GM_xmlhttpRequest({
-        method: 'POST',
-        url: CONFIG.NTFY_SERVER,
-        headers: { 'Content-Type': 'application/json' },
-        data: JSON.stringify({
-          topic: CONFIG.NTFY_TOPIC,
-          title: titel,
-          message: text,
-          priority: PRIO[prio] || 4,
-          tags: ['office'],
-          click: location.href,
-        }),
-        onload: r => {
-          if (r.status >= 200 && r.status < 300) log('ntfy ok:', titel);
-          else console.error('[UC-Watcher] ntfy antwortete', r.status, r.responseText);
-        },
-        onerror: () => console.error(
-          '[UC-Watcher] ntfy nicht erreichbar. Prüfe: Topic gesetzt? ' +
-          'Adblocker/DNS blockiert ntfy.sh? Internet da?'),
-      });
-    } else console.warn('[UC-Watcher] Kein ntfy-Topic gesetzt – nur Browser-Hinweis.');
-
+    // Browser-Hinweis kommt immer, auch wenn das Netz gerade klemmt
     try { GM_notification({ title: titel, text, timeout: 20000, onclick: () => W.focus() }); } catch (_) {}
     log('PUSH:', titel, '\n' + text);
+
+    if (!CONFIG.NTFY_TOPIC || CONFIG.NTFY_TOPIC.startsWith('HIER-')) {
+      return console.warn('[UC-Watcher] Kein ntfy-Topic gesetzt – nur Browser-Hinweis.');
+    }
+
+    sendeNtfy(titel, text, prio)
+      .then(weg => log('ntfy gesendet über', weg))
+      .catch(e => console.error(
+        '[UC-Watcher] ntfy nicht erreichbar –', e.message,
+        '\nPrüfen: 1) https://ntfy.sh im Browser aufrufbar?',
+        '2) Adblocker/DNS-Filter aktiv? 3) Internetverbindung stabil?'));
   }
 
   const fmt = n => n.toLocaleString('de-DE', { maximumFractionDigits: 2 }) + ' $';
@@ -606,14 +645,21 @@
     return stand;
   };
 
-  // Schickt sofort eine Testnachricht – prüft Topic und Verbindung
-  W.ucWatcherPushTest = function () {
-    const s = load();
-    s.lastPush.selftest = 0;
-    push('selftest', '✅ UC-Watcher Test',
-      'Wenn du das auf dem Handy siehst, funktioniert die Benachrichtigung.', s, 'default');
-    save(s);
-    return 'Testnachricht abgeschickt – schau aufs Handy.';
+  // Prüft beide Sendewege einzeln und sagt, welcher funktioniert
+  W.ucWatcherPushTest = async function () {
+    if (!CONFIG.NTFY_TOPIC || CONFIG.NTFY_TOPIC.startsWith('HIER-')) {
+      console.error('Kein NTFY_TOPIC eingetragen – oben im Skript nachtragen.');
+      return;
+    }
+    console.log('Topic:', CONFIG.NTFY_TOPIC, '· Server:', CONFIG.NTFY_SERVER);
+    const body = ntfyBody('✅ UC-Watcher Test',
+      'Wenn du das auf dem Handy siehst, funktioniert die Benachrichtigung.', 'default');
+
+    for (const [name, fn] of [['fetch', sendeFetch], ['GM_xmlhttpRequest', sendeGM]]) {
+      try { await fn(body); console.log(`✅ ${name}: erfolgreich`); }
+      catch (e) { console.error(`❌ ${name}: ${e.message}`); }
+    }
+    console.log('Kam mindestens eine Nachricht aufs Handy? Dann ist alles gut.');
   };
 
   W.ucWatcherReset = function () { save(leererStand()); console.log('Zustand zurückgesetzt.'); };
