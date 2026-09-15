@@ -509,6 +509,18 @@ if (args.includes('--push-test')) {
   process.exit(0);
 }
 
+if (args.includes('--ausschuettung-start')) {
+  const state = load();
+  state.teamOnlineMs = 0;
+  state.gemeldeteStunde = 0;
+  state.faelligGemeldet = false;
+  state.letzteAusschuettung = Date.now();
+  save(state);
+  console.log('Zähler neu gestartet.');
+  console.table(ausschuettungStand(state));
+  process.exit(0);
+}
+
 if (args.includes('--ausschuettung')) {
   console.table(ausschuettungStand(load()));
   process.exit(0);

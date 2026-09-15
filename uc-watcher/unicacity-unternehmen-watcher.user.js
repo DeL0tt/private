@@ -765,6 +765,20 @@
     return html.length + ' Zeichen';
   };
 
+  // Zähler für die Ausschüttung neu starten – wenn das Skript eine
+  // Ausschüttung verpasst hat (Browser war zu), ohne die Spielerzeiten
+  // zu verlieren.
+  W.ucWatcherAusschuettungStart = function () {
+    const s = load();
+    s.teamOnlineMs = 0;
+    s.gemeldeteStunde = 0;
+    s.faelligGemeldet = false;
+    s.letzteAusschuettung = Date.now();
+    save(s);
+    console.log('Zähler neu gestartet: 0 von ' + CONFIG.AUSSCHUETTUNG_STD + ' Std.');
+    return ausschuettungStand(s);
+  };
+
   W.ucWatcherReset = function () { save(leererStand()); console.log('Zustand zurückgesetzt.'); };
 
   check(document);
@@ -781,7 +795,7 @@
 
   console.log(
     '%c UC-Watcher aktiv %c Befehle: ucWatcherTest() · ucWatcherZeiten() · ' +
-    'ucWatcherAusschuettung() · ucWatcherDump() · ucWatcherPushTest() · ucWatcherHTML() · ucWatcherReset()',
+    'ucWatcherAusschuettung() · ucWatcherDump() · ucWatcherPushTest() · ucWatcherHTML() · ucWatcherAusschuettungStart() · ucWatcherReset()',
     'background:#2dd4bf;color:#000;font-weight:bold;border-radius:3px',
     'color:inherit');
 })();

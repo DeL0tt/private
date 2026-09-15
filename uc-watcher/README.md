@@ -144,6 +144,7 @@ ucWatcherTest()            // erkannte Werte + Online-Spieler
 ucWatcherDump()            // gemessene Farben pro Spielerkarte
 ucWatcherZeiten()          // Online-Zeiten
 ucWatcherAusschuettung()   // Fortschritt bis zur Ausschüttung
+ucWatcherAusschuettungStart()  // 12-Std-Zähler neu starten (verpasste Ausschüttung)
 ucWatcherReset()           // alles zurücksetzen
 ```
 
