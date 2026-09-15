@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         UnicaCity Unternehmen-Watcher
 // @namespace    https://unicacity.eu/
-// @version      4.1.0
+// @version      4.2.0
 // @description  Überwacht Lager, Personal, Kasse und Vorfälle, trackt Online-Zeiten der Spieler und pusht aufs Handy (ntfy.sh).
 // @match        https://unicacity.eu/dashboard/*
 // @grant        GM_xmlhttpRequest
@@ -113,7 +113,12 @@
   const anonym = t => String(t)
     .replace(/([?&](token|auth|key|session)=)[^&#]+/gi, '$1«ENTFERNT»')
     .replace(/\beyJ[\w-]+\.[\w-]+\.[\w-]+/g, '«TOKEN»')
-    .replace(/\b[a-f0-9]{32,}\b/gi, '«HASH»');
+    .replace(/\b[\w.%+-]+@[\w.-]+\.[a-z]{2,}\b/gi, '«MAIL»')
+    .replace(/\b[a-f0-9]{24,}\b/gi, '«ID»')
+    .replace(/\b\d{17,20}\b/g, '«DISCORD-ID»');
+
+  // Felder, deren Inhalt grundsätzlich nichts in der Ausgabe zu suchen hat
+  const GEHEIM = /^(token|accessToken|refreshToken|jwt|password|secret|email|mail|avatar|session|cookie|auth|apiKey)$/i;
 
   // Welche Felder hat die Antwort? (rekursiv, aber flach gehalten)
   function struktur(wert, tiefe = 0) {
@@ -121,12 +126,15 @@
     if (Array.isArray(wert)) return wert.length ? [struktur(wert[0], tiefe + 1)] : [];
     if (typeof wert === 'object') {
       const o = {};
-      for (const k of Object.keys(wert).slice(0, 25)) {
+      const keys = Object.keys(wert);
+      for (const k of keys.slice(0, 60)) {
         const v = wert[k];
+        if (GEHEIM.test(k)) { o[k] = '«ENTFERNT»'; continue; }
         o[k] = (typeof v === 'object' && v !== null) ? struktur(v, tiefe + 1)
-             : (typeof v === 'string' && v.length > 40) ? 'string(lang)'
+             : (typeof v === 'string') ? (v.length > 60 ? 'string(lang)' : anonym(v))
              : v;
       }
+      if (keys.length > 60) o['…'] = `${keys.length - 60} weitere Felder`;
       return o;
     }
     return wert;
@@ -134,11 +142,29 @@
 
   function merke(methode, url, status, text) {
     if (/ntfy\.sh/.test(url)) return;
-    let inhalt = null;
-    try { inhalt = struktur(JSON.parse(text)); } catch (_) { inhalt = '(kein JSON)'; }
+    let inhalt = null, roh = null;
+    try {
+      const daten = JSON.parse(text);
+      inhalt = struktur(daten);
+      roh = daten;                      // für die vollständige Ausgabe
+    } catch (_) { inhalt = '(kein JSON)'; }
     API_LOG.push({ zeit: new Date().toLocaleTimeString('de-DE'),
-                   methode, url: anonym(url), status, inhalt });
+                   methode, url: anonym(url), status, inhalt, roh });
     if (API_LOG.length > MAX_LOG) API_LOG.shift();
+  }
+
+  // Tiefe Kopie mit geschwärzten Werten – für vollständige Ausgaben
+  function schwaerzen(wert, tiefe = 0) {
+    if (tiefe > 8) return '…';
+    if (Array.isArray(wert)) return wert.slice(0, 5).map(v => schwaerzen(v, tiefe + 1));
+    if (wert && typeof wert === 'object') {
+      const o = {};
+      for (const [k, v] of Object.entries(wert)) {
+        o[k] = GEHEIM.test(k) ? '«ENTFERNT»' : schwaerzen(v, tiefe + 1);
+      }
+      return o;
+    }
+    return typeof wert === 'string' ? anonym(wert) : wert;
   }
 
   (function installiereRekorder() {
@@ -864,6 +890,23 @@
     return API_LOG.length + ' Aufrufe';
   };
 
+  // Vollständige (geschwärzte) Antwort einer Adresse, z.B.
+  //   ucWatcherAPIvoll('panel/company')
+  W.ucWatcherAPIvoll = function (filter = 'panel/company') {
+    const treffer = API_LOG.filter(e => e.url.includes(filter) && e.roh);
+    if (!treffer.length) {
+      console.warn(`Nichts zu "${filter}" aufgezeichnet. Seite neu laden und erneut versuchen.`);
+      console.log('Verfügbar:', [...new Set(API_LOG.map(e => e.url))]);
+      return;
+    }
+    const text = treffer.map(e =>
+      `${e.methode} ${e.status} ${e.url}\n${JSON.stringify(schwaerzen(e.roh), null, 2)}`
+    ).join('\n\n');
+    console.log(text);
+    try { GM_setClipboard(text); console.log('✅ In die Zwischenablage kopiert.'); } catch (_) {}
+    return text.length + ' Zeichen';
+  };
+
   W.ucWatcherReset = function () { save(leererStand()); console.log('Zustand zurückgesetzt.'); };
 
   function starte() {
@@ -889,7 +932,7 @@
 
   console.log(
     '%c UC-Watcher aktiv %c Befehle: ucWatcherTest() · ucWatcherZeiten() · ' +
-    'ucWatcherAusschuettung() · ucWatcherDump() · ucWatcherPushTest() · ucWatcherHTML() · ucWatcherAusschuettungStart() · ucWatcherAPI() · ucWatcherReset()',
+    'ucWatcherAusschuettung() · ucWatcherDump() · ucWatcherPushTest() · ucWatcherHTML() · ucWatcherAusschuettungStart() · ucWatcherAPI() · ucWatcherAPIvoll() · ucWatcherReset()',
     'background:#2dd4bf;color:#000;font-weight:bold;border-radius:3px',
     'color:inherit');
 })();
