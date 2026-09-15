@@ -1,0 +1,14 @@
+{
+  "name": "uc-watcher",
+  "version": "3.1.0",
+  "private": true,
+  "type": "module",
+  "description": "UnicaCity Unternehmens-Watcher – laeuft ohne offenen Browser",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "start": "node watcher.mjs",
+    "test": "node watcher.mjs --test",
+    "zeiten": "node watcher.mjs --zeiten",
+    "ausschuettung": "node watcher.mjs --ausschuettung"
+  }
+}

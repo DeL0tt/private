@@ -1,0 +1,21 @@
+# Dauerbetrieb per systemd (Raspberry Pi, VPS, Linux-NAS).
+#   sudo cp uc-watcher.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now uc-watcher
+#   journalctl -u uc-watcher -f        # Log mitlesen
+[Unit]
+Description=UnicaCity Unternehmen-Watcher
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/uc-watcher/server
+EnvironmentFile=/home/pi/uc-watcher/server/.env
+ExecStart=/usr/bin/node watcher.mjs
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

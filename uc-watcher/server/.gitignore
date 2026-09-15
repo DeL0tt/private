@@ -1,0 +1,4 @@
+.env
+uc-watcher-state.json
+uc-watcher-state.json.tmp
+node_modules/
