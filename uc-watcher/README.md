@@ -144,6 +144,7 @@ ucWatcherTest()            // erkannte Werte + Online-Spieler
 ucWatcherDump()            // gemessene Farben pro Spielerkarte
 ucWatcherZeiten()          // Online-Zeiten
 ucWatcherAusschuettung()   // Fortschritt bis zur Ausschüttung
+ucWatcherAPI()             // zeigt, welche API die Seite anzapft (für Variante B)
 ucWatcherAusschuettungStart()  // 12-Std-Zähler neu starten (verpasste Ausschüttung)
 ucWatcherReset()           // alles zurücksetzen
 ```
@@ -175,6 +176,21 @@ etwas senken.
 Braucht einen Rechner, der durchläuft: **Raspberry Pi, kleiner VPS, NAS oder
 ein Mini-PC**. Ein alter Pi reicht völlig. Node.js ab Version 18, keine
 weiteren Pakete.
+
+### 0. Erst prüfen: HTML oder API?
+
+Das Dashboard ist eine React-Anwendung. Liefert der Server nur ein leeres
+Gerüst und lädt die Zahlen per API nach, findet der HTML-Abruf nichts. Vor dem
+Aufsetzen also im Browser prüfen:
+
+```js
+ucWatcherAPI()
+```
+
+Tauchen dort Adressen wie `api.unicacity.eu/api/...` mit den Firmenwerten auf,
+sollte die Server-Variante **die API** ansprechen statt HTML zu zerlegen — das
+ist verlässlicher und übersteht Design-Änderungen. Token in Adressen und lange
+Zeichenketten werden in der Ausgabe automatisch unkenntlich gemacht.
 
 ### 1. Cookie exportieren
 Der Watcher braucht deine Session, weil die Seite Login verlangt.

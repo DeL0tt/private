@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         UnicaCity Unternehmen-Watcher
 // @namespace    https://unicacity.eu/
-// @version      4.0.0
+// @version      4.1.0
 // @description  Überwacht Lager, Personal, Kasse und Vorfälle, trackt Online-Zeiten der Spieler und pusht aufs Handy (ntfy.sh).
 // @match        https://unicacity.eu/dashboard/*
 // @grant        GM_xmlhttpRequest
@@ -12,7 +12,7 @@
 // @grant        GM_setClipboard
 // @connect      unicacity.eu
 // @connect      ntfy.sh
-// @run-at       document-idle
+// @run-at       document-start
 // ==/UserScript==
 
 (function () {
@@ -99,9 +99,71 @@
 
   /* ====================== AB HIER NICHTS ÄNDERN ====================== */
 
-  // Tampermonkey läuft in einer Sandbox. Für Konsolen-Befehle und window.focus()
-  // brauchen wir das echte Seitenfenster.
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
+
+  /* ---------- API-Rekorder ----------
+     Die Seite ist eine React-Anwendung und lädt ihre Zahlen per API nach.
+     Damit wir für die Server-Variante wissen, welche Adressen das sind,
+     werden fetch und XMLHttpRequest mitgeschnitten. Nur Adressen und die
+     Struktur der Antwort – Token werden unkenntlich gemacht.               */
+
+  const API_LOG = [];
+  const MAX_LOG = 40;
+
+  const anonym = t => String(t)
+    .replace(/([?&](token|auth|key|session)=)[^&#]+/gi, '$1«ENTFERNT»')
+    .replace(/\beyJ[\w-]+\.[\w-]+\.[\w-]+/g, '«TOKEN»')
+    .replace(/\b[a-f0-9]{32,}\b/gi, '«HASH»');
+
+  // Welche Felder hat die Antwort? (rekursiv, aber flach gehalten)
+  function struktur(wert, tiefe = 0) {
+    if (wert === null || tiefe > 2) return typeof wert;
+    if (Array.isArray(wert)) return wert.length ? [struktur(wert[0], tiefe + 1)] : [];
+    if (typeof wert === 'object') {
+      const o = {};
+      for (const k of Object.keys(wert).slice(0, 25)) {
+        const v = wert[k];
+        o[k] = (typeof v === 'object' && v !== null) ? struktur(v, tiefe + 1)
+             : (typeof v === 'string' && v.length > 40) ? 'string(lang)'
+             : v;
+      }
+      return o;
+    }
+    return wert;
+  }
+
+  function merke(methode, url, status, text) {
+    if (/ntfy\.sh/.test(url)) return;
+    let inhalt = null;
+    try { inhalt = struktur(JSON.parse(text)); } catch (_) { inhalt = '(kein JSON)'; }
+    API_LOG.push({ zeit: new Date().toLocaleTimeString('de-DE'),
+                   methode, url: anonym(url), status, inhalt });
+    if (API_LOG.length > MAX_LOG) API_LOG.shift();
+  }
+
+  (function installiereRekorder() {
+    const echtesFetch = W.fetch;
+    if (echtesFetch) {
+      W.fetch = function (...args) {
+        const url = (args[0] && args[0].url) || String(args[0]);
+        return echtesFetch.apply(this, args).then(res => {
+          res.clone().text().then(t => merke(res.type || 'GET', url, res.status, t)).catch(() => {});
+          return res;
+        });
+      };
+    }
+    const XHR = W.XMLHttpRequest;
+    if (XHR) {
+      const open = XHR.prototype.open, send = XHR.prototype.send;
+      XHR.prototype.open = function (m, u, ...r) { this._ucM = m; this._ucU = u; return open.call(this, m, u, ...r); };
+      XHR.prototype.send = function (...a) {
+        this.addEventListener('load', () => {
+          try { merke(this._ucM, this._ucU, this.status, this.responseText); } catch (_) {}
+        });
+        return send.apply(this, a);
+      };
+    }
+  })();
 
   const KEY = 'uc_watcher_v3';
   const log = (...a) => CONFIG.DEBUG && console.log('[UC-Watcher]', ...a);
@@ -779,12 +841,44 @@
     return ausschuettungStand(s);
   };
 
+  // Zeigt, welche Datenquellen die Seite anzapft – Grundlage für die
+  // Server-Variante. Token und Hashes sind bereits unkenntlich gemacht.
+  W.ucWatcherAPI = function () {
+    if (!API_LOG.length) {
+      console.warn('Noch nichts aufgezeichnet. Seite mit F5 neu laden und ' +
+                   'kurz warten, dann ucWatcherAPI() erneut aufrufen.');
+      return;
+    }
+    console.table(API_LOG.map(e => ({ Zeit: e.zeit, Methode: e.methode,
+                                      Status: e.status, Adresse: e.url })));
+    console.log('--- Aufbau der Antworten ---');
+    for (const e of API_LOG) {
+      console.groupCollapsed(e.url);
+      console.log(JSON.stringify(e.inhalt, null, 2).slice(0, 4000));
+      console.groupEnd();
+    }
+    const text = API_LOG.map(e =>
+      `${e.methode} ${e.status} ${e.url}\n${JSON.stringify(e.inhalt, null, 2).slice(0, 3000)}`
+    ).join('\n\n');
+    try { GM_setClipboard(text); console.log('✅ In die Zwischenablage kopiert.'); } catch (_) {}
+    return API_LOG.length + ' Aufrufe';
+  };
+
   W.ucWatcherReset = function () { save(leererStand()); console.log('Zustand zurückgesetzt.'); };
 
-  check(document);
-  setInterval(() => check(document), CONFIG.POLL_INTERVAL_MS);
-  beobachte();
-  starteReload();
+  function starte() {
+    check(document);
+    setInterval(() => check(document), CONFIG.POLL_INTERVAL_MS);
+    beobachte();
+    starteReload();
+  }
+
+  // Der Rekorder läuft ab document-start, die DOM-Auswertung erst danach.
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => setTimeout(starte, 1500));
+  } else {
+    setTimeout(starte, 1500);
+  }
 
   if (!CONFIG.NTFY_TOPIC || CONFIG.NTFY_TOPIC.startsWith('HIER-')) {
     console.warn(
@@ -795,7 +889,7 @@
 
   console.log(
     '%c UC-Watcher aktiv %c Befehle: ucWatcherTest() · ucWatcherZeiten() · ' +
-    'ucWatcherAusschuettung() · ucWatcherDump() · ucWatcherPushTest() · ucWatcherHTML() · ucWatcherAusschuettungStart() · ucWatcherReset()',
+    'ucWatcherAusschuettung() · ucWatcherDump() · ucWatcherPushTest() · ucWatcherHTML() · ucWatcherAusschuettungStart() · ucWatcherAPI() · ucWatcherReset()',
     'background:#2dd4bf;color:#000;font-weight:bold;border-radius:3px',
     'color:inherit');
 })();
