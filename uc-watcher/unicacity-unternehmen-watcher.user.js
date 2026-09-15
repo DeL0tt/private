@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         UnicaCity Unternehmen-Watcher
 // @namespace    https://unicacity.eu/
-// @version      3.3.0
+// @version      3.4.0
 // @description  Überwacht Lager, Personal, Kasse und Vorfälle, trackt Online-Zeiten der Spieler und pusht aufs Handy (ntfy.sh).
 // @match        https://unicacity.eu/dashboard/*
 // @grant        GM_xmlhttpRequest
@@ -9,6 +9,7 @@
 // @grant        GM_setValue
 // @grant        GM_notification
 // @grant        unsafeWindow
+// @grant        GM_setClipboard
 // @connect      unicacity.eu
 // @connect      ntfy.sh
 // @run-at       document-idle
@@ -662,6 +663,32 @@
     console.log('Kam mindestens eine Nachricht aufs Handy? Dann ist alles gut.');
   };
 
+  // Bereitet den Seitenaufbau zum Weitergeben auf: entfernt Skripte, kürzt
+  // Attribute auf class/id/style und macht Tokens/Mails unkenntlich.
+  W.ucWatcherHTML = function () {
+    const root = document.querySelector('main') || document.body;
+    const kopie = root.cloneNode(true);
+
+    kopie.querySelectorAll('script, style, noscript, svg, img, path').forEach(e => e.remove());
+    kopie.querySelectorAll('*').forEach(el => {
+      for (const a of [...el.attributes]) {
+        if (!['class', 'id', 'style'].includes(a.name)) el.removeAttribute(a.name);
+      }
+    });
+
+    let html = kopie.innerHTML
+      .replace(/\beyJ[\w-]+\.[\w-]+\.[\w-]+/g, '«TOKEN-ENTFERNT»')   // JWTs
+      .replace(/\b[\w.%+-]+@[\w.-]+\.[a-z]{2,}\b/gi, '«MAIL-ENTFERNT»')
+      .replace(/\b[a-f0-9]{32,}\b/gi, '«HASH-ENTFERNT»')
+      .replace(/>\s+</g, '><')
+      .slice(0, 60000);
+
+    try { GM_setClipboard(html); console.log('✅ In die Zwischenablage kopiert (%d Zeichen).', html.length); }
+    catch (_) { console.log('Zwischenablage nicht verfügbar – Text unten markieren und kopieren.'); }
+    console.log(html);
+    return html.length + ' Zeichen';
+  };
+
   W.ucWatcherReset = function () { save(leererStand()); console.log('Zustand zurückgesetzt.'); };
 
   check(document);
@@ -669,9 +696,16 @@
   beobachte();
   starteReload();
 
+  if (!CONFIG.NTFY_TOPIC || CONFIG.NTFY_TOPIC.startsWith('HIER-')) {
+    console.warn(
+      '%c UC-Watcher %c Kein NTFY_TOPIC eingetragen – es kommen KEINE Pushes aufs Handy. ' +
+      'Oben im Skript bei NTFY_TOPIC dein Topic eintragen und mit Strg+S speichern.',
+      'background:#f59e0b;color:#000;font-weight:bold;border-radius:3px', 'color:inherit');
+  }
+
   console.log(
     '%c UC-Watcher aktiv %c Befehle: ucWatcherTest() · ucWatcherZeiten() · ' +
-    'ucWatcherAusschuettung() · ucWatcherDump() · ucWatcherPushTest() · ucWatcherReset()',
+    'ucWatcherAusschuettung() · ucWatcherDump() · ucWatcherPushTest() · ucWatcherHTML() · ucWatcherReset()',
     'background:#2dd4bf;color:#000;font-weight:bold;border-radius:3px',
     'color:inherit');
 })();
