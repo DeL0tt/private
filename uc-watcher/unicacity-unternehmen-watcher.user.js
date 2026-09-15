@@ -1,13 +1,14 @@
 // ==UserScript==
 // @name         UnicaCity Unternehmen-Watcher
 // @namespace    https://unicacity.eu/
-// @version      2.0.0
-// @description  Überwacht Lagerbestand, Personal, Firmenkasse und Vorfälle im Unternehmens-Dashboard und pusht aufs Handy (ntfy.sh).
-// @match        https://unicacity.eu/dashboard/unternehmen*
+// @version      3.0.0
+// @description  Überwacht Lager, Personal, Kasse und Vorfälle, trackt Online-Zeiten der Spieler und pusht aufs Handy (ntfy.sh).
+// @match        https://unicacity.eu/dashboard/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_notification
+// @connect      unicacity.eu
 // @connect      ntfy.sh
 // @run-at       document-idle
 // ==/UserScript==
@@ -23,35 +24,47 @@
     NTFY_SERVER: 'https://ntfy.sh',
 
     // ---- Schwellwerte ----
-    LAGER_SCHWELLE:    500,   // Alarm wenn Lagerbestand DARUNTER fällt
-    PERSONAL_SOLL:     6,     // Alarm wenn Personal unter 6/6 fällt
-    ERINNERUNG_MIN:    60,    // frühestens nach X Min. erneut zum selben Thema pushen
+    LAGER_SCHWELLE: 500,
+    PERSONAL_SOLL:  6,
+    ERINNERUNG_MIN: 60,     // Cooldown je Thema
 
-    // ---- Steuerprüfung ----
-    // Normale Prüfung kostet 4 % der Firmenkasse, eine ignorierte 8 %.
-    STEUER_NORMAL_PCT:  4,
+    // ---- Steuerprüfung: 4 % bezahlt, 8 % ignoriert ----
+    STEUER_NORMAL_PCT:    4,
     STEUER_IGNORIERT_PCT: 8,
-    STEUER_TOLERANZ_PP: 0.6,  // Toleranz in Prozentpunkten beim Zuordnen
+    STEUER_TOLERANZ_PP:   0.6,
 
-    // ---- Online-Protokoll ----
-    ONLINE_LOG_MINUTEN: 180,  // wie weit zurück "wer war online" gemeldet wird
+    // ---- Spieler-Online-Tracking ----
+    // Bekannte Spielernamen. Hilft der Erkennung enorm und verhindert Fehltreffer.
+    SPIELER: [
+      'maaxxyyy',
+      'halo361',
+      // weitere Namen hier ergänzen
+    ],
+
+    // Wo steht die Online-Liste? Leer lassen = automatische Suche.
+    SEL_ONLINE: '',          // z.B. '#online-spieler' oder '.player-list'
+
+    // Falls die Online-Liste auf einer ANDEREN Seite steht, hier die URL
+    // eintragen; sie wird dann im Hintergrund mit abgefragt.
+    ONLINE_URL: '',          // z.B. 'https://unicacity.eu/dashboard/spieler'
+
+    ONLINE_FENSTER_MIN: 180, // Zeitfenster für "wer war online" in Meldungen
+    LUECKE_MIN: 10,          // Pause > X Min. = neue Sitzung (statt durchgehend)
 
     // ---- Takt ----
     POLL_INTERVAL_MS: 60 * 1000,
 
-    // ---- Selektoren (optional, leer lassen = automatische Suche über Labels) ----
+    // ---- Selektoren fürs Unternehmen (leer = Auto-Suche über Labels) ----
     SEL: {
-      lager:      '',   // z.B. '#lagerbestand .value'
-      personal:   '',   // z.B. '.personal-count'      (erwartet "4/6" oder nur die Zahl)
-      kasse:      '',   // z.B. '#firmenkasse .value'
-      vorfaelle:  '',   // Container mit Vorfall-Meldungen
-      mitarbeiter:'',   // Container der Mitarbeiterliste (für Online-Status)
+      lager:     '',
+      personal:  '',
+      kasse:     '',
+      vorfaelle: '',
     },
 
     DEBUG: false,
   };
 
-  // Begriffe, an denen die automatische Suche die Werte erkennt
   const LABELS = {
     lager:    ['lagerbestand', 'lager', 'bestand', 'warenlager'],
     personal: ['personal', 'mitarbeiter', 'angestellte', 'belegschaft'],
@@ -61,51 +74,56 @@
   const VORFALL_WORTE = [
     'vorfall', 'vorfälle', 'steuerprüfung', 'steuerpruefung', 'razzia',
     'überfall', 'ueberfall', 'einbruch', 'diebstahl', 'brand', 'kontrolle',
-    'beschwerde', 'strafe', 'bußgeld', 'bussgeld', 'warnung',
+    'abwerbung', 'abgeworben', 'beschwerde', 'strafe', 'bußgeld', 'bussgeld',
   ];
 
   /* ====================== AB HIER NICHTS ÄNDERN ====================== */
 
-  const KEY = 'uc_watcher_v2';
+  const KEY = 'uc_watcher_v3';
   const log = (...a) => CONFIG.DEBUG && console.log('[UC-Watcher]', ...a);
+  const MIN = 60_000;
 
-  const load = () => GM_getValue(KEY, {
-    lager: null, personal: null, kasse: null,
-    vorfaelle: [],          // gesehene Vorfall-Texte
-    onlineLog: [],          // [{t, names:[]}]
-    lastPush: {},           // thema -> timestamp
+  const leererStand = () => ({
+    lager: null, personal: null, personalSoll: null, kasse: null,
+    vorfaelle: [],
+    spieler: {},      // name -> { online, seit, sitzungMs, gesamtMs, zuletzt, tag }
+    lastPush: {},
   });
+
+  const load = () => Object.assign(leererStand(), GM_getValue(KEY, {}));
   const save = s => GM_setValue(KEY, s);
 
-  /* ---------- Parsing-Helfer ---------- */
+  const heute = () => new Date().toISOString().slice(0, 10);
 
-  // "1.234,56 $" -> 1234.56 ; "4/6" -> 4
+  function dauer(ms) {
+    if (!ms || ms < MIN) return '<1 Min.';
+    const h = Math.floor(ms / 3_600_000), m = Math.round((ms % 3_600_000) / MIN);
+    return h ? `${h} Std. ${m} Min.` : `${m} Min.`;
+  }
+
+  /* ---------- Zahlen-Parsing ---------- */
+
   function toNumber(raw) {
     if (raw == null) return null;
     const m = String(raw).match(/-?[\d.,]*\d/);
     if (!m) return null;
     let s = m[0];
-    // deutsches Format: Punkt = Tausender, Komma = Dezimal
     if (s.includes(',')) s = s.replace(/\./g, '').replace(',', '.');
     else if (/\.\d{3}(\D|$)/.test(s + ' ')) s = s.replace(/\./g, '');
     const n = parseFloat(s);
     return Number.isFinite(n) ? n : null;
   }
 
-  // Sucht im Dokument nach einem Label und nimmt die nächstgelegene Zahl.
   function findByLabel(doc, words) {
-    const els = doc.querySelectorAll('*');
-    for (const el of els) {
-      if (el.children.length > 2) continue;                    // nur Blatt-nahe Knoten
+    for (const el of doc.querySelectorAll('*')) {
+      if (el.children.length > 2) continue;
       const t = (el.textContent || '').trim().toLowerCase();
-      if (t.length > 60) continue;
+      if (!t || t.length > 60) continue;
       if (!words.some(w => t.includes(w))) continue;
 
-      // Zahl im selben Element?
       const own = toNumber(t.replace(new RegExp(words.join('|'), 'gi'), ''));
       if (own !== null) return { value: own, text: el.textContent.trim() };
 
-      // sonst: Geschwister / Elternbereich absuchen
       const scope = el.nextElementSibling || el.parentElement;
       if (scope) {
         const n = toNumber(scope.textContent);
@@ -120,67 +138,111 @@
     if (sel) {
       const el = doc.querySelector(sel);
       if (el) return { value: toNumber(el.textContent), text: el.textContent.trim() };
-      log('Selektor leer:', key, sel);
+      log('Selektor liefert nichts:', key, sel);
     }
     return findByLabel(doc, LABELS[key] || []);
   }
 
-  // Personal als "x/6" erkennen, sonst blanke Zahl
   function readPersonal(doc) {
     const hit = read(doc, 'personal');
     if (!hit) return null;
     const frac = hit.text.match(/(\d+)\s*\/\s*(\d+)/);
-    if (frac) return { ist: +frac[1], soll: +frac[2], text: hit.text };
-    return { ist: hit.value, soll: CONFIG.PERSONAL_SOLL, text: hit.text };
+    if (frac) return { ist: +frac[1], soll: +frac[2] };
+    return { ist: hit.value, soll: CONFIG.PERSONAL_SOLL };
   }
 
-  /* ---------- Online-Status der Mitarbeiter ---------- */
+  /* ---------- Online-Spieler erkennen ---------- */
 
-  function readOnline(doc) {
-    const root = CONFIG.SEL.mitarbeiter
-      ? doc.querySelector(CONFIG.SEL.mitarbeiter)
-      : doc.querySelector('main') || doc.body;
+  function readOnlineSpieler(doc) {
+    const root = (CONFIG.SEL_ONLINE && doc.querySelector(CONFIG.SEL_ONLINE))
+      || doc.querySelector('main') || doc.body;
     if (!root) return [];
 
-    const names = new Set();
-    for (const row of root.querySelectorAll('tr, li, .member, .employee, [class*="mitarbeiter"]')) {
-      const txt = (row.textContent || '').replace(/\s+/g, ' ').trim();
-      if (!txt || txt.length > 200) continue;
+    const namen = new Set();
+    const text = (root.innerText || root.textContent || '');
 
-      const onlineByText  = /\bonline\b/i.test(txt) && !/\boffline\b/i.test(txt);
-      const onlineByClass = /online/i.test(row.className) && !/offline/i.test(row.className) ||
-                            !!row.querySelector('.online, .status-online, [class*="online"]:not([class*="offline"])');
-      if (!onlineByText && !onlineByClass) continue;
+    // 1) Bekannte Spielernamen direkt im Text suchen (zuverlässigster Weg)
+    for (const name of CONFIG.SPIELER) {
+      const re = new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+      if (!re.test(text)) continue;
 
-      const name = (row.querySelector('td, .name, strong, b, a')?.textContent || txt)
-        .replace(/\bonline\b/ig, '').replace(/\s+/g, ' ').trim();
-      if (name) names.add(name.slice(0, 40));
+      // Prüfen, ob die Zeile des Namens nicht "offline" sagt
+      const zeile = text.split('\n').find(l => re.test(l)) || '';
+      if (/\boffline\b/i.test(zeile)) continue;
+      namen.add(name);
     }
-    return [...names];
+
+    // 2) Ergänzend: Elemente, die als online markiert sind
+    for (const row of root.querySelectorAll('tr, li, .player, [class*="online"]')) {
+      const txt = (row.textContent || '').replace(/\s+/g, ' ').trim();
+      if (!txt || txt.length > 120) continue;
+      if (/\boffline\b/i.test(txt) || /offline/i.test(row.className)) continue;
+      const online = /\bonline\b/i.test(txt) || /online/i.test(row.className);
+      if (!online) continue;
+
+      const name = (row.querySelector('.name, strong, b, a, td')?.textContent || txt)
+        .replace(/\b(online|offline)\b/ig, '').replace(/\s+/g, ' ').trim();
+      if (name && name.length <= 32 && /[a-z0-9_]/i.test(name)) namen.add(name);
+    }
+
+    return [...namen];
   }
 
-  function onlineSeit(state, minuten) {
-    const cutoff = Date.now() - minuten * 60_000;
-    const set = new Set();
-    for (const e of state.onlineLog) if (e.t >= cutoff) e.names.forEach(n => set.add(n));
-    return [...set];
+  /* ---------- Online-Zeiten fortschreiben ---------- */
+
+  function updateSpieler(state, onlineJetzt) {
+    const now = Date.now();
+    const tag = heute();
+    const online = new Set(onlineJetzt);
+
+    for (const name of online) {
+      const p = state.spieler[name] || { online: false, seit: null, sitzungMs: 0, gesamtMs: 0, zuletzt: 0, tag };
+      if (p.tag !== tag) { p.gesamtMs = 0; p.tag = tag; }   // Tageszähler zurücksetzen
+
+      const luecke = now - (p.zuletzt || 0);
+      if (!p.online || luecke > CONFIG.LUECKE_MIN * MIN) {
+        p.online = true;
+        p.seit = now;                                        // neue Sitzung
+        p.sitzungMs = 0;
+      } else {
+        p.sitzungMs = now - p.seit;
+        p.gesamtMs += Math.min(luecke, CONFIG.LUECKE_MIN * MIN);
+      }
+      p.zuletzt = now;
+      state.spieler[name] = p;
+    }
+
+    for (const [name, p] of Object.entries(state.spieler)) {
+      if (online.has(name)) continue;
+      if (p.online) { p.online = false; p.sitzungMs = (p.zuletzt || now) - (p.seit || now); }
+    }
+  }
+
+  // Liste "wer war online + wie lange" für Meldungen
+  function onlineBericht(state, fensterMin = CONFIG.ONLINE_FENSTER_MIN) {
+    const cutoff = Date.now() - fensterMin * MIN;
+    const zeilen = [];
+    for (const [name, p] of Object.entries(state.spieler)) {
+      if (!p.zuletzt || p.zuletzt < cutoff) continue;
+      const status = p.online ? 'online' : `zuletzt vor ${dauer(Date.now() - p.zuletzt)}`;
+      const sitz = p.online ? dauer(Date.now() - p.seit) : dauer(p.sitzungMs);
+      zeilen.push(`• ${name} — ${status}, Sitzung ${sitz}, heute ${dauer(p.gesamtMs)}`);
+    }
+    return zeilen;
   }
 
   /* ---------- Vorfälle ---------- */
 
   function readVorfaelle(doc) {
-    const root = CONFIG.SEL.vorfaelle
-      ? doc.querySelector(CONFIG.SEL.vorfaelle)
-      : doc.querySelector('main') || doc.body;
+    const root = (CONFIG.SEL.vorfaelle && doc.querySelector(CONFIG.SEL.vorfaelle))
+      || doc.querySelector('main') || doc.body;
     if (!root) return [];
-
     const found = [];
     for (const el of root.querySelectorAll('tr, li, p, .alert, .notification, [class*="vorfall"], [class*="event"]')) {
       if (el.children.length > 4) continue;
       const txt = (el.textContent || '').replace(/\s+/g, ' ').trim();
       if (!txt || txt.length > 250) continue;
-      const low = txt.toLowerCase();
-      if (VORFALL_WORTE.some(w => low.includes(w))) found.push(txt);
+      if (VORFALL_WORTE.some(w => txt.toLowerCase().includes(w))) found.push(txt);
     }
     return [...new Set(found)];
   }
@@ -189,8 +251,9 @@
 
   function push(thema, titel, text, state, prio = 'high') {
     const now = Date.now();
-    const last = state.lastPush[thema] || 0;
-    if (now - last < CONFIG.ERINNERUNG_MIN * 60_000) { log('unterdrückt (Cooldown):', thema); return; }
+    if (now - (state.lastPush[thema] || 0) < CONFIG.ERINNERUNG_MIN * MIN) {
+      return log('Cooldown, unterdrückt:', thema);
+    }
     state.lastPush[thema] = now;
 
     if (CONFIG.NTFY_TOPIC && !CONFIG.NTFY_TOPIC.startsWith('HIER-')) {
@@ -201,115 +264,133 @@
         data: text,
         onerror: e => console.error('[UC-Watcher] ntfy-Fehler', e),
       });
-    } else {
-      console.warn('[UC-Watcher] Kein ntfy-Topic gesetzt – nur Browser-Hinweis.');
-    }
+    } else console.warn('[UC-Watcher] Kein ntfy-Topic gesetzt – nur Browser-Hinweis.');
+
     try { GM_notification({ title: titel, text, timeout: 20000, onclick: () => window.focus() }); } catch (_) {}
-    log('PUSH:', titel, '|', text);
+    log('PUSH:', titel, '\n' + text);
   }
 
-  /* ---------- Regeln ---------- */
+  const fmt = n => n.toLocaleString('de-DE', { maximumFractionDigits: 2 }) + ' $';
 
-  function check(doc) {
+  /* ---------- Hauptprüfung ---------- */
+
+  function check(doc, onlineDoc) {
     const state = load();
-    const now = Date.now();
 
-    // Online-Protokoll fortschreiben
-    const online = readOnline(doc);
-    state.onlineLog.push({ t: now, names: online });
-    const cutoff = now - CONFIG.ONLINE_LOG_MINUTEN * 60_000;
-    state.onlineLog = state.onlineLog.filter(e => e.t >= cutoff);
+    // --- Online-Zeiten immer zuerst fortschreiben ---
+    updateSpieler(state, readOnlineSpieler(onlineDoc || doc));
 
-    // --- 1) Lagerbestand ---
+    // --- 1) Lager ---
     const lager = read(doc, 'lager');
     if (lager && lager.value !== null) {
       if (lager.value < CONFIG.LAGER_SCHWELLE) {
         push('lager', '⚠️ Lagerbestand niedrig',
           `Lager: ${lager.value} (Schwelle ${CONFIG.LAGER_SCHWELLE}) – nachfüllen.`, state);
       } else if (state.lager !== null && state.lager < CONFIG.LAGER_SCHWELLE) {
-        state.lastPush.lager = 0;   // wieder über Schwelle -> Cooldown zurücksetzen
+        state.lastPush.lager = 0;
       }
       state.lager = lager.value;
-    } else log('Lagerbestand nicht gefunden');
+    } else log('Lager nicht gefunden');
 
-    // --- 2) Personal ---
+    // --- 2) Personal: jede Änderung melden, mit Online-Spielern ---
     const p = readPersonal(doc);
     if (p && p.ist !== null) {
       const soll = p.soll || CONFIG.PERSONAL_SOLL;
-      if (p.ist < soll) {
-        push('personal', '⚠️ Personal unterbesetzt',
-          `Personal: ${p.ist}/${soll} – ${soll - p.ist} fehlen.`, state);
-      } else if (state.personal !== null && state.personal < soll) {
-        state.lastPush.personal = 0;
+      const alt = state.personal;
+
+      if (alt !== null && p.ist !== alt) {
+        const gefallen = p.ist < alt;
+        const bericht = onlineBericht(state);
+        const wer = bericht.length
+          ? `\n\nOnline zum Zeitpunkt der Änderung:\n${bericht.join('\n')}`
+          : '\n\n(Keine Online-Daten erfasst – SPIELER-Liste/SEL_ONLINE prüfen.)';
+
+        push(
+          `personal_change_${p.ist}`,
+          gefallen ? '🚨 Mitarbeiter verloren (Abwerbung?)' : 'ℹ️ Personal verändert',
+          `Personal: ${alt}/${soll} → ${p.ist}/${soll}` +
+          (gefallen
+            ? `\n${alt - p.ist} Mitarbeiter weg – Abwerbung wurde nicht abgewendet.`
+            : `\n+${p.ist - alt} dazugekommen.`) +
+          wer,
+          state, gefallen ? 'urgent' : 'default');
+      } else if (p.ist < soll) {
+        push('personal_unterbesetzt', '⚠️ Personal unterbesetzt',
+          `Personal: ${p.ist}/${soll} – ${soll - p.ist} fehlen.` +
+          (onlineBericht(state).length ? `\n\nOnline:\n${onlineBericht(state).join('\n')}` : ''),
+          state);
       }
       state.personal = p.ist;
+      state.personalSoll = soll;
     } else log('Personal nicht gefunden');
 
-    // --- 3a) Vorfälle direkt auf der Seite ---
+    // --- 3a) Vorfälle ---
     const vorfaelle = readVorfaelle(doc);
     const neue = vorfaelle.filter(v => !state.vorfaelle.includes(v));
     if (neue.length) {
-      const wer = onlineSeit(state, CONFIG.ONLINE_LOG_MINUTEN);
-      push('vorfall_' + neue[0].slice(0, 20), '🚨 Vorfall im Unternehmen',
-        neue.join('\n') +
-        (wer.length ? `\n\nOnline (letzte ${CONFIG.ONLINE_LOG_MINUTEN} Min.): ${wer.join(', ')}` : ''),
+      const bericht = onlineBericht(state);
+      push('vorfall_' + neue[0].slice(0, 24), '🚨 Vorfall im Unternehmen',
+        neue.join('\n') + (bericht.length ? `\n\nOnline:\n${bericht.join('\n')}` : ''),
         state, 'urgent');
-      state.vorfaelle = [...vorfaelle].slice(-50);
-    } else {
-      state.vorfaelle = [...new Set([...state.vorfaelle, ...vorfaelle])].slice(-50);
     }
+    state.vorfaelle = [...new Set([...state.vorfaelle, ...vorfaelle])].slice(-50);
 
-    // --- 3b) Steuerprüfung aus dem Kassensturz ableiten ---
+    // --- 3b) Steuerprüfung aus dem Kassenverlauf ---
     const kasse = read(doc, 'kasse');
     if (kasse && kasse.value !== null) {
       if (state.kasse !== null && state.kasse > 0 && kasse.value < state.kasse) {
         const diff = state.kasse - kasse.value;
-        const pct = (diff / state.kasse) * 100;
-        const nahe = (ziel) => Math.abs(pct - ziel) <= CONFIG.STEUER_TOLERANZ_PP;
+        const pct  = (diff / state.kasse) * 100;
+        const nahe = ziel => Math.abs(pct - ziel) <= CONFIG.STEUER_TOLERANZ_PP;
 
         if (nahe(CONFIG.STEUER_IGNORIERT_PCT)) {
-          const wer = onlineSeit(state, CONFIG.ONLINE_LOG_MINUTEN);
+          const bericht = onlineBericht(state);
           push('steuer_ignoriert', '🚨 Steuerprüfung wurde IGNORIERT',
             `Firmenkasse: ${fmt(state.kasse)} → ${fmt(kasse.value)}\n` +
-            `Abzug: ${fmt(diff)} (${pct.toFixed(2)} % = Strafsatz statt ${CONFIG.STEUER_NORMAL_PCT} %)\n` +
-            `Mehrkosten ggü. bearbeiteter Prüfung: ${fmt(diff / 2)}\n\n` +
-            (wer.length
-              ? `Online in den letzten ${CONFIG.ONLINE_LOG_MINUTEN} Min.:\n${wer.join(', ')}`
-              : 'Keine Online-Daten erfasst (Mitarbeiterliste nicht erkannt).'),
+            `Abzug: ${fmt(diff)} (${pct.toFixed(2)} % statt ${CONFIG.STEUER_NORMAL_PCT} %)\n` +
+            `Vermeidbare Mehrkosten: ${fmt(diff / 2)}\n\n` +
+            (bericht.length
+              ? `Online zum Zeitpunkt der Prüfung:\n${bericht.join('\n')}`
+              : '(Keine Online-Daten erfasst.)'),
             state, 'urgent');
         } else if (nahe(CONFIG.STEUER_NORMAL_PCT)) {
           push('steuer_normal', 'ℹ️ Steuerprüfung bezahlt',
             `Firmenkasse: ${fmt(state.kasse)} → ${fmt(kasse.value)}\n` +
-            `Abzug: ${fmt(diff)} (${pct.toFixed(2)} % – regulär, wurde bearbeitet).`,
-            state, 'default');
+            `Abzug: ${fmt(diff)} (${pct.toFixed(2)} % – regulär bearbeitet).`, state, 'default');
         }
       }
       state.kasse = kasse.value;
-    } else log('Firmenkasse nicht gefunden');
+    } else log('Kasse nicht gefunden');
 
     save(state);
-    log('geprüft:', { lager: state.lager, personal: state.personal, kasse: state.kasse, online });
+    log('geprüft', { lager: state.lager, personal: state.personal, kasse: state.kasse });
   }
 
-  const fmt = n => n.toLocaleString('de-DE', { maximumFractionDigits: 2 }) + ' $';
+  /* ---------- Abruf ---------- */
 
-  /* ---------- Antrieb ---------- */
+  async function holen(url) {
+    const res = await fetch(url, { credentials: 'include', cache: 'no-store' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    if (/login|anmelden/i.test(new URL(res.url).pathname)) throw new Error('LOGIN');
+    return new DOMParser().parseFromString(await res.text(), 'text/html');
+  }
 
   async function poll() {
     try {
-      const res = await fetch(location.href, { credentials: 'include', cache: 'no-store' });
-      if (!res.ok) return log('Fetch-Status', res.status);
-      if (/login|anmelden/i.test(new URL(res.url).pathname)) {
+      const doc = await holen(location.href);
+      const onlineDoc = CONFIG.ONLINE_URL ? await holen(CONFIG.ONLINE_URL).catch(() => null) : null;
+      check(doc, onlineDoc);
+    } catch (e) {
+      if (e.message === 'LOGIN') {
         const s = load();
         push('login', '🔑 UnicaCity: Login abgelaufen', 'Überwachung pausiert – bitte neu einloggen.', s, 'urgent');
         save(s);
-        return;
-      }
-      check(new DOMParser().parseFromString(await res.text(), 'text/html'));
-    } catch (e) { log('Poll-Fehler', e); }
+      } else log('Poll-Fehler', e);
+    }
   }
 
-  // Diagnose: einmal ausgeben, was erkannt wurde
+  /* ---------- Konsolen-Werkzeuge ---------- */
+
   window.ucWatcherTest = function () {
     const p = readPersonal(document);
     console.table({
@@ -317,11 +398,28 @@
       Personal:    p,
       Firmenkasse: read(document, 'kasse'),
     });
-    console.log('Online erkannt:', readOnline(document));
+    console.log('Online erkannt:', readOnlineSpieler(document));
     console.log('Vorfälle erkannt:', readVorfaelle(document));
   };
 
+  window.ucWatcherZeiten = function () {
+    const s = load();
+    const rows = {};
+    for (const [name, p] of Object.entries(s.spieler)) {
+      rows[name] = {
+        Status:  p.online ? 'online' : 'offline',
+        Sitzung: p.online ? dauer(Date.now() - p.seit) : dauer(p.sitzungMs),
+        Heute:   dauer(p.gesamtMs),
+        Zuletzt: p.zuletzt ? new Date(p.zuletzt).toLocaleTimeString('de-DE') : '–',
+      };
+    }
+    console.table(rows);
+    return rows;
+  };
+
+  window.ucWatcherReset = function () { save(leererStand()); console.log('Zustand zurückgesetzt.'); };
+
   check(document);
   setInterval(poll, CONFIG.POLL_INTERVAL_MS);
-  log('aktiv –  ucWatcherTest()  in der Konsole zeigt die erkannten Werte.');
+  log('aktiv – ucWatcherTest() / ucWatcherZeiten() in der Konsole');
 })();
