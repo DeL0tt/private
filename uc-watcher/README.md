@@ -45,11 +45,23 @@ Bei **jedem** Vorfall steht in der Meldung, wer aus dem Team zu dem Zeitpunkt
 online war — bei Abwerbung, Einbruch, Steuerprüfung, unbekannten Buchungen und
 Meldungen der Firma.
 
-Ein plötzlicher Lagerverlust wird erkannt, indem der Rückgang gegen den
-normalen Absatz gerechnet wird: `salesPerMinute` mal verstrichene Minuten, mit
-Aufschlag. Was darüber hinausgeht und mindestens 15 % des Bestands ausmacht,
-gilt als Vorfall. Lief der Watcher zwischendurch nicht, wird nicht geprüft —
-sonst wäre jede Ausfallzeit ein Fehlalarm.
+Ein plötzlicher Lagerverlust wird gegen zwei Dinge gerechnet:
+
+1. den **laufenden Absatz** (`salesPerMinute` mal verstrichene Minuten, mit Aufschlag)
+2. die **Einnahmen im selben Zeitfenster** aus dem Kassenbuch
+
+Punkt 2 ist der entscheidende: Ein **Großauftrag** kostet ebenso viel Bestand
+wie ein Einbruch — bringt aber Geld. Das Kassenbuch nennt dabei die Stückzahl
+(„Großauftrag · 400x Luxusgüter"), die vom Verlust abgezogen wird. Was danach
+übrig bleibt und mindestens 15 % des Bestands ausmacht, gilt als Vorfall.
+
+Zwei bewusste Zurückhaltungen, damit keine Fehlalarme entstehen:
+
+- Lief der Watcher zwischendurch **nicht**, wird gar nicht geprüft.
+- Gab es eine Einnahme, deren **Stückzahl nicht ablesbar** ist, schweigt der
+  Watcher lieber, als einen Großauftrag als Einbruch zu melden. Ein Einbruch
+  exakt im selben Moment würde dann übersehen — das ist der Preis dafür, dass
+  du nicht ständig grundlos aufgeschreckt wirst.
 
 ### Abwerbung zuordnen
 Sinkt die Personal-Kachel, meldet das Skript, wer zu dem Zeitpunkt online war —

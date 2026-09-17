@@ -351,6 +351,22 @@ async function pruefeAusschuettung(state) {
 
 /* ========================= KASSENBUCH ========================= */
 
+// Was sagt das Kassenbuch über ein Zeitfenster? Verkäufe und Großaufträge
+// kosten Bestand, bringen aber Geld – daran lassen sie sich von einem
+// Einbruch unterscheiden, der nur Bestand kostet.
+function bewegungImFenster(ledger, vonMs) {
+  let abgegeben = 0, einnahmen = 0, unklar = false;
+  for (const e of ledger?.entries || []) {
+    if (e.stamp < vonMs) continue;
+    if (e.amount <= 0) continue;                 // nur Einnahmen betrachten
+    einnahmen += e.amount;
+    const treffer = /(\d+)\s*x/i.exec(e.detail || '');
+    if (treffer) abgegeben += +treffer[1];
+    else unklar = true;                          // Menge nicht ablesbar
+  }
+  return { abgegeben, einnahmen, unklar };
+}
+
 // Liefert neue Buchungen seit dem letzten Durchlauf, älteste zuerst.
 function neueBuchungen(state, ledger) {
   const alle = (ledger.entries || []).filter(e => e.stamp > state.letzterLedgerStamp);
@@ -433,6 +449,12 @@ async function durchlauf() {
   const laeuft = jemandOnline && !f.paused;
   updateTeamzeit(state, laeuft);
 
+  // Kassenbuch früh holen: Der Lagercheck braucht es, um Großaufträge von
+  // einem Einbruch zu unterscheiden.
+  let ledger = null;
+  try { ledger = await holeLedger(f.id); }
+  catch (e) { log('Kassenbuch nicht lesbar:', e.message); }
+
   // Jemand ist da, die Firma steht trotzdem still – das ist einen Hinweis wert.
   if (jemandOnline && f.paused) {
     await push('pausiert_trotz_online', '⚠️ Firma pausiert, obwohl jemand online ist',
@@ -454,20 +476,33 @@ async function durchlauf() {
       const verlust = state.lager - lager;
       const minuten = seitLetzter / MIN;
       // Großzügig gerechnet: anderthalbfacher Absatz plus etwas Spielraum
-      const erklaerbar = (f.stock.salesPerMinute || 0) * minuten * 1.5 + 5;
+      const laufenderAbsatz = (f.stock.salesPerMinute || 0) * minuten * 1.5 + 5;
+
+      // Dazu alles, was im selben Fenster Geld gebracht hat – Verkäufe und
+      // Großaufträge kosten Bestand, sind aber kein Vorfall.
+      const bewegung = bewegungImFenster(ledger, jetzt - seitLetzter);
+      const erklaerbar = laufenderAbsatz + bewegung.abgegeben;
       const prozent = state.lager > 0 ? (verlust / state.lager) * 100 : 0;
 
       if (verlust > erklaerbar && prozent >= CFG.LAGER_EINBRUCH_PCT) {
-        const bericht = onlineBericht(state);
-        await push(`lagerverlust_${jetzt}`, '🚨 Plötzlicher Lagerverlust',
-          `Lager: ${state.lager} → ${lager} (${verlust} Einheiten, ` +
-          `${prozent.toFixed(1)} %)\n` +
-          `Durch den Absatz erklärbar wären höchstens ${Math.round(erklaerbar)} ` +
-          `in ${Math.round(minuten)} Min.\n\n` +
-          (bericht.length
-            ? `Online zum Zeitpunkt:\n${bericht.join('\n')}`
-            : 'Niemand aus dem Team war online.'),
-          state, 'urgent');
+        if (bewegung.unklar) {
+          // Es gab Einnahmen, deren Stückzahl nicht ablesbar war – dann lieber
+          // schweigen als einen Großauftrag als Einbruch melden.
+          log('Lagerverlust nicht eindeutig: Einnahmen ohne ablesbare Menge');
+        } else {
+          const bericht = onlineBericht(state);
+          await push(`lagerverlust_${jetzt}`, '🚨 Plötzlicher Lagerverlust',
+            `Lager: ${state.lager} → ${lager} (${verlust} Einheiten, ` +
+            `${prozent.toFixed(1)} %)\n` +
+            `Erklärbar wären höchstens ${Math.round(erklaerbar)} in ` +
+            `${Math.round(minuten)} Min.\n` +
+            `Einnahmen in dieser Zeit: ${fmt(bewegung.einnahmen)} — ` +
+            `ein Großauftrag war es also nicht.\n\n` +
+            (bericht.length
+              ? `Online zum Zeitpunkt:\n${bericht.join('\n')}`
+              : 'Niemand aus dem Team war online.'),
+            state, 'urgent');
+        }
       }
     }
     state.letzterLagerTick = jetzt;
@@ -529,9 +564,9 @@ async function durchlauf() {
   state.kasse  = f.kasse?.balance ?? state.kasse;
   state.gewinn = f.kasse?.profitSincePayout ?? state.gewinn;
 
-  // --- 5) Kassenbuch ---
+  // --- 5) Kassenbuch (oben bereits geholt) ---
   try {
-    const ledger = await holeLedger(f.id);
+    if (!ledger) throw new Error('nicht geladen');
     const neu = neueBuchungen(state, ledger);
     if (state.letzterLedgerStamp === 0) {
       // Erster Lauf: nur Stand merken, nicht rückwirkend melden
@@ -541,7 +576,7 @@ async function durchlauf() {
     } else {
       await werteBuchungenAus(state, neu);
     }
-  } catch (e) { log('Kassenbuch nicht lesbar:', e.message); }
+  } catch (e) { log('Kassenbuch nicht auswertbar:', e.message); }
 
   // --- 6) Ausschüttung ---
   await pruefeAusschuettung(state);
