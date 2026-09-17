@@ -31,6 +31,7 @@ const CFG = {
 
   AUSSCHUETTUNG_STD:            +(process.env.UC_AUSSCHUETTUNG_STD || 12),
   AUSSCHUETTUNG_STUNDENMELDUNG: process.env.UC_AUSSCHUETTUNG_STUNDENMELDUNG !== '0',
+  TAGESBERICHT:                  process.env.UC_TAGESBERICHT !== '0',
 
   LUECKE_MIN:       +(process.env.UC_LUECKE_MIN || 10),
   TAGESWECHSEL_STD: +(process.env.UC_TAGESWECHSEL_STD || 4),
@@ -62,6 +63,7 @@ const leer = () => ({
   token: null, tokenExp: 0, cookie: null,   // Zugang, überlebt Neustarts
   lager: null, personal: null, kasse: null, gewinn: null,
   spieler: {},            // name -> { online, seit, sitzungMs, gesamtMs, zuletzt, tag }
+  tag: null,                 // laufender Spieltag (wechselt um 04:00)
   teamOnlineMs: 0, gemeldeteStunde: 0, faelligGemeldet: false,
   letzteAusschuettung: null, letzterTick: null,
   letzterLedgerStamp: 0,  // bis hierhin wurde das Kassenbuch verarbeitet
@@ -222,14 +224,43 @@ function updateSpieler(state, members) {
   }
 }
 
-// Wandzeit, in der MINDESTENS EIN Spieler online war (keine Doppelzählung).
-function updateTeamzeit(state, irgendwerOnline) {
+// Wandzeit, in der die Firma tatsächlich lief: mindestens ein Spieler online
+// UND nicht pausiert. Mehrere gleichzeitig zählen trotzdem nur einmal.
+function updateTeamzeit(state, laeuft) {
   const now = Date.now(), letzter = state.letzterTick;
   state.letzterTick = now;
   if (!letzter) return;
   const luecke = now - letzter;
   if (luecke > CFG.LUECKE_MIN * MIN) return;      // Watcher lief nicht – nicht zählen
-  if (irgendwerOnline) state.teamOnlineMs += luecke;
+  if (laeuft) state.teamOnlineMs += luecke;
+}
+
+// Um 04:00 wechselt der Spieltag. Davor: Bericht über den abgelaufenen Tag,
+// danach setzt updateSpieler die Tageszähler zurück.
+async function tagesabschluss(state) {
+  const tag = spieltag();
+  if (!state.tag) { state.tag = tag; return; }        // erster Lauf
+  if (state.tag === tag) return;
+
+  const vorbei = state.tag;
+  state.tag = tag;
+  if (!CFG.TAGESBERICHT) return;
+
+  const zeilen = Object.entries(state.spieler)
+    .map(([name, p]) => ({ name, ms: p.gesamtMs || 0, rolle: p.rolle || '' }))
+    .sort((a, b) => b.ms - a.ms)
+    .map(e => e.ms >= MIN ? `• ${e.name} — ${dauer(e.ms)}` : `• ${e.name} — nicht online`);
+
+  const gesamt = Object.values(state.spieler).reduce((a, p) => a + (p.gesamtMs || 0), 0);
+  const [j, m, t] = vorbei.split('-');
+
+  await push(`tagesbericht_${vorbei}`, `📊 Onlinezeiten ${t}.${m}.`,
+    `Spieltag ${t}.${m}.${j} (04:00 bis 04:00)\n\n` +
+    (zeilen.length ? zeilen.join('\n') : 'Niemand war online.') +
+    `\n\nSumme aller Spieler: ${dauer(gesamt)}` +
+    `\nDavon Firma gelaufen: ${dauer(state.teamOnlineMs)} von ` +
+    `${CFG.AUSSCHUETTUNG_STD} Std. bis zur Ausschüttung`,
+    state, 'low');
 }
 
 function onlineBericht(state, fensterMin = 180) {
@@ -388,8 +419,21 @@ async function durchlauf() {
 
   // --- Spieler & Teamzeit ---
   const members = f.members || [];
+  await tagesabschluss(state);                 // vor dem Zurücksetzen der Tageszähler
   updateSpieler(state, members);
-  updateTeamzeit(state, members.some(m => m.online));
+
+  const jemandOnline = members.some(m => m.online);
+  const laeuft = jemandOnline && !f.paused;
+  updateTeamzeit(state, laeuft);
+
+  // Jemand ist da, die Firma steht trotzdem still – das ist einen Hinweis wert.
+  if (jemandOnline && f.paused) {
+    await push('pausiert_trotz_online', '⚠️ Firma pausiert, obwohl jemand online ist',
+      `Status: ${f.status}\n` +
+      (f.wagesUnpaid ? 'Die Löhne konnten nicht gezahlt werden.\n' : '') +
+      `Online: ${members.filter(m => m.online).map(m => m.name).join(', ')}\n\n` +
+      'Der Zähler für die Ausschüttung läuft solange nicht weiter.', state, 'high');
+  }
 
   // --- 1) Lager ---
   const lager = f.stock?.total;
@@ -471,7 +515,7 @@ async function durchlauf() {
   sichereZugang(state);
   save(state);
   log('geprüft', { lager: state.lager, personal: state.personal, kasse: state.kasse,
-                   gewinn: state.gewinn, teamOnline: dauer(state.teamOnlineMs),
+                   gewinn: state.gewinn, laeuft, teamOnline: dauer(state.teamOnlineMs),
                    online: members.filter(m => m.online).map(m => m.name) });
 }
 
@@ -490,6 +534,18 @@ if (args.includes('--zeiten')) {
     };
   }
   console.table(rows); process.exit(0);
+}
+
+if (args.includes('--tagesbericht')) {
+  const s = load();
+  const zeilen = Object.entries(s.spieler)
+    .map(([name, p]) => ({ Name: name, Rolle: p.rolle || '',
+                           Heute: dauer(p.gesamtMs || 0),
+                           Status: p.online ? 'online' : 'offline' }))
+    .sort((a, b) => (b.Heute > a.Heute ? 1 : -1));
+  console.log('Spieltag seit 04:00 –', s.tag || 'unbekannt');
+  console.table(zeilen);
+  process.exit(0);
 }
 
 if (args.includes('--ausschuettung')) { console.table(ausschuettungStand(load())); process.exit(0); }

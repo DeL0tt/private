@@ -24,7 +24,9 @@ Server-Variante umziehen.
 | 2 | **Personal (NPCs)** | Änderung der `6/6`-Kachel, z. B. 6/6 → 5/6 |
 | 3a | **Vorfall** | Meldungen-Karte zeigt nicht mehr „Alles ruhig" |
 | 3b | **Ignorierte Steuerprüfung** | Firmenkasse sinkt um ≈ 8 % statt 4 % |
-| 4 | **Ausschüttung** | Gewinn wurde zurückgesetzt / 12 Std. Teamzeit erreicht |
+| 4 | **Ausschüttung** | Buchung im Kassenbuch / 12 Std. Teamzeit erreicht |
+| 5 | **Tagesbericht** | täglich um 04:00: wer war wie lange online |
+| 6 | **Firma pausiert** | obwohl jemand aus dem Team online ist |
 
 Bei **jeder** Meldung hängt der Online-Bericht der Spieler an: wer online war,
 wie lange die laufende Sitzung lief, wie lange am Spieltag insgesamt.
@@ -69,8 +71,29 @@ Eine Ausschüttung wird daran erkannt, dass **„Gewinn seit Ausschüttung" unte
 zur nächsten Ausschüttung:
 
 > **Mehrere gleichzeitig online zählen nur einmal.** Gezählt wird die reine
-> Wandzeit, in der *mindestens ein* Spieler online war — keine Aufsummierung
-> über die Spieler.
+> Wandzeit, in der die Firma tatsächlich lief — also *mindestens ein* Spieler
+> online **und** die Firma nicht pausiert. Keine Aufsummierung über die Spieler.
+
+Läuft beides auseinander — jemand ist online, die Firma steht trotzdem still —
+kommt eine eigene Meldung. Das deutet auf ein Problem hin, etwa unbezahlte
+Löhne, und der Zähler würde sonst stillschweigend nicht weiterlaufen.
+
+### Tagesbericht um 04:00
+Zum Spieltagswechsel kommt eine Übersicht über den abgelaufenen Tag:
+
+```
+📊 Onlinezeiten 16.09.
+Spieltag 16.09.2026 (04:00 bis 04:00)
+
+• LottiMi — 3 Std. 25 Min.
+• halo361 — 48 Min.
+
+Summe aller Spieler: 4 Std. 13 Min.
+Davon Firma gelaufen: 4 Std. 0 Min. von 12 Std. bis zur Ausschüttung
+```
+
+Den Zwischenstand des laufenden Tages gibt es jederzeit mit
+`node watcher.mjs --tagesbericht`. Abschalten mit `UC_TAGESBERICHT=0`.
 
 **Bei jeder vollen Online-Stunde** kommt eine Fortschrittsmeldung:
 
