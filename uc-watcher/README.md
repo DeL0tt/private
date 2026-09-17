@@ -81,6 +81,27 @@ fallen auch stille Korrekturen auf. Jede Zeile enthält den Link zum Artikel
 Der erste Lauf meldet nichts, er legt nur den Ausgangsstand an. Ein Durchlauf
 über alle 110 Artikel dauert rund 4 Sekunden.
 
+### Notion-Abgleich
+Dein Notion spiegelt die 17 Wiki-Kategorien als Unterseiten. Die einzelnen
+Artikel stehen dort **als Abschnitte im Fließtext** der Kategorieseite, nicht
+als eigene Unterseiten — der Abgleich sucht die Artikeltitel deshalb im
+Seitentext, mit Wortgrenzen (`Gärtnerei` wird nicht von `Gärtner` gedeckt).
+
+Gemeldet wird:
+
+- **Fehlt in Notion** — Artikeltitel kommt im Text der Kategorieseite nicht vor
+- **Veraltet** — der Wiki-Artikel wurde nach der Notion-Seite bearbeitet
+- **Kategorie fehlt** — die Kategorie hat gar keine Notion-Seite
+
+Der Abgleich läuft **sofort nach jeder erkannten Wiki-Änderung**, zusätzlich im
+Takt von `UC_NOTION_INTERVALL_STD` (Standard: wöchentlich). Von Hand:
+`node watcher.mjs --notion`.
+
+**Grenze der Veraltet-Erkennung:** Notion führt den Bearbeitungsstand pro
+Seite, nicht pro Abschnitt. Sobald du irgendetwas an einer Kategorieseite
+änderst, gelten alle ihre Artikel wieder als aktuell — auch die, die du nicht
+angefasst hast. Die Meldung ist also ein Hinweis, keine Garantie.
+
 ### Lieferengpass
 Zwei Wege, damit nichts durchrutscht:
 

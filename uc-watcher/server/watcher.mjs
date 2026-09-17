@@ -529,6 +529,10 @@ async function notion(pfad) {
   return res.json();
 }
 
+// Titel vergleichbar machen: Groß/Klein, Mehrfach-Leerzeichen, Bindestrich-Arten
+const schluessel = t => String(t).toLowerCase()
+  .replace(/[–—]/g, '-').replace(/\s+/g, ' ').replace(/[·•]/g, '').trim();
+
 // Unterseiten einer Notion-Seite, mit Bearbeitungszeitpunkt
 async function notionUnterseiten(seiteId) {
   const raus = [];
@@ -546,43 +550,70 @@ async function notionUnterseiten(seiteId) {
   return raus;
 }
 
-// Titel vergleichbar machen: Groß/Klein, Mehrfach-Leerzeichen, Bindestrich-Arten
-const schluessel = t => String(t).toLowerCase()
-  .replace(/[–—]/g, '-').replace(/\s+/g, ' ').replace(/[·•]/g, '').trim();
+// Der gesamte Text einer Notion-Seite. Die Artikel stehen dort als
+// Überschriften innerhalb der Kategorieseite, nicht als Unterseiten –
+// deshalb reicht es nicht, nur die Unterseiten zu betrachten.
+async function notionSeitentext(seiteId, tiefe = 0) {
+  if (tiefe > 2) return '';
+  let text = '';
+  let cursor = null;
+  do {
+    const d = await notion(`/blocks/${mitStrichen(seiteId)}/children?page_size=100` +
+      (cursor ? `&start_cursor=${encodeURIComponent(cursor)}` : ''));
+    for (const b of d.results || []) {
+      const inhalt = b[b.type];
+      if (inhalt && Array.isArray(inhalt.rich_text)) {
+        text += inhalt.rich_text.map(t => t.plain_text || '').join('') + '\n';
+      }
+      if (b.type === 'child_page') text += b.child_page.title + '\n';
+      // Verschachteltes (Toggles, Spalten) mitnehmen
+      if (b.has_children && b.type !== 'child_page') {
+        text += await notionSeitentext(b.id, tiefe + 1);
+      }
+    }
+    cursor = d.has_more ? d.next_cursor : null;
+  } while (cursor);
+  return text;
+}
+
+// Steht der Artikeltitel im Text? Mit Wortgrenzen, damit "Farm" nicht in
+// "Farmer" gefunden wird.
+function titelImText(titel, text) {
+  const t = schluessel(titel);
+  if (!t) return false;
+  const muster = new RegExp(`(^|[^a-z0-9äöüß])${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^a-z0-9äöüß]|$)`);
+  return muster.test(text);
+}
 
 async function vergleicheNotion(state, wikiArtikel) {
   const kategorienNotion = await notionUnterseiten(CFG.NOTION_WIKI);
   const nachName = new Map(kategorienNotion.map(k => [schluessel(k.titel), k]));
 
-  // Wiki nach Kategorie gruppieren
   const wikiNachKat = new Map();
   for (const [id, a] of Object.entries(wikiArtikel)) {
     if (!wikiNachKat.has(a.kategorie)) wikiNachKat.set(a.kategorie, []);
     wikiNachKat.get(a.kategorie).push({ id, ...a });
   }
 
-  const fehlen = [], veraltet = [], ueberzaehlig = [], katFehlen = [];
+  const fehlen = [], veraltet = [], katFehlen = [];
 
   for (const [kategorie, artikel] of wikiNachKat) {
     const nk = nachName.get(schluessel(kategorie));
     if (!nk) { katFehlen.push(kategorie); continue; }
 
-    const seiten = await notionUnterseiten(nk.id);
-    const nachTitel = new Map(seiten.map(x => [schluessel(x.titel), x]));
+    const text = schluessel(await notionSeitentext(nk.id));
+    const standNotion = new Date(nk.bearbeitet);
 
     for (const a of artikel) {
-      const seite = nachTitel.get(schluessel(a.titel));
-      if (!seite) { fehlen.push(a); continue; }
-      // Wiki neuer als die Notion-Seite → dort steht ein alter Stand
-      if (new Date(a.updatedAt) > new Date(seite.bearbeitet)) {
-        veraltet.push({ ...a, notionStand: seite.bearbeitet });
+      if (!titelImText(a.titel, text)) { fehlen.push(a); continue; }
+      // Der Artikel ist dokumentiert – aber ist die Doku noch aktuell?
+      if (new Date(a.updatedAt) > standNotion) {
+        veraltet.push({ ...a, notionStand: nk.bearbeitet });
       }
-      nachTitel.delete(schluessel(a.titel));
     }
-    for (const rest of nachTitel.values()) ueberzaehlig.push({ kategorie, titel: rest.titel });
   }
 
-  return { fehlen, veraltet, ueberzaehlig, katFehlen,
+  return { fehlen, veraltet, ueberzaehlig: [], katFehlen,
            kategorienNotion: kategorienNotion.length };
 }
 
@@ -610,7 +641,7 @@ async function pruefeNotion(state, wikiArtikel, sofort = false) {
 
   state.notionGeprueft = Date.now();
 
-  if (!e.fehlen.length && !e.veraltet.length && !e.ueberzaehlig.length && !e.katFehlen.length) {
+  if (!e.fehlen.length && !e.veraltet.length && !e.katFehlen.length) {
     return log('Notion ist auf dem Stand des Wikis');
   }
 
@@ -622,7 +653,7 @@ async function pruefeNotion(state, wikiArtikel, sofort = false) {
   const teile = [];
   if (e.fehlen.length) teile.push(`${e.fehlen.length} fehlen`);
   if (e.veraltet.length) teile.push(`${e.veraltet.length} veraltet`);
-  if (e.ueberzaehlig.length) teile.push(`${e.ueberzaehlig.length} überzählig`);
+
 
   await push(`notion_${new Date().toISOString().slice(0, 10)}`,
     `📋 Notion-Abgleich: ${teile.join(', ') || 'Unterschiede'}`,
@@ -631,8 +662,8 @@ async function pruefeNotion(state, wikiArtikel, sofort = false) {
       a => `• ${a.kategorie} · ${a.titel}\n  ${wikiLink(a)}`) +
     liste('⏰ Veraltet (Wiki ist neuer)', e.veraltet,
       a => `• ${a.kategorie} · ${a.titel}\n  Wiki ${a.updatedAt.slice(0, 10)}, ` +
-           `Notion ${String(a.notionStand).slice(0, 10)}`) +
-    liste('❓ Nur in Notion', e.ueberzaehlig, x => `• ${x.kategorie} · ${x.titel}`) +
+           `Notion-Seite ${String(a.notionStand).slice(0, 10)}`) +
+
     (e.katFehlen.length ? `\n\n📁 Kategorien fehlen in Notion:\n• ${e.katFehlen.join('\n• ')}` : ''),
     state, 'default');
 }
@@ -983,7 +1014,7 @@ if (args.includes('--notion')) {
     const zeig = (t, l, f) => { console.log(`\n${t}: ${l.length}`); l.slice(0, 40).forEach(x => console.log('   ' + f(x))); };
     zeig('Fehlen in Notion', e.fehlen, a => `${a.kategorie} · ${a.titel}  →  ${wikiLink(a)}`);
     zeig('Veraltet', e.veraltet, a => `${a.kategorie} · ${a.titel}  (Wiki ${a.updatedAt.slice(0,10)}, Notion ${String(a.notionStand).slice(0,10)})`);
-    zeig('Nur in Notion', e.ueberzaehlig, x => `${x.kategorie} · ${x.titel}`);
+
     if (e.katFehlen.length) zeig('Kategorien fehlen', e.katFehlen, k => k);
   } catch (err) {
     console.error(
