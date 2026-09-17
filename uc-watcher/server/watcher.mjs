@@ -720,6 +720,42 @@ if (args.includes('--push-test')) {
   process.exit(0);
 }
 
+// Sucht die Wiki-Endpunkte, die Anmeldung verlangen. Einmalig zum Erkunden.
+if (args.includes('--wiki-probe')) {
+  const s0 = load(); ladeZugang(s0);
+  try { await erneuere(); } catch (e) { console.error('Kein Zugang:', e.message); process.exit(1); }
+
+  const kandidaten = [
+    '/api/wiki', '/api/wiki/pages', '/api/wiki/articles', '/api/wiki/index',
+    '/api/wiki/recent', '/api/wiki/changes', '/api/wiki/updates',
+    '/api/wiki/articles?categoryId=16', '/api/wiki/articles?category=befehlsliste',
+    '/api/wiki/categories/befehlsliste', '/api/wiki/category/16',
+    '/api/wiki/article/arena-108', '/api/wiki/articles/arena-108',
+  ];
+
+  const felder = (o, tiefe = 0) => {
+    if (Array.isArray(o)) return o.length ? `[${o.length}× ${felder(o[0], tiefe + 1)}]` : '[]';
+    if (o && typeof o === 'object') {
+      const k = Object.keys(o);
+      return tiefe > 1 ? `{${k.slice(0, 8).join(', ')}}` :
+        '{' + k.slice(0, 12).map(n => `${n}: ${felder(o[n], tiefe + 1)}`).join(', ') + '}';
+    }
+    return typeof o;
+  };
+
+  for (const pfad of kandidaten) {
+    try {
+      const d = await api(pfad);
+      console.log(`\n✅ ${pfad}`);
+      console.log('   ' + felder(d).slice(0, 600));
+    } catch (e) {
+      console.log(`❌ ${pfad} — ${e.message}`);
+    }
+  }
+  const s1 = load(); sichereZugang(s1); save(s1);
+  process.exit(0);
+}
+
 if (args.includes('--test')) {
   try {
     const s0 = load(); ladeZugang(s0);
