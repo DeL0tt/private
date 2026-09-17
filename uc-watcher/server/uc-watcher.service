@@ -1,8 +1,11 @@
-# Dauerbetrieb per systemd (Raspberry Pi, VPS, Linux-NAS).
+# Dauerbetrieb per systemd.
 #   sudo cp uc-watcher.service /etc/systemd/system/
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now uc-watcher
 #   journalctl -u uc-watcher -f        # Log mitlesen
+#
+# Pfade gelten für ein Ubuntu-Abbild (Benutzer "ubuntu"). Auf einem Raspberry Pi
+# heißt der Benutzer meist "pi" – dann User und die Pfade entsprechend ändern.
 [Unit]
 Description=UnicaCity Unternehmen-Watcher
 After=network-online.target
@@ -10,10 +13,11 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=pi
-WorkingDirectory=/home/pi/uc-watcher/server
-EnvironmentFile=/home/pi/uc-watcher/server/.env
-ExecStart=/usr/bin/node watcher.mjs
+User=ubuntu
+WorkingDirectory=/home/ubuntu/private/uc-watcher/server
+# Node liest die .env selbst – so gelten dieselben Regeln wie beim Testen
+# von Hand, und systemd muss die Anführungszeichen nicht interpretieren.
+ExecStart=/usr/bin/node --env-file=/home/ubuntu/private/uc-watcher/server/.env watcher.mjs
 Restart=always
 RestartSec=30
 
