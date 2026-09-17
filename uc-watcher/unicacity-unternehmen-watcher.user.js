@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         UnicaCity Unternehmen-Watcher
 // @namespace    https://unicacity.eu/
-// @version      4.3.0
+// @version      4.4.0
 // @description  Überwacht Lager, Personal, Kasse und Vorfälle, trackt Online-Zeiten der Spieler und pusht aufs Handy (ntfy.sh).
 // @match        https://unicacity.eu/dashboard/*
 // @grant        GM_xmlhttpRequest
@@ -68,7 +68,7 @@
 
     // ---- Takt ----
     POLL_INTERVAL_MS:   60 * 1000,   // wie oft der Zustand gelesen wird
-    RELOAD_INTERVAL_MS: 5 * 60 * 1000, // wie oft die Seite neu geladen wird
+    RELOAD_INTERVAL_MS: 30 * 60 * 1000, // wie oft die Seite neu geladen wird (0 = nie)
 
     // ---- Selektoren fürs Unternehmen (leer = Auto-Suche über Labels) ----
     SEL: {
@@ -112,12 +112,26 @@
 
   // Anmelde-Aufrufe werden getrennt aufbewahrt, damit sie nicht vom normalen
   // Verkehr verdrängt werden – sie sind selten, aber genau die, die wir suchen.
-  const AUTH_LOG = [];
+  // Beides überlebt das Neuladen der Seite – sonst wäre der Mitschnitt nach
+  // jedem Reload leer und der seltene Tausch-Aufruf ginge verloren.
+  const AUTH_KEY = 'uc_auth_log';
+  const gespeichert = (() => {
+    try { return GM_getValue(AUTH_KEY, { aufrufe: [], wechsel: [] }); }
+    catch (_) { return { aufrufe: [], wechsel: [] }; }
+  })();
+
+  const AUTH_LOG = gespeichert.aufrufe || [];
+  const TOKEN_WECHSEL = gespeichert.wechsel || [];
   const AUTH_MUSTER = /auth|token|refresh|login|session|jwt|renew/i;
 
-  // Beobachtet den Token in localStorage. Wechselt er, halten wir fest, welche
-  // Aufrufe unmittelbar davor liefen – das ist der Tausch-Aufruf.
-  const TOKEN_WECHSEL = [];
+  function sichereAuth() {
+    try {
+      GM_setValue(AUTH_KEY, {
+        aufrufe: AUTH_LOG.slice(-100).map(e => ({ ...e, roh: undefined })),
+        wechsel: TOKEN_WECHSEL.slice(-50),
+      });
+    } catch (_) { /* Speicher voll oder nicht verfügbar */ }
+  }
 
   // base64 selbst dekodieren statt atob: Letzteres verhält sich je nach
   // Umgebung und Aufrufkontext unterschiedlich, und wir brauchen hier
@@ -163,6 +177,7 @@
         neu: jetzt ? jwtZeiten(jetzt) : null,
         davor: API_LOG.slice(-6).map(e => `${e.methode} ${e.status} ${e.url}`),
       });
+      sichereAuth();
       console.log('%c UC-Watcher %c Token wurde ausgetauscht – ucWatcherAuth() zeigt Details.',
         'background:#2dd4bf;color:#000;font-weight:bold;border-radius:3px', 'color:inherit');
       vorher = jetzt;
@@ -215,6 +230,7 @@
     if (AUTH_MUSTER.test(url)) {
       AUTH_LOG.push(eintrag);
       if (AUTH_LOG.length > 100) AUTH_LOG.shift();
+      sichereAuth();
     }
   }
 
@@ -794,6 +810,7 @@
   // Die Online-Kästchen sind nur im gerenderten Dokument farbig, deshalb wird
   // der echte Tab regelmäßig neu geladen statt im Hintergrund zu fetchen.
   function starteReload() {
+    if (!CONFIG.RELOAD_INTERVAL_MS) return;
     setTimeout(() => location.reload(), CONFIG.RELOAD_INTERVAL_MS);
   }
 
@@ -995,6 +1012,11 @@
                                   aufrufe: AUTH_LOG.map(e => ({ ...e, roh: undefined })) }, null, 2);
     try { GM_setClipboard(text); console.log('✅ In die Zwischenablage kopiert.'); } catch (_) {}
     return `${TOKEN_WECHSEL.length} Wechsel, ${AUTH_LOG.length} Anmelde-Aufrufe`;
+  };
+
+  W.ucWatcherAuthReset = function () {
+    AUTH_LOG.length = 0; TOKEN_WECHSEL.length = 0; sichereAuth();
+    console.log('Anmelde-Mitschnitt geleert.');
   };
 
   W.ucWatcherReset = function () { save(leererStand()); console.log('Zustand zurückgesetzt.'); };
