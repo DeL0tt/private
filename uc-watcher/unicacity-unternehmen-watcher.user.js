@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         UnicaCity Unternehmen-Watcher
 // @namespace    https://unicacity.eu/
-// @version      4.2.0
+// @version      4.3.0
 // @description  Überwacht Lager, Personal, Kasse und Vorfälle, trackt Online-Zeiten der Spieler und pusht aufs Handy (ntfy.sh).
 // @match        https://unicacity.eu/dashboard/*
 // @grant        GM_xmlhttpRequest
@@ -110,6 +110,65 @@
   const API_LOG = [];
   const MAX_LOG = 40;
 
+  // Anmelde-Aufrufe werden getrennt aufbewahrt, damit sie nicht vom normalen
+  // Verkehr verdrängt werden – sie sind selten, aber genau die, die wir suchen.
+  const AUTH_LOG = [];
+  const AUTH_MUSTER = /auth|token|refresh|login|session|jwt|renew/i;
+
+  // Beobachtet den Token in localStorage. Wechselt er, halten wir fest, welche
+  // Aufrufe unmittelbar davor liefen – das ist der Tausch-Aufruf.
+  const TOKEN_WECHSEL = [];
+
+  // base64 selbst dekodieren statt atob: Letzteres verhält sich je nach
+  // Umgebung und Aufrufkontext unterschiedlich, und wir brauchen hier
+  // Verlässlichkeit, keine Bequemlichkeit.
+  const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  function base64url(text) {
+    const s = String(text).replace(/-/g, '+').replace(/_/g, '/').replace(/[^A-Za-z0-9+/]/g, '');
+    let bits = 0, wert = 0, aus = '';
+    for (const z of s) {
+      wert = (wert << 6) | B64.indexOf(z);
+      bits += 6;
+      if (bits >= 8) { bits -= 8; aus += String.fromCharCode((wert >> bits) & 0xff); }
+    }
+    return aus;
+  }
+
+  // Nur die Zeitstempel aus dem JWT lesen – niemals den Token selbst ausgeben.
+  function jwtZeiten(t) {
+    try {
+      const p = JSON.parse(base64url(String(t).split('.')[1] || ''));
+      if (!p.iat || !p.exp) return null;
+      return { ausgestellt: new Date(p.iat * 1000).toLocaleTimeString('de-DE'),
+               laeuftAb:   new Date(p.exp * 1000).toLocaleTimeString('de-DE'),
+               gueltigMin: Math.round((p.exp - p.iat) / 60) };
+    } catch (_) { return null; }
+  }
+
+  // Beobachtet den Token in localStorage. Wechselt er, halten wir fest, welche
+  // Aufrufe unmittelbar davor liefen – das ist der Tausch-Aufruf.
+  (function beobachteToken() {
+    let vorher = null;
+    try { vorher = W.localStorage.getItem('token'); }
+    catch (_) { return console.warn('[UC-Watcher] localStorage nicht lesbar'); }
+
+    setInterval(() => {
+      let jetzt = null;
+      try { jetzt = W.localStorage.getItem('token'); } catch (_) { return; }
+      if (jetzt === vorher) return;
+
+      TOKEN_WECHSEL.push({
+        zeit: new Date().toLocaleTimeString('de-DE'),
+        alt: vorher ? jwtZeiten(vorher) : null,
+        neu: jetzt ? jwtZeiten(jetzt) : null,
+        davor: API_LOG.slice(-6).map(e => `${e.methode} ${e.status} ${e.url}`),
+      });
+      console.log('%c UC-Watcher %c Token wurde ausgetauscht – ucWatcherAuth() zeigt Details.',
+        'background:#2dd4bf;color:#000;font-weight:bold;border-radius:3px', 'color:inherit');
+      vorher = jetzt;
+    }, 10_000);
+  })();
+
   const anonym = t => String(t)
     .replace(/([?&](token|auth|key|session)=)[^&#]+/gi, '$1«ENTFERNT»')
     .replace(/\beyJ[\w-]+\.[\w-]+\.[\w-]+/g, '«TOKEN»')
@@ -148,9 +207,15 @@
       inhalt = struktur(daten);
       roh = daten;                      // für die vollständige Ausgabe
     } catch (_) { inhalt = '(kein JSON)'; }
-    API_LOG.push({ zeit: new Date().toLocaleTimeString('de-DE'),
-                   methode, url: anonym(url), status, inhalt, roh });
+    const eintrag = { zeit: new Date().toLocaleTimeString('de-DE'),
+                      methode, url: anonym(url), status, inhalt, roh };
+    API_LOG.push(eintrag);
     if (API_LOG.length > MAX_LOG) API_LOG.shift();
+
+    if (AUTH_MUSTER.test(url)) {
+      AUTH_LOG.push(eintrag);
+      if (AUTH_LOG.length > 100) AUTH_LOG.shift();
+    }
   }
 
   // Tiefe Kopie mit geschwärzten Werten – für vollständige Ausgaben
@@ -907,6 +972,31 @@
     return text.length + ' Zeichen';
   };
 
+  // Zeigt alles rund um die Anmeldung: Token-Laufzeit, Tauschvorgänge und
+  // sämtliche Aufrufe, die nach Anmeldung aussehen.
+  W.ucWatcherAuth = function () {
+    let t = null;
+    try { t = W.localStorage.getItem('token'); } catch (_) {}
+    console.log('Aktueller Token:', t ? jwtZeiten(t) : 'keiner gefunden');
+
+    console.log(`\nToken-Wechsel bisher: ${TOKEN_WECHSEL.length}`);
+    for (const w of TOKEN_WECHSEL) {
+      console.groupCollapsed(`${w.zeit} – neuer Token gültig bis ${w.neu?.laeuftAb || '?'}`);
+      console.log('Aufrufe unmittelbar davor:'); w.davor.forEach(z => console.log('  ' + z));
+      console.groupEnd();
+    }
+
+    console.log(`\nAnmelde-Aufrufe: ${AUTH_LOG.length}`);
+    console.table(AUTH_LOG.map(e => ({ Zeit: e.zeit, Methode: e.methode,
+                                       Status: e.status, Adresse: e.url })));
+
+    const text = JSON.stringify({ token: t ? jwtZeiten(t) : null,
+                                  wechsel: TOKEN_WECHSEL,
+                                  aufrufe: AUTH_LOG.map(e => ({ ...e, roh: undefined })) }, null, 2);
+    try { GM_setClipboard(text); console.log('✅ In die Zwischenablage kopiert.'); } catch (_) {}
+    return `${TOKEN_WECHSEL.length} Wechsel, ${AUTH_LOG.length} Anmelde-Aufrufe`;
+  };
+
   W.ucWatcherReset = function () { save(leererStand()); console.log('Zustand zurückgesetzt.'); };
 
   function starte() {
@@ -932,7 +1022,7 @@
 
   console.log(
     '%c UC-Watcher aktiv %c Befehle: ucWatcherTest() · ucWatcherZeiten() · ' +
-    'ucWatcherAusschuettung() · ucWatcherDump() · ucWatcherPushTest() · ucWatcherHTML() · ucWatcherAusschuettungStart() · ucWatcherAPI() · ucWatcherAPIvoll() · ucWatcherReset()',
+    'ucWatcherAusschuettung() · ucWatcherDump() · ucWatcherPushTest() · ucWatcherHTML() · ucWatcherAusschuettungStart() · ucWatcherAPI() · ucWatcherAPIvoll() · ucWatcherAuth() · ucWatcherReset()',
     'background:#2dd4bf;color:#000;font-weight:bold;border-radius:3px',
     'color:inherit');
 })();
