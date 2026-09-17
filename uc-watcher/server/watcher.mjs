@@ -116,6 +116,12 @@ function dauer(ms) {
 
 const fmt = n => Number(n).toLocaleString('de-DE', { maximumFractionDigits: 2 }) + '$';
 
+// Texte aus dem Spiel enthalten Minecraft-Farbcodes: "§7" und Hex-Farben der
+// Form "§x§F§F§E§1§A§8". Die müssen raus, bevor irgendetwas gelesen oder
+// angezeigt wird – sonst verschmilzt die letzte Ziffer des Codes mit der
+// folgenden Zahl ("§x…§8" + "92x" wird zu "892x").
+const sauber = t => String(t ?? '').replace(/§./gu, '').replace(/\s+/g, ' ').trim();
+
 /* ========================= API & ZUGANG ========================= */
 
 // Zugang lebt im Zustand, damit er Neustarts übersteht.
@@ -379,7 +385,7 @@ async function pruefeAusschuettung(state) {
 // Das Ereignis der Firma lesbar machen, ohne seinen Aufbau zu kennen.
 function ereignisText(ev) {
   if (!ev) return '';
-  if (typeof ev === 'string') return ev;
+  if (typeof ev === 'string') return sauber(ev);
   const zeilen = [];
   for (const [k, v] of Object.entries(ev)) {
     if (v === null || typeof v === 'object') continue;
@@ -387,7 +393,7 @@ function ereignisText(ev) {
     if (/ms$/i.test(k) && typeof v === 'number' && v > 1000) wert = dauer(v);
     else if (/(endsAt|expires|until|bis)/i.test(k) && typeof v === 'number' && v > 1e12)
       wert = new Date(v).toLocaleTimeString('de-DE');
-    zeilen.push(`${k}: ${wert}`);
+    zeilen.push(`${k}: ${typeof wert === 'string' ? sauber(wert) : wert}`);
   }
   return zeilen.join('\n');
 }
@@ -679,7 +685,7 @@ function bewegungImFenster(ledger, vonMs) {
     if (e.stamp < vonMs) continue;
     if (e.amount <= 0) continue;                 // nur Einnahmen betrachten
     einnahmen += e.amount;
-    const treffer = /(\d+)\s*x/i.exec(e.detail || '');
+    const treffer = /(\d+)\s*x/i.exec(sauber(e.detail));
     if (treffer) abgegeben += +treffer[1];
     else unklar = true;                          // Menge nicht ablesbar
   }
@@ -695,7 +701,8 @@ function neueBuchungen(state, ledger) {
 
 async function werteBuchungenAus(state, buchungen) {
   for (const b of buchungen) {
-    const kat = String(b.category || '').toLowerCase();
+    const kat = sauber(b.category).toLowerCase();
+    const detail = sauber(b.detail);
 
     // Ausschüttung: Zähler exakt zurücksetzen
     if (kat.includes('ausschütt') || kat.includes('ausschuett')) {
@@ -705,7 +712,7 @@ async function werteBuchungenAus(state, buchungen) {
       state.faelligGemeldet = false;
       state.lastPush.ausschuettung_faellig = 0;
       await push(`ausschuettung_${b.stamp}`, '💰 Ausschüttung erfolgt',
-        `Betrag: ${fmt(Math.abs(b.amount))}\n${b.detail || ''}\n` +
+        `Betrag: ${fmt(Math.abs(b.amount))}\n${detail}\n` +
         `Zähler läuft neu: 0 von ${CFG.AUSSCHUETTUNG_STD} Std. Team-Onlinezeit.`,
         state, 'default');
       continue;
@@ -714,8 +721,8 @@ async function werteBuchungenAus(state, buchungen) {
     // Eindeutige Vorfälle
     if (VORFALL_KATEGORIEN.some(w => kat.includes(w))) {
       const bericht = onlineBericht(state);
-      await push(`vorfall_${b.stamp}`, `🚨 ${b.category}`,
-        `${b.detail || ''}\nBetrag: ${fmt(b.amount)}\nKassenstand danach: ${fmt(b.balance)}` +
+      await push(`vorfall_${b.stamp}`, `🚨 ${sauber(b.category)}`,
+        `${detail}\nBetrag: ${fmt(b.amount)}\nKassenstand danach: ${fmt(b.balance)}` +
         (bericht.length ? `\n\nOnline zu dem Zeitpunkt:\n${bericht.join('\n')}` : ''),
         state, 'urgent');
       continue;
@@ -724,8 +731,8 @@ async function werteBuchungenAus(state, buchungen) {
     // Unbekannte Kategorie: einmal melden, damit nichts untergeht
     if (!NORMALE_KATEGORIEN.some(w => kat.includes(w))) {
       const bericht = onlineBericht(state);
-      await push(`unbekannt_${kat}`, `❔ Unbekannte Buchung: ${b.category}`,
-        `${b.detail || ''}\nBetrag: ${fmt(b.amount)}\n` +
+      await push(`unbekannt_${kat}`, `❔ Unbekannte Buchung: ${sauber(b.category)}`,
+        `${detail}\nBetrag: ${fmt(b.amount)}\n` +
         `Kassenstand danach: ${fmt(b.balance)}\n` +
         (bericht.length ? `\nOnline zu dem Zeitpunkt:\n${bericht.join('\n')}\n` : '') +
         '\nDiese Kategorie kennt der Watcher noch nicht.', state, 'default');
@@ -777,7 +784,7 @@ async function durchlauf() {
   // Jemand ist da, die Firma steht trotzdem still – das ist einen Hinweis wert.
   if (jemandOnline && f.paused) {
     await push('pausiert_trotz_online', '⚠️ Firma pausiert, obwohl jemand online ist',
-      `Status: ${f.status}\n` +
+      `Status: ${sauber(f.status)}\n` +
       (f.wagesUnpaid ? 'Die Löhne konnten nicht gezahlt werden.\n' : '') +
       `Online: ${members.filter(m => m.online).map(m => m.name).join(', ')}\n\n` +
       'Der Zähler für die Ausschüttung läuft solange nicht weiter.', state, 'high');
@@ -815,8 +822,10 @@ async function durchlauf() {
             `${prozent.toFixed(1)} %)\n` +
             `Erklärbar wären höchstens ${Math.round(erklaerbar)} in ` +
             `${Math.round(minuten)} Min.\n` +
-            `Einnahmen in dieser Zeit: ${fmt(bewegung.einnahmen)} — ` +
-            `ein Großauftrag war es also nicht.\n\n` +
+            (bewegung.einnahmen
+              ? `Verbucht: ${fmt(bewegung.einnahmen)} für ${bewegung.abgegeben} Einheiten – ` +
+                `der Rest bleibt unerklärt.\n\n`
+              : `Keine Einnahme in dieser Zeit – es war also kein Verkauf.\n\n`) +
             (bericht.length
               ? `Online zum Zeitpunkt:\n${bericht.join('\n')}`
               : 'Niemand aus dem Team war online.'),
