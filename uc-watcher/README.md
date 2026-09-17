@@ -199,18 +199,39 @@ automatisch, sobald sie in der Firma sind.
 
 ### 1. Zugang besorgen
 
-Im eingeloggten Chrome auf dem Dashboard: **F12** → **Network** → **F5** →
-den Eintrag **`company`** anklicken → Abschnitt **Request Headers**.
+Die API verlangt einen Token, der **nur 2 Stunden** gültig ist. Erneuert wird er
+über `POST /api/auth/refresh` — und der Aufruf weist sich mit einem **Cookie**
+aus, nicht mit dem alten Token. Das wurde im Browser nachgemessen:
 
-Dort stehen eine oder beide Zeilen:
+| Ausweis | Ergebnis |
+|---|---|
+| nur Token (`Authorization`) | ❌ HTTP 401 |
+| nur Cookie | ✅ HTTP 200, liefert neuen Token |
 
-- **`cookie: ...`** → den kompletten Wert nach `UC_COOKIE` kopieren.
-  Der bevorzugte Weg: Sitzungs-Cookies halten meist Wochen.
-- **`authorization: Bearer eyJ...`** → den Teil nach `Bearer ` nach `UC_TOKEN`.
-  **Achtung:** Dieser Token läuft nach **2 Stunden** ab.
+Der Watcher braucht also **das Cookie** — den Token holt er sich selbst, immer
+5 Minuten vor Ablauf und zusätzlich bei jedem abgewiesenen Aufruf. Erneuert der
+Server dabei auch das Cookie, übernimmt er das automatisch.
 
-> Beide Werte sind so wertvoll wie dein Passwort. Sie gehören in die `.env`
-> (steht in `.gitignore`) — nicht in einen Commit und nicht in einen Chat.
+**So kommst du an das Cookie:** Im eingeloggten Chrome auf dem Dashboard
+**F12** → **Application** → links **Cookies** → **https://api.unicacity.eu**.
+
+Dort stehen ein oder mehrere Einträge. Schreib sie als eine Zeile zusammen,
+Name und Wert mit `=`, mehrere durch `; ` getrennt:
+
+```
+UC_COOKIE="refreshToken=abc123...; sid=xyz789..."
+```
+
+Alternativ über **Network** → einen Aufruf an `api.unicacity.eu` anklicken →
+**Request Headers** → die Zeile `cookie:` kopieren.
+
+> Dieses Cookie ist dein Zugang. Es gehört in die `.env` (steht in
+> `.gitignore`) — nicht in einen Commit und nicht in einen Chat. Die
+> Zustandsdatei enthält es später ebenfalls und wird deshalb nur für dich
+> lesbar angelegt (`0600`).
+
+Wie lange es hält, hängt vom Server ab — üblicherweise Wochen. Läuft es ab,
+kommt ein Push „Zugang abgelaufen", und du hinterlegst ein neues.
 
 ### 2. Einrichten
 

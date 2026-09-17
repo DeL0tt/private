@@ -12,9 +12,13 @@ const CFG = {
   API:        process.env.UC_API || 'https://api.unicacity.eu',
   DASHBOARD:  'https://unicacity.eu/dashboard/unternehmen',
 
-  // Zugang: mindestens eines von beiden muss gesetzt sein.
-  COOKIE: process.env.UC_COOKIE || '',   // komplette cookie-Zeile aus dem Browser
-  TOKEN:  process.env.UC_TOKEN  || '',   // JWT, wird als "Authorization: Bearer" gesendet
+  // Der Zugang läuft über ein Cookie von api.unicacity.eu. Damit holt sich der
+  // Watcher bei /api/auth/refresh fortlaufend frische Token (die halten 2 Std.).
+  COOKIE: process.env.UC_COOKIE || '',
+  TOKEN:  process.env.UC_TOKEN  || '',   // optionaler Starttoken, sonst per refresh
+
+  // So lange vor Ablauf wird vorsorglich erneuert
+  TOKEN_PUFFER_MIN: +(process.env.UC_TOKEN_PUFFER_MIN || 5),
 
   USER_AGENT: process.env.UC_USER_AGENT ||
     'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36',
@@ -55,6 +59,7 @@ const info = (...a) => console.log(new Date().toISOString(), ...a);
 /* ========================= ZUSTAND ========================= */
 
 const leer = () => ({
+  token: null, tokenExp: 0, cookie: null,   // Zugang, überlebt Neustarts
   lager: null, personal: null, kasse: null, gewinn: null,
   spieler: {},            // name -> { online, seit, sitzungMs, gesamtMs, zuletzt, tag }
   teamOnlineMs: 0, gemeldeteStunde: 0, faelligGemeldet: false,
@@ -69,7 +74,8 @@ function load() {
 }
 function save(s) {
   const tmp = CFG.STATE_FILE + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(s, null, 2));
+  // 0600: Die Datei enthält Cookie und Token – niemand sonst darf sie lesen.
+  fs.writeFileSync(tmp, JSON.stringify(s, null, 2), { mode: 0o600 });
   fs.renameSync(tmp, CFG.STATE_FILE);        // atomar – übersteht Stromausfall
 }
 
@@ -87,18 +93,96 @@ function dauer(ms) {
 
 const fmt = n => Number(n).toLocaleString('de-DE', { maximumFractionDigits: 2 }) + '$';
 
-/* ========================= API ========================= */
+/* ========================= API & ZUGANG ========================= */
 
-async function api(pfad) {
-  const kopf = {
-    'User-Agent': CFG.USER_AGENT,
-    'Accept': 'application/json',
-    'Accept-Language': 'de-DE,de;q=0.9',
-  };
-  if (CFG.COOKIE) kopf.Cookie = CFG.COOKIE;
-  if (CFG.TOKEN)  kopf.Authorization = 'Bearer ' + CFG.TOKEN;
+// Zugang lebt im Zustand, damit er Neustarts übersteht.
+const zugang = { token: null, exp: 0, cookie: null };
 
-  const res = await fetch(CFG.API + pfad, { headers: kopf, redirect: 'follow' });
+function ladeZugang(state) {
+  zugang.token  = state.token  || CFG.TOKEN || null;
+  zugang.exp    = state.tokenExp || 0;
+  zugang.cookie = state.cookie || CFG.COOKIE || null;
+}
+function sichereZugang(state) {
+  state.token = zugang.token; state.tokenExp = zugang.exp; state.cookie = zugang.cookie;
+}
+
+// Ablaufzeitpunkt aus dem JWT lesen (nur exp, sonst nichts).
+function tokenAblauf(t) {
+  try {
+    const teil = String(t).split('.')[1];
+    const p = JSON.parse(Buffer.from(teil, 'base64url').toString('utf8'));
+    return p.exp ? p.exp * 1000 : 0;
+  } catch { return 0; }
+}
+
+const tokenFrisch = () =>
+  zugang.token && zugang.exp - Date.now() > CFG.TOKEN_PUFFER_MIN * 60_000;
+
+// Holt einen neuen Token. Ausgewiesen wird sich mit dem Cookie – der Token
+// allein reicht nicht, das wurde im Browser nachgemessen.
+async function erneuere() {
+  if (!zugang.cookie) throw new Error('KEIN_COOKIE');
+
+  const res = await fetch(CFG.API + '/api/auth/refresh', {
+    method: 'POST',
+    headers: {
+      Cookie: zugang.cookie,
+      'User-Agent': CFG.USER_AGENT,
+      'Accept': 'application/json',
+      'Origin': 'https://unicacity.eu',
+      'Referer': 'https://unicacity.eu/',
+    },
+  });
+  if (!res.ok) throw new Error('REFRESH ' + res.status);
+
+  const daten = await res.json();
+  const neu = daten.token || daten.accessToken || daten.data?.token;
+  if (!neu) throw new Error('REFRESH_OHNE_TOKEN');
+
+  // Manche Server erneuern dabei auch das Cookie – dann übernehmen wir es,
+  // sonst verfällt der Zugang beim nächsten Mal.
+  const gesetzt = typeof res.headers.getSetCookie === 'function' ? res.headers.getSetCookie() : [];
+  if (gesetzt.length) {
+    const paare = new Map();
+    for (const teil of String(zugang.cookie).split(';')) {
+      const [k, ...rest] = teil.trim().split('=');
+      if (k) paare.set(k, rest.join('='));
+    }
+    for (const z of gesetzt) {
+      const [k, ...rest] = z.split(';')[0].split('=');
+      if (k) paare.set(k.trim(), rest.join('='));
+    }
+    zugang.cookie = [...paare].map(([k, v]) => `${k}=${v}`).join('; ');
+    log('Cookie wurde erneuert');
+  }
+
+  zugang.token = neu;
+  zugang.exp = tokenAblauf(neu);
+  info(`Token erneuert, gültig bis ${new Date(zugang.exp).toLocaleTimeString('de-DE')}`);
+  return neu;
+}
+
+async function api(pfad, zweiterVersuch = false) {
+  if (!tokenFrisch()) await erneuere();
+
+  const res = await fetch(CFG.API + pfad, {
+    headers: {
+      Authorization: 'Bearer ' + zugang.token,
+      Cookie: zugang.cookie || '',
+      'User-Agent': CFG.USER_AGENT,
+      'Accept': 'application/json',
+      'Accept-Language': 'de-DE,de;q=0.9',
+      'Origin': 'https://unicacity.eu',
+      'Referer': 'https://unicacity.eu/',
+    },
+  });
+
+  if ((res.status === 401 || res.status === 403) && !zweiterVersuch) {
+    log('Abgewiesen – Token wird erneuert und noch einmal versucht');
+    zugang.exp = 0;
+    return api(pfad, true);
+  }
   if (res.status === 401 || res.status === 403) throw new Error('AUTH');
   if (!res.ok) throw new Error('HTTP ' + res.status);
   return res.json();
@@ -282,15 +366,18 @@ async function werteBuchungenAus(state, buchungen) {
 
 async function durchlauf() {
   const state = load();
+  ladeZugang(state);
   let daten;
 
   try {
     daten = await holeFirma();
   } catch (e) {
-    if (e.message === 'AUTH') {
+    if (e.message === 'AUTH' || e.message === 'KEIN_COOKIE' || e.message.startsWith('REFRESH')) {
       await push('auth', '🔑 UnicaCity: Zugang abgelaufen',
-        'Der Watcher kommt nicht mehr an die API. Bitte UC_COOKIE bzw. UC_TOKEN erneuern.',
-        state, 'urgent');
+        'Der Watcher kommt nicht mehr an die API – das Cookie ist vermutlich abgelaufen.\n' +
+        'Neues Cookie aus dem Browser holen und in die .env eintragen, dann:\n' +
+        'sudo systemctl restart uc-watcher', state, 'urgent');
+      sichereZugang(state);
       save(state);
     } else log('Abruf fehlgeschlagen:', e.message);
     return;
@@ -381,6 +468,7 @@ async function durchlauf() {
   // --- 6) Ausschüttung ---
   await pruefeAusschuettung(state);
 
+  sichereZugang(state);
   save(state);
   log('geprüft', { lager: state.lager, personal: state.personal, kasse: state.kasse,
                    gewinn: state.gewinn, teamOnline: dauer(state.teamOnlineMs),
@@ -414,9 +502,13 @@ if (args.includes('--ausschuettung-start')) {
   process.exit(0);
 }
 
-if (!CFG.COOKIE && !CFG.TOKEN) {
-  console.error('FEHLER: Weder UC_COOKIE noch UC_TOKEN gesetzt. Siehe README.');
-  process.exit(1);
+{
+  const s = load(); ladeZugang(s);
+  if (!zugang.cookie) {
+    console.error('FEHLER: UC_COOKIE ist nicht gesetzt – ohne Cookie kann sich der');
+    console.error('Watcher keine Token holen. Siehe README, Abschnitt "Zugang besorgen".');
+    process.exit(1);
+  }
 }
 
 if (args.includes('--push-test')) {
@@ -428,6 +520,9 @@ if (args.includes('--push-test')) {
 
 if (args.includes('--test')) {
   try {
+    const s0 = load(); ladeZugang(s0);
+    await erneuere();
+    console.log('Token gültig bis:', new Date(zugang.exp).toLocaleString('de-DE'));
     const d = await holeFirma(); const f = d.company;
     console.log('Firma:      ', f.name, '· Level', f.level, '·', f.status);
     console.log('Lager:      ', f.stock.total, '/', f.stock.capacity);
@@ -438,11 +533,14 @@ if (args.includes('--test')) {
     console.table(f.members.map(m => ({ Name: m.name, Rolle: m.roleName, Online: m.online ? '🟢' : '⚪' })));
     const l = await holeLedger(f.id);
     console.log('Kategorien: ', (l.summary?.categories || []).map(c => c.category).join(', '));
-    console.log('\n✅ Zugang funktioniert.');
+    const s1 = load(); sichereZugang(s1); save(s1);
+    console.log('\n✅ Zugang funktioniert und wurde gespeichert.');
   } catch (e) {
-    console.error(e.message === 'AUTH'
-      ? '❌ Zugang abgelehnt (401/403) – UC_COOKIE bzw. UC_TOKEN prüfen.'
-      : '❌ Fehler: ' + e.message);
+    console.error(
+      e.message === 'KEIN_COOKIE' ? '❌ UC_COOKIE ist leer.' :
+      e.message.startsWith('REFRESH') ? `❌ Erneuerung abgelehnt (${e.message}) – Cookie abgelaufen?` :
+      e.message === 'AUTH' ? '❌ Zugang abgelehnt (401/403).' :
+      '❌ Fehler: ' + e.message);
     process.exit(1);
   }
   process.exit(0);
