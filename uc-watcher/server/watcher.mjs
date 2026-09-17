@@ -33,6 +33,10 @@ const CFG = {
 
   // Sprung der Einkaufspreise, ab dem ein Lieferengpass vermutet wird
   PREIS_SPRUNG_PCT: +(process.env.UC_PREIS_SPRUNG_PCT || 20),
+
+  // --- Wiki ---
+  WIKI: process.env.UC_WIKI !== '0',
+  WIKI_INTERVALL_STD: +(process.env.UC_WIKI_INTERVALL_STD || 24),
   ERINNERUNG_MIN: +(process.env.UC_ERINNERUNG_MIN || 60),
 
   AUSSCHUETTUNG_STD:            +(process.env.UC_AUSSCHUETTUNG_STD || 12),
@@ -72,6 +76,8 @@ const leer = () => ({
   tag: null,                 // laufender Spieltag (wechselt um 04:00)
   teamOnlineMs: 0, gemeldeteStunde: 0, faelligGemeldet: false,
   letzteAusschuettung: null, letzterTick: null,
+  wiki: null,              // { id: {titel, kategorie, updatedAt, laenge} }
+  wikiGeprueft: 0,
   preise: null,            // letzte Einkaufspreise je Ware
   letzterLagerTick: 0,
   letzterLedgerStamp: 0,  // bis hierhin wurde das Kassenbuch verarbeitet
@@ -392,6 +398,92 @@ function preisAenderung(alt, neu) {
   return werte.reduce((a, b) => a + b, 0) / werte.length;
 }
 
+/* ========================= WIKI ========================= */
+
+// Kategorien und Artikel sind öffentlich – hier braucht es keinen Zugang.
+async function holeWiki() {
+  const res = await fetch(CFG.API + '/api/wiki/categories',
+    { headers: { 'User-Agent': CFG.USER_AGENT, Accept: 'application/json' } });
+  if (!res.ok) throw new Error('WIKI ' + res.status);
+  const { categories = [] } = await res.json();
+
+  const artikel = {};
+  for (const k of categories) {
+    const r = await fetch(`${CFG.API}/api/wiki/categories/${k.slug}/articles`,
+      { headers: { 'User-Agent': CFG.USER_AGENT, Accept: 'application/json' } });
+    if (!r.ok) { log('Wiki-Kategorie nicht lesbar:', k.slug, r.status); continue; }
+    const { articles = [] } = await r.json();
+    for (const a of articles) {
+      artikel[a.id] = {
+        titel: a.title,
+        kategorie: k.name,
+        slug: k.slug,
+        updatedAt: a.updatedAt,
+        laenge: (a.content || '').length,
+      };
+    }
+  }
+  return artikel;
+}
+
+const wikiLink = a => `https://unicacity.eu/wiki/${a.slug}/${a.id ?? ''}`;
+
+async function pruefeWiki(state) {
+  if (!CFG.WIKI) return;
+  const faellig = Date.now() - (state.wikiGeprueft || 0) >= CFG.WIKI_INTERVALL_STD * 3_600_000;
+  if (!faellig) return;
+
+  let jetzt;
+  try { jetzt = await holeWiki(); }
+  catch (e) { return log('Wiki nicht abrufbar:', e.message); }
+
+  const anzahl = Object.keys(jetzt).length;
+  if (!anzahl) return log('Wiki lieferte keine Artikel – Prüfung übersprungen');
+
+  state.wikiGeprueft = Date.now();
+  const vorher = state.wiki;
+  state.wiki = jetzt;
+
+  if (!vorher) {                       // erster Lauf: nur Stand merken
+    info(`Wiki-Ausgangsstand gespeichert: ${anzahl} Artikel`);
+    return;
+  }
+
+  const neu = [], geaendert = [], entfernt = [];
+  for (const [id, a] of Object.entries(jetzt)) {
+    const v = vorher[id];
+    if (!v) neu.push({ id, ...a });
+    else if (v.updatedAt !== a.updatedAt || v.laenge !== a.laenge)
+      geaendert.push({ id, ...a, vorherLaenge: v.laenge });
+  }
+  for (const [id, v] of Object.entries(vorher)) if (!jetzt[id]) entfernt.push({ id, ...v });
+
+  if (!neu.length && !geaendert.length && !entfernt.length) {
+    return log(`Wiki unverändert (${anzahl} Artikel)`);
+  }
+
+  const teile = [];
+  if (neu.length) teile.push(`${neu.length} neu`);
+  if (geaendert.length) teile.push(`${geaendert.length} geändert`);
+  if (entfernt.length) teile.push(`${entfernt.length} entfernt`);
+
+  const block = (titel, liste, mitDelta) => !liste.length ? '' :
+    `\n\n${titel}\n` + liste.slice(0, 15).map(a => {
+      // "(0 Zeichen)" wäre irreführend – dann wurde nur der Zeitstempel berührt
+      const delta = mitDelta && a.vorherLaenge !== undefined && a.laenge !== a.vorherLaenge
+        ? ` (${a.laenge > a.vorherLaenge ? '+' : ''}${a.laenge - a.vorherLaenge} Zeichen)` : '';
+      return `• ${a.kategorie} · ${a.titel}${delta}\n  ${wikiLink(a)}`;
+    }).join('\n') + (liste.length > 15 ? `\n… und ${liste.length - 15} weitere` : '');
+
+  await push(`wiki_${new Date().toISOString().slice(0, 10)}`,
+    `📚 Wiki: ${teile.join(', ')}`,
+    `Stand: ${anzahl} Artikel in ${new Set(Object.values(jetzt).map(a => a.kategorie)).size} Kategorien` +
+    block('🆕 Neu', neu) +
+    block('✏️ Geändert', geaendert, true) +
+    block('🗑️ Entfernt', entfernt),
+    state, 'default');
+}
+
 /* ========================= KASSENBUCH ========================= */
 
 // Was sagt das Kassenbuch über ein Zeitfenster? Verkäufe und Großaufträge
@@ -657,6 +749,9 @@ async function durchlauf() {
 
   // --- 6) Ausschüttung ---
   await pruefeAusschuettung(state);
+
+  // --- 7) Wiki (höchstens einmal je Intervall) ---
+  await pruefeWiki(state);
 
   sichereZugang(state);
   save(state);

@@ -29,6 +29,7 @@ Server-Variante umziehen.
 | 5 | **Tagesbericht** | täglich um 04:00: wer war wie lange online |
 | 6 | **Firma pausiert** | obwohl jemand aus dem Team online ist |
 | 7 | **Lieferengpass** | Ereignis der Firma oder Sprung der Einkaufspreise |
+| 8 | **Wiki** | täglich: neue, geänderte und entfernte Artikel |
 
 Bei **jeder** Meldung hängt der Online-Bericht der Spieler an: wer online war,
 wie lange die laufende Sitzung lief, wie lange am Spieltag insgesamt.
@@ -63,6 +64,22 @@ Zwei bewusste Zurückhaltungen, damit keine Fehlalarme entstehen:
   Watcher lieber, als einen Großauftrag als Einbruch zu melden. Ein Einbruch
   exakt im selben Moment würde dann übersehen — das ist der Preis dafür, dass
   du nicht ständig grundlos aufgeschreckt wirst.
+
+### Wiki-Überwachung
+Einmal am Tag (`UC_WIKI_INTERVALL_STD`) werden alle Artikel abgerufen und mit
+dem letzten Stand verglichen. Die Wiki-API ist **öffentlich**, dafür braucht es
+also keinen Zugang:
+
+- `GET /api/wiki/categories` — die 17 Kategorien
+- `GET /api/wiki/categories/<slug>/articles` — Artikel samt Inhalt und `updatedAt`
+
+Erkannt werden neue, geänderte und entfernte Artikel. Als geändert gilt ein
+Artikel, wenn sich `updatedAt` **oder** die Inhaltslänge unterscheidet — so
+fallen auch stille Korrekturen auf. Jede Zeile enthält den Link zum Artikel
+(`https://unicacity.eu/wiki/<kategorie>/<id>`).
+
+Der erste Lauf meldet nichts, er legt nur den Ausgangsstand an. Ein Durchlauf
+über alle 110 Artikel dauert rund 4 Sekunden.
 
 ### Lieferengpass
 Zwei Wege, damit nichts durchrutscht:
