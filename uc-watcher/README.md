@@ -20,7 +20,8 @@ Server-Variante umziehen.
 
 | # | Regel | Auslöser |
 |---|---|---|
-| 1 | **Lagerbestand** | fällt unter 500 (von aktuell `1284 / 1500`) |
+| 1 | **Lagerbestand** | fällt unter 500 |
+| 1b | **Lagerverlust** | plötzlicher Einbruch, den der Absatz nicht erklärt |
 | 2 | **Personal (NPCs)** | Änderung der `6/6`-Kachel, z. B. 6/6 → 5/6 |
 | 3a | **Vorfall** | Meldungen-Karte zeigt nicht mehr „Alles ruhig" |
 | 3b | **Ignorierte Steuerprüfung** | Firmenkasse sinkt um ≈ 8 % statt 4 % |
@@ -38,6 +39,17 @@ Zwei verschiedene Dinge auf der Seite, das Skript hält sie auseinander:
   werden können. **Das ist Regel 2.**
 - **TEAM-Leiste** (`TEAM · 5 / 8`) → die **Spieler**. Daraus wird nur der
   Online-Status gelesen, sie löst keinen Personal-Alarm aus.
+
+### Wer war dabei?
+Bei **jedem** Vorfall steht in der Meldung, wer aus dem Team zu dem Zeitpunkt
+online war — bei Abwerbung, Einbruch, Steuerprüfung, unbekannten Buchungen und
+Meldungen der Firma.
+
+Ein plötzlicher Lagerverlust wird erkannt, indem der Rückgang gegen den
+normalen Absatz gerechnet wird: `salesPerMinute` mal verstrichene Minuten, mit
+Aufschlag. Was darüber hinausgeht und mindestens 15 % des Bestands ausmacht,
+gilt als Vorfall. Lief der Watcher zwischendurch nicht, wird nicht geprüft —
+sonst wäre jede Ausfallzeit ein Fehlalarm.
 
 ### Abwerbung zuordnen
 Sinkt die Personal-Kachel, meldet das Skript, wer zu dem Zeitpunkt online war —

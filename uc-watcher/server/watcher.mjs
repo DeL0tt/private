@@ -27,6 +27,9 @@ const CFG = {
   NTFY_SERVER: process.env.UC_NTFY_SERVER || 'https://ntfy.sh',
 
   LAGER_SCHWELLE: +(process.env.UC_LAGER_SCHWELLE || 500),
+  // Plötzlicher Lagerverlust: ab wie viel Prozent des Bestands gilt ein
+  // Rückgang als Vorfall, wenn er nicht durch den normalen Absatz erklärbar ist
+  LAGER_EINBRUCH_PCT: +(process.env.UC_LAGER_EINBRUCH_PCT || 15),
   ERINNERUNG_MIN: +(process.env.UC_ERINNERUNG_MIN || 60),
 
   AUSSCHUETTUNG_STD:            +(process.env.UC_AUSSCHUETTUNG_STD || 12),
@@ -66,6 +69,7 @@ const leer = () => ({
   tag: null,                 // laufender Spieltag (wechselt um 04:00)
   teamOnlineMs: 0, gemeldeteStunde: 0, faelligGemeldet: false,
   letzteAusschuettung: null, letzterTick: null,
+  letzterLagerTick: 0,
   letzterLedgerStamp: 0,  // bis hierhin wurde das Kassenbuch verarbeitet
   lastPush: {},
 });
@@ -384,9 +388,12 @@ async function werteBuchungenAus(state, buchungen) {
 
     // Unbekannte Kategorie: einmal melden, damit nichts untergeht
     if (!NORMALE_KATEGORIEN.some(w => kat.includes(w))) {
+      const bericht = onlineBericht(state);
       await push(`unbekannt_${kat}`, `❔ Unbekannte Buchung: ${b.category}`,
-        `${b.detail || ''}\nBetrag: ${fmt(b.amount)}\n\n` +
-        'Diese Kategorie kennt der Watcher noch nicht.', state, 'default');
+        `${b.detail || ''}\nBetrag: ${fmt(b.amount)}\n` +
+        `Kassenstand danach: ${fmt(b.balance)}\n` +
+        (bericht.length ? `\nOnline zu dem Zeitpunkt:\n${bericht.join('\n')}\n` : '') +
+        '\nDiese Kategorie kennt der Watcher noch nicht.', state, 'default');
     }
   }
 
@@ -438,6 +445,33 @@ async function durchlauf() {
   // --- 1) Lager ---
   const lager = f.stock?.total;
   if (typeof lager === 'number') {
+    // Plötzlicher Einbruch: Ein Rückgang, den der normale Absatz nicht erklärt,
+    // ist ein Vorfall – etwa ein Einbruch. Nur prüfen, wenn der Watcher
+    // durchgehend lief, sonst wäre jede Ausfallzeit ein Fehlalarm.
+    const jetzt = Date.now();
+    const seitLetzter = state.letzterLagerTick ? jetzt - state.letzterLagerTick : 0;
+    if (state.lager !== null && seitLetzter > 0 && seitLetzter <= CFG.LUECKE_MIN * MIN) {
+      const verlust = state.lager - lager;
+      const minuten = seitLetzter / MIN;
+      // Großzügig gerechnet: anderthalbfacher Absatz plus etwas Spielraum
+      const erklaerbar = (f.stock.salesPerMinute || 0) * minuten * 1.5 + 5;
+      const prozent = state.lager > 0 ? (verlust / state.lager) * 100 : 0;
+
+      if (verlust > erklaerbar && prozent >= CFG.LAGER_EINBRUCH_PCT) {
+        const bericht = onlineBericht(state);
+        await push(`lagerverlust_${jetzt}`, '🚨 Plötzlicher Lagerverlust',
+          `Lager: ${state.lager} → ${lager} (${verlust} Einheiten, ` +
+          `${prozent.toFixed(1)} %)\n` +
+          `Durch den Absatz erklärbar wären höchstens ${Math.round(erklaerbar)} ` +
+          `in ${Math.round(minuten)} Min.\n\n` +
+          (bericht.length
+            ? `Online zum Zeitpunkt:\n${bericht.join('\n')}`
+            : 'Niemand aus dem Team war online.'),
+          state, 'urgent');
+      }
+    }
+    state.letzterLagerTick = jetzt;
+
     if (lager < CFG.LAGER_SCHWELLE) {
       await push('lager', '⚠️ Lagerbestand niedrig',
         `Lager: ${lager} / ${f.stock.capacity} (Schwelle ${CFG.LAGER_SCHWELLE})\n` +
