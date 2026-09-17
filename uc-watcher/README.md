@@ -28,6 +28,7 @@ Server-Variante umziehen.
 | 4 | **Ausschüttung** | Buchung im Kassenbuch / 12 Std. Teamzeit erreicht |
 | 5 | **Tagesbericht** | täglich um 04:00: wer war wie lange online |
 | 6 | **Firma pausiert** | obwohl jemand aus dem Team online ist |
+| 7 | **Lieferengpass** | Ereignis der Firma oder Sprung der Einkaufspreise |
 
 Bei **jeder** Meldung hängt der Online-Bericht der Spieler an: wer online war,
 wie lange die laufende Sitzung lief, wie lange am Spieltag insgesamt.
@@ -62,6 +63,32 @@ Zwei bewusste Zurückhaltungen, damit keine Fehlalarme entstehen:
   Watcher lieber, als einen Großauftrag als Einbruch zu melden. Ein Einbruch
   exakt im selben Moment würde dann übersehen — das ist der Preis dafür, dass
   du nicht ständig grundlos aufgeschreckt wirst.
+
+### Lieferengpass
+Zwei Wege, damit nichts durchrutscht:
+
+1. **`company.event`** — meldet die Firma den Vorfall selbst, wird alles
+   ausgegeben, was darin steht (Art, Restdauer, Aufschlag).
+2. **Einkaufspreise** — steigt `deskUnitPrice` im Schnitt über alle Waren um
+   mindestens 20 %, wird ein Engpass vermutet. Das greift auch dann, wenn die
+   Firma kein Ereignis meldet.
+
+Nennt die Firma das Ereignis, entfällt die Preismeldung — sonst käme dieselbe
+Sache zweimal. Beide Meldungen nennen den Stand der **Expresslieferung**
+(freie Plätze, Aufschlag, Sperrzeit), damit du direkt entscheiden kannst.
+
+```
+🚨 Vorfall im Unternehmen
+type: LIEFERENGPASS
+minutesLeft: 25
+purchaseSurcharge: 0.35
+endsAt: 14:59
+
+Expresslieferung: 4 von 4 Plätzen frei, Aufschlag 35 %
+
+Online zum Zeitpunkt:
+• LottiMi — online, Sitzung 2 Std. 14 Min., heute 3 Std. 40 Min.
+```
 
 ### Abwerbung zuordnen
 Sinkt die Personal-Kachel, meldet das Skript, wer zu dem Zeitpunkt online war —

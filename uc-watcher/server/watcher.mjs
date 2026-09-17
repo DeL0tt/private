@@ -30,6 +30,9 @@ const CFG = {
   // Plötzlicher Lagerverlust: ab wie viel Prozent des Bestands gilt ein
   // Rückgang als Vorfall, wenn er nicht durch den normalen Absatz erklärbar ist
   LAGER_EINBRUCH_PCT: +(process.env.UC_LAGER_EINBRUCH_PCT || 15),
+
+  // Sprung der Einkaufspreise, ab dem ein Lieferengpass vermutet wird
+  PREIS_SPRUNG_PCT: +(process.env.UC_PREIS_SPRUNG_PCT || 20),
   ERINNERUNG_MIN: +(process.env.UC_ERINNERUNG_MIN || 60),
 
   AUSSCHUETTUNG_STD:            +(process.env.UC_AUSSCHUETTUNG_STD || 12),
@@ -69,6 +72,7 @@ const leer = () => ({
   tag: null,                 // laufender Spieltag (wechselt um 04:00)
   teamOnlineMs: 0, gemeldeteStunde: 0, faelligGemeldet: false,
   letzteAusschuettung: null, letzterTick: null,
+  preise: null,            // letzte Einkaufspreise je Ware
   letzterLagerTick: 0,
   letzterLedgerStamp: 0,  // bis hierhin wurde das Kassenbuch verarbeitet
   lastPush: {},
@@ -349,6 +353,45 @@ async function pruefeAusschuettung(state) {
   }
 }
 
+/* ========================= VORFÄLLE ========================= */
+
+// Das Ereignis der Firma lesbar machen, ohne seinen Aufbau zu kennen.
+function ereignisText(ev) {
+  if (!ev) return '';
+  if (typeof ev === 'string') return ev;
+  const zeilen = [];
+  for (const [k, v] of Object.entries(ev)) {
+    if (v === null || typeof v === 'object') continue;
+    let wert = v;
+    if (/ms$/i.test(k) && typeof v === 'number' && v > 1000) wert = dauer(v);
+    else if (/(endsAt|expires|until|bis)/i.test(k) && typeof v === 'number' && v > 1e12)
+      wert = new Date(v).toLocaleTimeString('de-DE');
+    zeilen.push(`${k}: ${wert}`);
+  }
+  return zeilen.join('\n');
+}
+
+// Was kostet der Einkauf gerade, im Schnitt über alle Waren?
+function einkaufsschnitt(wares) {
+  const preise = {};
+  for (const w of wares || []) {
+    if (w.key && typeof w.deskUnitPrice === 'number') preise[w.key] = w.deskUnitPrice;
+  }
+  return preise;
+}
+
+// Mittlere Preisänderung gegenüber dem letzten Durchlauf, in Prozent.
+function preisAenderung(alt, neu) {
+  if (!alt) return null;
+  const werte = [];
+  for (const [k, p] of Object.entries(neu)) {
+    const v = alt[k];
+    if (typeof v === 'number' && v > 0) werte.push((p - v) / v * 100);
+  }
+  if (!werte.length) return null;
+  return werte.reduce((a, b) => a + b, 0) / werte.length;
+}
+
 /* ========================= KASSENBUCH ========================= */
 
 // Was sagt das Kassenbuch über ein Zeitfenster? Verkäufe und Großaufträge
@@ -555,9 +598,43 @@ async function durchlauf() {
   }
   if (f.event) {
     const bericht = onlineBericht(state);
-    await push('event_' + JSON.stringify(f.event).slice(0, 30), '🚨 Vorfall im Unternehmen',
-      typeof f.event === 'string' ? f.event : JSON.stringify(f.event, null, 2) +
-      (bericht.length ? `\n\nOnline:\n${bericht.join('\n')}` : ''), state, 'urgent');
+    const ex = f.express || {};
+    await push('event_' + JSON.stringify(f.event).slice(0, 40), '🚨 Vorfall im Unternehmen',
+      ereignisText(f.event) +
+      (ex.maxSlots
+        ? `\n\nExpresslieferung: ${ex.freeSlots ?? '?'} von ${ex.maxSlots} Plätzen frei` +
+          `, Aufschlag ${Math.round((ex.surcharge || 0) * 100)} %` +
+          (ex.cooldownLeftMs ? `, wieder möglich in ${dauer(ex.cooldownLeftMs)}` : '')
+        : '') +
+      (bericht.length ? `\n\nOnline zum Zeitpunkt:\n${bericht.join('\n')}` : ''),
+      state, 'urgent');
+  }
+
+  // --- Einkaufspreise: Sprung deutet auf einen Lieferengpass hin ---
+  const preiseJetzt = einkaufsschnitt(f.wares);
+  if (Object.keys(preiseJetzt).length) {
+    const aenderung = preisAenderung(state.preise, preiseJetzt);
+    // Nur melden, wenn die Firma das Ereignis nicht ohnehin selbst nennt –
+    // sonst bekämst du dieselbe Sache zweimal aufs Handy.
+    if (aenderung !== null && aenderung >= CFG.PREIS_SPRUNG_PCT && !f.event) {
+      const bericht = onlineBericht(state);
+      const ex = f.express || {};
+      const teuerste = Object.entries(preiseJetzt)
+        .map(([k, p]) => `${k.toLowerCase()}: ${p}$` +
+             (state.preise[k] ? ` (vorher ${state.preise[k]}$)` : ''))
+        .slice(0, 6);
+      await push('preissprung', '📦 Lieferengpass – Einkauf teurer',
+        `Einkaufspreise im Schnitt +${aenderung.toFixed(0)} %\n\n` +
+        teuerste.join('\n') +
+        (ex.maxSlots
+          ? `\n\nExpresslieferung: ${ex.freeSlots ?? '?'} von ${ex.maxSlots} Plätzen frei` +
+            `, Aufschlag ${Math.round((ex.surcharge || 0) * 100)} %` +
+            (ex.cooldownLeftMs ? `, wieder möglich in ${dauer(ex.cooldownLeftMs)}` : '')
+          : '') +
+        (bericht.length ? `\n\nOnline zum Zeitpunkt:\n${bericht.join('\n')}` : ''),
+        state, 'high');
+    }
+    state.preise = preiseJetzt;
   }
 
   // --- 4) Kasse & Gewinn ---
