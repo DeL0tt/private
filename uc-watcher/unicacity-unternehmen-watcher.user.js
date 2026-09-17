@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         UnicaCity Unternehmen-Watcher
 // @namespace    https://unicacity.eu/
-// @version      4.4.0
+// @version      4.5.0
 // @description  Überwacht Lager, Personal, Kasse und Vorfälle, trackt Online-Zeiten der Spieler und pusht aufs Handy (ntfy.sh).
 // @match        https://unicacity.eu/dashboard/*
 // @grant        GM_xmlhttpRequest
@@ -24,6 +24,7 @@
     // ---- Push ----
     NTFY_TOPIC:  'HIER-EIGENES-TOPIC-EINTRAGEN',   // z.B. 'uc-firma-9f3a2b7c'
     NTFY_SERVER: 'https://ntfy.sh',
+    API_BASIS:   'https://api.unicacity.eu',
 
     // ---- Schwellwerte ----
     LAGER_SCHWELLE: 500,
@@ -227,7 +228,10 @@
     API_LOG.push(eintrag);
     if (API_LOG.length > MAX_LOG) API_LOG.shift();
 
-    if (AUTH_MUSTER.test(url)) {
+    // /auth/me feuert alle 30 s und würde die seltenen Anmelde-Aufrufe
+    // verdrängen – nur bei Fehlerstatus festhalten.
+    const routine = /\/auth\/me\b/.test(url) && status >= 200 && status < 300;
+    if (AUTH_MUSTER.test(url) && !routine) {
       AUTH_LOG.push(eintrag);
       if (AUTH_LOG.length > 100) AUTH_LOG.shift();
       sichereAuth();
@@ -1019,6 +1023,41 @@
     console.log('Anmelde-Mitschnitt geleert.');
   };
 
+  // Probiert aus, womit sich /api/auth/refresh ausweisen lässt. Genau diese
+  // Antwort entscheidet, was der Server braucht: nur den Token, oder ein Cookie.
+  W.ucWatcherRefreshTest = async function () {
+    let token = null;
+    try { token = W.localStorage.getItem('token'); } catch (_) {}
+    if (!token) return console.error('Kein Token gefunden – bist du angemeldet?');
+
+    const ziel = CONFIG.API_BASIS + '/api/auth/refresh';
+    const varianten = [
+      ['nur Token (Authorization-Kopf)', { method: 'POST', credentials: 'omit',
+        headers: { Authorization: 'Bearer ' + token } }],
+      ['nur Cookie (credentials)',       { method: 'POST', credentials: 'include' }],
+      ['beides',                         { method: 'POST', credentials: 'include',
+        headers: { Authorization: 'Bearer ' + token } }],
+    ];
+
+    for (const [name, optionen] of varianten) {
+      try {
+        const r = await fetch(ziel, optionen);
+        let felder = '–';
+        try {
+          const j = await r.clone().json();
+          felder = Object.keys(j).join(', ');            // nur Feldnamen, keine Werte
+          // Den neuen Token übernehmen, damit die Seite weiterläuft
+          const neu = j.token || j.accessToken || (j.data && j.data.token);
+          if (r.ok && neu) { W.localStorage.setItem('token', neu); }
+        } catch (_) {}
+        console.log(`${r.ok ? '✅' : '❌'} ${name}: HTTP ${r.status} · Felder der Antwort: ${felder}`);
+      } catch (e) {
+        console.log(`❌ ${name}: ${e.message}`);
+      }
+    }
+    console.log('\nFertig. Schick mir diese drei Zeilen.');
+  };
+
   W.ucWatcherReset = function () { save(leererStand()); console.log('Zustand zurückgesetzt.'); };
 
   function starte() {
@@ -1044,7 +1083,7 @@
 
   console.log(
     '%c UC-Watcher aktiv %c Befehle: ucWatcherTest() · ucWatcherZeiten() · ' +
-    'ucWatcherAusschuettung() · ucWatcherDump() · ucWatcherPushTest() · ucWatcherHTML() · ucWatcherAusschuettungStart() · ucWatcherAPI() · ucWatcherAPIvoll() · ucWatcherAuth() · ucWatcherReset()',
+    'ucWatcherAusschuettung() · ucWatcherDump() · ucWatcherPushTest() · ucWatcherHTML() · ucWatcherAusschuettungStart() · ucWatcherAPI() · ucWatcherAPIvoll() · ucWatcherAuth() · ucWatcherRefreshTest() · ucWatcherReset()',
     'background:#2dd4bf;color:#000;font-weight:bold;border-radius:3px',
     'color:inherit');
 })();
