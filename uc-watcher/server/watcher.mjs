@@ -607,14 +607,21 @@ async function vergleicheNotion(state, wikiArtikel) {
     const nk = nachName.get(schluessel(kategorie));
     if (!nk) { katFehlen.push(kategorie); continue; }
 
-    const text = schluessel(await notionSeitentext(nk.id));
-    const standNotion = new Date(nk.bearbeitet);
+    // Hat die Kategorie Unterseiten je Artikel, ist deren Bearbeitungsstand
+    // die genaue Quelle. Sonst behelfen wir uns mit dem Text der Seite und
+    // ihrem Gesamtstand – dann ist die Aussage gröber.
+    const unterseiten = await notionUnterseiten(nk.id);
+    const nachTitel = new Map(unterseiten.map(u => [schluessel(u.titel), u]));
+    const text = unterseiten.length ? '' : schluessel(await notionSeitentext(nk.id));
 
     for (const a of artikel) {
-      if (!titelImText(a.titel, text)) { fehlen.push(a); continue; }
-      // Der Artikel ist dokumentiert – aber ist die Doku noch aktuell?
-      if (new Date(a.updatedAt) > standNotion) {
-        veraltet.push({ ...a, notionStand: nk.bearbeitet });
+      const seite = nachTitel.get(schluessel(a.titel));
+      const gefunden = seite || (text && titelImText(a.titel, text));
+      if (!gefunden) { fehlen.push(a); continue; }
+
+      const stand = seite ? seite.bearbeitet : nk.bearbeitet;
+      if (new Date(a.updatedAt) > new Date(stand)) {
+        veraltet.push({ ...a, notionStand: stand, genau: !!seite });
       }
     }
   }
@@ -668,7 +675,7 @@ async function pruefeNotion(state, wikiArtikel, sofort = false) {
       a => `• ${a.kategorie} · ${a.titel}\n  ${wikiLink(a)}`) +
     liste('⏰ Veraltet (Wiki ist neuer)', e.veraltet,
       a => `• ${a.kategorie} · ${a.titel}\n  Wiki ${a.updatedAt.slice(0, 10)}, ` +
-           `Notion-Seite ${String(a.notionStand).slice(0, 10)}`) +
+           `Notion ${String(a.notionStand).slice(0, 10)}${a.genau ? '' : ' (Kategoriestand)'}`) +
 
     (e.katFehlen.length ? `\n\n📁 Kategorien fehlen in Notion:\n• ${e.katFehlen.join('\n• ')}` : ''),
     state, 'default');
