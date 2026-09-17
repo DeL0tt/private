@@ -112,7 +112,7 @@ const fmt = n => Number(n).toLocaleString('de-DE', { maximumFractionDigits: 2 })
 /* ========================= API & ZUGANG ========================= */
 
 // Zugang lebt im Zustand, damit er Neustarts übersteht.
-const zugang = { token: null, exp: 0, cookie: null };
+const zugang = { token: null, exp: 0, cookie: null, geholtUm: 0 };
 
 function ladeZugang(state) {
   zugang.token  = state.token  || CFG.TOKEN || null;
@@ -175,6 +175,7 @@ async function erneuere() {
 
   zugang.token = neu;
   zugang.exp = tokenAblauf(neu);
+  zugang.geholtUm = Date.now();
   info(`Token erneuert, gültig bis ${new Date(zugang.exp).toLocaleTimeString('de-DE')}`);
   return neu;
 }
@@ -195,6 +196,13 @@ async function api(pfad, zweiterVersuch = false) {
   });
 
   if ((res.status === 401 || res.status === 403) && !zweiterVersuch) {
+    // Ein gerade erst geholter Token kann nicht abgelaufen sein – dann liegt es
+    // am Pfad oder an fehlenden Rechten. Sonst würde jeder 404-artige Fehler
+    // eine überflüssige Erneuerung auslösen.
+    if (Date.now() - zugang.geholtUm < 60_000) {
+      log('Abgewiesen trotz frischem Token:', pfad);
+      throw new Error('AUTH');
+    }
     log('Abgewiesen – Token wird erneuert und noch einmal versucht');
     zugang.exp = 0;
     return api(pfad, true);
