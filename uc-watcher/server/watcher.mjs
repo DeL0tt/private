@@ -37,6 +37,12 @@ const CFG = {
   // --- Wiki ---
   WIKI: process.env.UC_WIKI !== '0',
   WIKI_INTERVALL_STD: +(process.env.UC_WIKI_INTERVALL_STD || 24),
+
+  // --- Notion-Abgleich ---
+  NOTION_TOKEN: process.env.UC_NOTION_TOKEN || '',
+  // Die Wiki-Seite in Notion (ID aus der Adresse, mit oder ohne Bindestriche)
+  NOTION_WIKI: process.env.UC_NOTION_WIKI || '3c4a6c9607aa80ef9ca5c6658d04c349',
+  NOTION_INTERVALL_STD: +(process.env.UC_NOTION_INTERVALL_STD || 168),   // wöchentlich
   ERINNERUNG_MIN: +(process.env.UC_ERINNERUNG_MIN || 60),
 
   AUSSCHUETTUNG_STD:            +(process.env.UC_AUSSCHUETTUNG_STD || 12),
@@ -78,6 +84,7 @@ const leer = () => ({
   letzteAusschuettung: null, letzterTick: null,
   wiki: null,              // { id: {titel, kategorie, updatedAt, laenge} }
   wikiGeprueft: 0,
+  notionGeprueft: 0,
   preise: null,            // letzte Einkaufspreise je Ware
   letzterLagerTick: 0,
   letzterLedgerStamp: 0,  // bis hierhin wurde das Kassenbuch verarbeitet
@@ -436,17 +443,18 @@ async function holeWiki() {
 
 const wikiLink = a => `https://unicacity.eu/wiki/${a.slug}/${a.id ?? ''}`;
 
+// Gibt zurück, ob sich am Wiki etwas geändert hat.
 async function pruefeWiki(state) {
-  if (!CFG.WIKI) return;
+  if (!CFG.WIKI) return false;
   const faellig = Date.now() - (state.wikiGeprueft || 0) >= CFG.WIKI_INTERVALL_STD * 3_600_000;
-  if (!faellig) return;
+  if (!faellig) return false;
 
   let jetzt;
   try { jetzt = await holeWiki(); }
-  catch (e) { return log('Wiki nicht abrufbar:', e.message); }
+  catch (e) { log('Wiki nicht abrufbar:', e.message); return false; }
 
   const anzahl = Object.keys(jetzt).length;
-  if (!anzahl) return log('Wiki lieferte keine Artikel – Prüfung übersprungen');
+  if (!anzahl) { log('Wiki lieferte keine Artikel – Prüfung übersprungen'); return false; }
 
   state.wikiGeprueft = Date.now();
   const vorher = state.wiki;
@@ -454,7 +462,7 @@ async function pruefeWiki(state) {
 
   if (!vorher) {                       // erster Lauf: nur Stand merken
     info(`Wiki-Ausgangsstand gespeichert: ${anzahl} Artikel`);
-    return;
+    return false;
   }
 
   const neu = [], geaendert = [], entfernt = [];
@@ -467,7 +475,8 @@ async function pruefeWiki(state) {
   for (const [id, v] of Object.entries(vorher)) if (!jetzt[id]) entfernt.push({ id, ...v });
 
   if (!neu.length && !geaendert.length && !entfernt.length) {
-    return log(`Wiki unverändert (${anzahl} Artikel)`);
+    log(`Wiki unverändert (${anzahl} Artikel)`);
+    return false;
   }
 
   const teile = [];
@@ -489,6 +498,142 @@ async function pruefeWiki(state) {
     block('🆕 Neu', neu) +
     block('✏️ Geändert', geaendert, true) +
     block('🗑️ Entfernt', entfernt),
+    state, 'default');
+
+  return true;      // löst den Notion-Abgleich sofort aus
+}
+
+/* ==================== NOTION-ABGLEICH ==================== */
+
+const NOTION_VERSION = '2022-06-28';
+
+// Notion akzeptiert die ID mit Bindestrichen zuverlässiger
+const mitStrichen = id => {
+  const r = String(id).replace(/-/g, '');
+  return r.length === 32
+    ? `${r.slice(0,8)}-${r.slice(8,12)}-${r.slice(12,16)}-${r.slice(16,20)}-${r.slice(20)}`
+    : id;
+};
+
+async function notion(pfad) {
+  const res = await fetch('https://api.notion.com/v1' + pfad, {
+    headers: {
+      Authorization: 'Bearer ' + CFG.NOTION_TOKEN,
+      'Notion-Version': NOTION_VERSION,
+      'Accept': 'application/json',
+    },
+  });
+  if (res.status === 401) throw new Error('NOTION_TOKEN');
+  if (res.status === 404) throw new Error('NOTION_FREIGABE');   // nicht freigegeben
+  if (!res.ok) throw new Error('NOTION ' + res.status);
+  return res.json();
+}
+
+// Unterseiten einer Notion-Seite, mit Bearbeitungszeitpunkt
+async function notionUnterseiten(seiteId) {
+  const raus = [];
+  let cursor = null;
+  do {
+    const d = await notion(`/blocks/${mitStrichen(seiteId)}/children?page_size=100` +
+      (cursor ? `&start_cursor=${encodeURIComponent(cursor)}` : ''));
+    for (const b of d.results || []) {
+      if (b.type === 'child_page') {
+        raus.push({ id: b.id, titel: b.child_page.title, bearbeitet: b.last_edited_time });
+      }
+    }
+    cursor = d.has_more ? d.next_cursor : null;
+  } while (cursor);
+  return raus;
+}
+
+// Titel vergleichbar machen: Groß/Klein, Mehrfach-Leerzeichen, Bindestrich-Arten
+const schluessel = t => String(t).toLowerCase()
+  .replace(/[–—]/g, '-').replace(/\s+/g, ' ').replace(/[·•]/g, '').trim();
+
+async function vergleicheNotion(state, wikiArtikel) {
+  const kategorienNotion = await notionUnterseiten(CFG.NOTION_WIKI);
+  const nachName = new Map(kategorienNotion.map(k => [schluessel(k.titel), k]));
+
+  // Wiki nach Kategorie gruppieren
+  const wikiNachKat = new Map();
+  for (const [id, a] of Object.entries(wikiArtikel)) {
+    if (!wikiNachKat.has(a.kategorie)) wikiNachKat.set(a.kategorie, []);
+    wikiNachKat.get(a.kategorie).push({ id, ...a });
+  }
+
+  const fehlen = [], veraltet = [], ueberzaehlig = [], katFehlen = [];
+
+  for (const [kategorie, artikel] of wikiNachKat) {
+    const nk = nachName.get(schluessel(kategorie));
+    if (!nk) { katFehlen.push(kategorie); continue; }
+
+    const seiten = await notionUnterseiten(nk.id);
+    const nachTitel = new Map(seiten.map(x => [schluessel(x.titel), x]));
+
+    for (const a of artikel) {
+      const seite = nachTitel.get(schluessel(a.titel));
+      if (!seite) { fehlen.push(a); continue; }
+      // Wiki neuer als die Notion-Seite → dort steht ein alter Stand
+      if (new Date(a.updatedAt) > new Date(seite.bearbeitet)) {
+        veraltet.push({ ...a, notionStand: seite.bearbeitet });
+      }
+      nachTitel.delete(schluessel(a.titel));
+    }
+    for (const rest of nachTitel.values()) ueberzaehlig.push({ kategorie, titel: rest.titel });
+  }
+
+  return { fehlen, veraltet, ueberzaehlig, katFehlen,
+           kategorienNotion: kategorienNotion.length };
+}
+
+async function pruefeNotion(state, wikiArtikel, sofort = false) {
+  if (!CFG.NOTION_TOKEN) return;
+  // Nach einer Wiki-Änderung sofort, sonst im eingestellten Takt.
+  const faellig = sofort ||
+    Date.now() - (state.notionGeprueft || 0) >= CFG.NOTION_INTERVALL_STD * 3_600_000;
+  if (!faellig) return;
+  if (!wikiArtikel || !Object.keys(wikiArtikel).length) return;
+
+  let e;
+  try { e = await vergleicheNotion(state, wikiArtikel); }
+  catch (err) {
+    if (err.message === 'NOTION_TOKEN' || err.message === 'NOTION_FREIGABE') {
+      await push('notion_zugang', '🔑 Notion nicht erreichbar',
+        err.message === 'NOTION_TOKEN'
+          ? 'Der Notion-Zugangsschlüssel wird abgelehnt. UC_NOTION_TOKEN prüfen.'
+          : 'Die Wiki-Seite ist für die Integration nicht freigegeben.\n' +
+            'In Notion: Seite öffnen → ••• → Verbindungen → Integration hinzufügen.',
+        state, 'high');
+    } else log('Notion-Abgleich fehlgeschlagen:', err.message);
+    return;
+  }
+
+  state.notionGeprueft = Date.now();
+
+  if (!e.fehlen.length && !e.veraltet.length && !e.ueberzaehlig.length && !e.katFehlen.length) {
+    return log('Notion ist auf dem Stand des Wikis');
+  }
+
+  const liste = (titel, eintraege, zeile) => !eintraege.length ? '' :
+    `\n\n${titel} (${eintraege.length})\n` +
+    eintraege.slice(0, 12).map(zeile).join('\n') +
+    (eintraege.length > 12 ? `\n… und ${eintraege.length - 12} weitere` : '');
+
+  const teile = [];
+  if (e.fehlen.length) teile.push(`${e.fehlen.length} fehlen`);
+  if (e.veraltet.length) teile.push(`${e.veraltet.length} veraltet`);
+  if (e.ueberzaehlig.length) teile.push(`${e.ueberzaehlig.length} überzählig`);
+
+  await push(`notion_${new Date().toISOString().slice(0, 10)}`,
+    `📋 Notion-Abgleich: ${teile.join(', ') || 'Unterschiede'}`,
+    `Wiki: ${Object.keys(wikiArtikel).length} Artikel · Notion: ${e.kategorienNotion} Kategorien` +
+    liste('🆕 Fehlen in Notion', e.fehlen,
+      a => `• ${a.kategorie} · ${a.titel}\n  ${wikiLink(a)}`) +
+    liste('⏰ Veraltet (Wiki ist neuer)', e.veraltet,
+      a => `• ${a.kategorie} · ${a.titel}\n  Wiki ${a.updatedAt.slice(0, 10)}, ` +
+           `Notion ${String(a.notionStand).slice(0, 10)}`) +
+    liste('❓ Nur in Notion', e.ueberzaehlig, x => `• ${x.kategorie} · ${x.titel}`) +
+    (e.katFehlen.length ? `\n\n📁 Kategorien fehlen in Notion:\n• ${e.katFehlen.join('\n• ')}` : ''),
     state, 'default');
 }
 
@@ -759,7 +904,10 @@ async function durchlauf() {
   await pruefeAusschuettung(state);
 
   // --- 7) Wiki (höchstens einmal je Intervall) ---
-  await pruefeWiki(state);
+  const wikiGeaendert = await pruefeWiki(state);
+
+  // --- 8) Notion abgleichen: sofort nach einer Wiki-Änderung, sonst im Takt ---
+  await pruefeNotion(state, state.wiki, wikiGeaendert);
 
   sichereZugang(state);
   save(state);
@@ -824,6 +972,29 @@ if (args.includes('--push-test')) {
 }
 
 // Sucht die Wiki-Endpunkte, die Anmeldung verlangen. Einmalig zum Erkunden.
+if (args.includes('--notion')) {
+  const st = load();
+  if (!CFG.NOTION_TOKEN) { console.error('UC_NOTION_TOKEN ist nicht gesetzt.'); process.exit(1); }
+  console.log('Wiki wird abgerufen …');
+  const artikel = await holeWiki();
+  console.log(`${Object.keys(artikel).length} Artikel. Notion wird verglichen …\n`);
+  try {
+    const e = await vergleicheNotion(st, artikel);
+    const zeig = (t, l, f) => { console.log(`\n${t}: ${l.length}`); l.slice(0, 40).forEach(x => console.log('   ' + f(x))); };
+    zeig('Fehlen in Notion', e.fehlen, a => `${a.kategorie} · ${a.titel}  →  ${wikiLink(a)}`);
+    zeig('Veraltet', e.veraltet, a => `${a.kategorie} · ${a.titel}  (Wiki ${a.updatedAt.slice(0,10)}, Notion ${String(a.notionStand).slice(0,10)})`);
+    zeig('Nur in Notion', e.ueberzaehlig, x => `${x.kategorie} · ${x.titel}`);
+    if (e.katFehlen.length) zeig('Kategorien fehlen', e.katFehlen, k => k);
+  } catch (err) {
+    console.error(
+      err.message === 'NOTION_TOKEN' ? '❌ Zugangsschlüssel abgelehnt.' :
+      err.message === 'NOTION_FREIGABE' ? '❌ Seite ist für die Integration nicht freigegeben.' :
+      '❌ ' + err.message);
+    process.exit(1);
+  }
+  process.exit(0);
+}
+
 if (args.includes('--wiki-probe')) {
   const s0 = load(); ladeZugang(s0);
   try { await erneuere(); } catch (e) { console.error('Kein Zugang:', e.message); process.exit(1); }
