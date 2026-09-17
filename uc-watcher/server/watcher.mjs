@@ -591,6 +591,19 @@ function titelImText(titel, text) {
   return muster.test(text);
 }
 
+// Eine Notion-Unterseite darf einen erklärenden Zusatz im Titel tragen, etwa
+// "test (zweite Fassung Calderón Kartell)" für den Wiki-Artikel "test". Der
+// Zusatz muss geklammert sein und der Wiki-Titel davor vollständig stehen,
+// damit "Farm" nicht plötzlich "Farmer (Nebenjob)" trifft.
+function zusatzTitel(titel, unterseiten) {
+  const t = schluessel(titel);
+  if (!t) return undefined;
+  return unterseiten.find(u => {
+    const k = schluessel(u.titel);
+    return k.startsWith(t + ' (') && k.endsWith(')');
+  });
+}
+
 async function vergleicheNotion(state, wikiArtikel) {
   const kategorienNotion = await notionUnterseiten(CFG.NOTION_WIKI);
   const nachName = new Map(kategorienNotion.map(k => [schluessel(k.titel), k]));
@@ -615,7 +628,7 @@ async function vergleicheNotion(state, wikiArtikel) {
     const text = unterseiten.length ? '' : schluessel(await notionSeitentext(nk.id));
 
     for (const a of artikel) {
-      const seite = nachTitel.get(schluessel(a.titel));
+      const seite = nachTitel.get(schluessel(a.titel)) ?? zusatzTitel(a.titel, unterseiten);
       const gefunden = seite || (text && titelImText(a.titel, text));
       if (!gefunden) { fehlen.push(a); continue; }
 
