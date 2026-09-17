@@ -173,75 +173,74 @@ etwas senken.
 
 ## Variante B — Server, ohne offenen Browser
 
-Braucht einen Rechner, der durchläuft: **Raspberry Pi, kleiner VPS, NAS oder
-ein Mini-PC**. Ein alter Pi reicht völlig. Node.js ab Version 18, keine
-weiteren Pakete.
+Die Server-Fassung liest **nicht** die Webseite, sondern die API, die das
+Dashboard selbst benutzt: `GET /api/panel/company`. Das ist unempfindlich
+gegen Design-Änderungen und liefert Dinge, die auf der Seite gar nicht stehen.
 
-### 0. Erst prüfen: HTML oder API?
+Was daraus direkt kommt — nichts davon muss geraten werden:
 
-Das Dashboard ist eine React-Anwendung. Liefert der Server nur ein leeres
-Gerüst und lädt die Zahlen per API nach, findet der HTML-Abruf nichts. Vor dem
-Aufsetzen also im Browser prüfen:
+| Feld | Bedeutung |
+|---|---|
+| `stock.total` / `capacity` | Lagerbestand |
+| `employees[]` / `maxEmployees` | Personal (NPCs) |
+| `members[].online` | welcher **Spieler** gerade online ist |
+| `kasse.balance` | Firmenkasse |
+| `kasse.profitSincePayout` | Gewinn seit Ausschüttung |
+| `event`, `wagesUnpaid`, `rentStrikes` | Vorfälle und Notlagen |
 
-```js
-ucWatcherAPI()
-```
+Dazu das Kassenbuch (`/api/panel/company/ledger`). Dessen `category` macht die
+Erkennung exakt: Eine Buchung **„Ausschüttung"** setzt den 12-Stunden-Zähler
+zurück, eine Buchung mit einer Vorfall-Kategorie (Steuerprüfung, Razzia,
+Überfall …) löst sofort Alarm aus. Eine Kategorie, die der Watcher nicht kennt,
+wird einmalig gemeldet, damit nichts unbemerkt bleibt.
 
-Tauchen dort Adressen wie `api.unicacity.eu/api/...` mit den Firmenwerten auf,
-sollte die Server-Variante **die API** ansprechen statt HTML zu zerlegen — das
-ist verlässlicher und übersteht Design-Änderungen. Token in Adressen und lange
-Zeichenketten werden in der Ausgabe automatisch unkenntlich gemacht.
+Eine Spielerliste musst du nicht mehr pflegen — neue Mitglieder erscheinen
+automatisch, sobald sie in der Firma sind.
 
-### 1. Cookie exportieren
-Der Watcher braucht deine Session, weil die Seite Login verlangt.
+### 1. Zugang besorgen
 
-1. Im eingeloggten Chrome das Dashboard öffnen
-2. **F12** → Reiter **Network/Netzwerk** → Seite neu laden (**F5**)
-3. Den obersten Eintrag (`unternehmen`) anklicken
-4. Unter **Request Headers** die Zeile **`cookie:`** suchen
-5. Rechtsklick → *Copy value* — das ist der komplette Wert für `UC_COOKIE`
+Im eingeloggten Chrome auf dem Dashboard: **F12** → **Network** → **F5** →
+den Eintrag **`company`** anklicken → Abschnitt **Request Headers**.
 
-> Diese Zeile ist so wertvoll wie dein Passwort. Sie gehört in die `.env`
-> (steht in `.gitignore`), nicht in einen Commit und nicht in einen Chat.
+Dort stehen eine oder beide Zeilen:
+
+- **`cookie: ...`** → den kompletten Wert nach `UC_COOKIE` kopieren.
+  Der bevorzugte Weg: Sitzungs-Cookies halten meist Wochen.
+- **`authorization: Bearer eyJ...`** → den Teil nach `Bearer ` nach `UC_TOKEN`.
+  **Achtung:** Dieser Token läuft nach **2 Stunden** ab.
+
+> Beide Werte sind so wertvoll wie dein Passwort. Sie gehören in die `.env`
+> (steht in `.gitignore`) — nicht in einen Commit und nicht in einen Chat.
 
 ### 2. Einrichten
 
 ```bash
-cd server
+cd ~/uc-watcher
 cp .env.example .env
-nano .env               # UC_COOKIE und UC_NTFY_TOPIC eintragen
+nano .env                       # Zugang und Topic eintragen
 node --env-file=.env watcher.mjs --test
 ```
 
-`--test` zeigt einmalig alle erkannten Werte, ohne etwas zu pushen. Sieht das
-gut aus, weiter zum Dauerbetrieb.
+`--test` zeigt einmalig alle Werte und die Team-Liste, ohne etwas zu senden.
 
-### 3. Dauerbetrieb (systemd)
+### 3. Dauerbetrieb
 
 ```bash
 sudo cp uc-watcher.service /etc/systemd/system/
-sudo nano /etc/systemd/system/uc-watcher.service   # User und Pfade anpassen
+sudo nano /etc/systemd/system/uc-watcher.service   # Benutzer und Pfade anpassen
 sudo systemctl daemon-reload
 sudo systemctl enable --now uc-watcher
-journalctl -u uc-watcher -f                        # Log mitlesen
+journalctl -u uc-watcher -f
 ```
-
-Der Dienst startet nach einem Neustart oder Absturz von selbst wieder. Der
-Zustand liegt in `uc-watcher-state.json` und wird atomar geschrieben,
-übersteht also auch einen Stromausfall.
 
 ### 4. Laufender Betrieb
 
 ```bash
-node watcher.mjs --zeiten          # Online-Zeiten aller Spieler
-node watcher.mjs --ausschuettung   # Fortschritt bis zur Ausschüttung
+node --env-file=.env watcher.mjs --zeiten              # Online-Zeiten
+node --env-file=.env watcher.mjs --ausschuettung       # Fortschritt
+node --env-file=.env watcher.mjs --ausschuettung-start # Zähler neu starten
+node --env-file=.env watcher.mjs --push-test           # Handy-Zustellung prüfen
 ```
-
-Läuft das Cookie ab, kommt ein Push „Cookie abgelaufen" — dann Schritt 1
-wiederholen. Wie lange es hält, hängt von der Seite ab; erfahrungsgemäß
-Wochen, manchmal nur Tage.
-
----
 
 ## Alle Einstellungen
 
