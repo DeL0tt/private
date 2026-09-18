@@ -126,6 +126,7 @@ Speichern mit `Strg+O`, `Enter`, schließen mit `Strg+X`. Danach **immer**
 | `UC_AUSSCHUETTUNG_STUNDENMELDUNG` | an | Stündlicher Zwischenstand – `0` schaltet ihn ab |
 | `UC_TAGESBERICHT` | an | Tagesbericht um 04:00 – `0` schaltet ihn ab |
 | `UC_TAGESWECHSEL_STD` | `4` | Wann der Spieltag umspringt |
+| `UC_API_WEG_MELDUNG_MIN` | `30` | Ab wie vielen Minuten eine nicht erreichbare Seite gemeldet wird |
 | `UC_WIKI_INTERVALL_STD` | `24` | Takt der Wiki-Prüfung |
 | `UC_NOTION_INTERVALL_STD` | `168` | Takt des Notion-Abgleichs (168 = wöchentlich) |
 | `UC_INTERVALL_MS` | `60000` | Abfragetakt der Firma in Millisekunden |
@@ -142,6 +143,10 @@ Speichern mit `Strg+O`, `Enter`, schließen mit `Strg+X`. Danach **immer**
 **Keine Benachrichtigungen mehr**
 → `node --env-file=.env watcher.mjs --push-test`. Kommt nichts an, prüfe in der
 ntfy-App, ob der Kanal aus `UC_NTFY_TOPIC` noch abonniert ist.
+
+**„📡 UnicaCity nicht erreichbar"**
+→ Der Server von UnicaCity antwortet nicht. Da ist nichts zu tun, der Watcher
+meldet sich von selbst wieder. Die Meldung kommt erst nach 30 Minuten Ausfall.
 
 **`AUTH` im Log / `--test` scheitert**
 → Das Cookie ist abgelaufen. Im Browser neu bei unicacity.eu anmelden, Cookie aus

@@ -49,6 +49,10 @@ const CFG = {
   AUSSCHUETTUNG_STUNDENMELDUNG: process.env.UC_AUSSCHUETTUNG_STUNDENMELDUNG !== '0',
   TAGESBERICHT:                  process.env.UC_TAGESBERICHT !== '0',
 
+  // Ab wann eine nicht erreichbare Seite gemeldet wird. Kurze Aussetzer sind
+  // normal und sollen nicht aufs Handy.
+  API_WEG_MELDUNG_MIN: +(process.env.UC_API_WEG_MELDUNG_MIN || 30),
+
   LUECKE_MIN:       +(process.env.UC_LUECKE_MIN || 10),
   TAGESWECHSEL_STD: +(process.env.UC_TAGESWECHSEL_STD || 4),
 
@@ -163,7 +167,11 @@ async function erneuere() {
       'Referer': 'https://unicacity.eu/',
     },
   });
-  if (!res.ok) throw new Error('REFRESH ' + res.status);
+  // 401/403 heißt: das Cookie taugt nicht mehr, da hilft nur ein neues. Alles
+  // andere (502, 503, 500 …) ist der Server von UnicaCity, der gerade hustet –
+  // das geht von selbst vorbei und ist kein Grund, den Zugang zu verdächtigen.
+  if (res.status === 401 || res.status === 403) throw new Error('AUTH');
+  if (!res.ok) throw new Error('API_WEG ' + res.status);
 
   const daten = await res.json();
   const neu = daten.token || daten.accessToken || daten.data?.token;
@@ -772,15 +780,34 @@ async function durchlauf() {
   try {
     daten = await holeFirma();
   } catch (e) {
-    if (e.message === 'AUTH' || e.message === 'KEIN_COOKIE' || e.message.startsWith('REFRESH')) {
+    if (e.message === 'AUTH' || e.message === 'KEIN_COOKIE') {
       await push('auth', '🔑 UnicaCity: Zugang abgelaufen',
         'Der Watcher kommt nicht mehr an die API – das Cookie ist vermutlich abgelaufen.\n' +
         'Neues Cookie aus dem Browser holen und in die .env eintragen, dann:\n' +
         'sudo systemctl restart uc-watcher', state, 'urgent');
-      sichereZugang(state);
-      save(state);
-    } else log('Abruf fehlgeschlagen:', e.message);
+    } else {
+      // Server nicht erreichbar oder Netz weg. Das repariert sich meistens von
+      // selbst, also erst melden, wenn es wirklich länger anhält – und ohne
+      // Handlungsaufforderung, denn es gibt nichts zu tun.
+      state.apiWegSeit ||= Date.now();
+      const minuten = Math.round((Date.now() - state.apiWegSeit) / MIN);
+      log('Abruf fehlgeschlagen:', e.message, `(seit ${minuten} min)`);
+      if (minuten >= CFG.API_WEG_MELDUNG_MIN) {
+        await push('apiweg', '📡 UnicaCity nicht erreichbar',
+          `Der Watcher erreicht die Seite seit ${minuten} Minuten nicht (${e.message}).\n` +
+          'Das ist meist der Server selbst und geht von allein vorbei – ' +
+          'du musst nichts tun. Sobald es wieder läuft, bleibt es still.',
+          state, 'default');
+      }
+    }
+    sichereZugang(state);
+    save(state);
     return;
+  }
+
+  if (state.apiWegSeit) {
+    info(`Wieder erreichbar nach ${Math.round((Date.now() - state.apiWegSeit) / MIN)} min`);
+    state.apiWegSeit = 0;
   }
 
   const f = daten.company;
