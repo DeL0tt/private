@@ -99,11 +99,17 @@ function load() {
   try { return Object.assign(leer(), JSON.parse(fs.readFileSync(CFG.STATE_FILE, 'utf8'))); }
   catch { return leer(); }
 }
+let zuletztGespeichert = '';
 function save(s) {
+  // Ein Ausfall läuft jede Minute durch diese Funktion, ohne dass sich etwas
+  // ändert. Dann muss auch nichts auf die Platte.
+  const inhalt = JSON.stringify(s, null, 2);
+  if (inhalt === zuletztGespeichert) return;
   const tmp = CFG.STATE_FILE + '.tmp';
   // 0600: Die Datei enthält Cookie und Token – niemand sonst darf sie lesen.
-  fs.writeFileSync(tmp, JSON.stringify(s, null, 2), { mode: 0o600 });
+  fs.writeFileSync(tmp, inhalt, { mode: 0o600 });
   fs.renameSync(tmp, CFG.STATE_FILE);        // atomar – übersteht Stromausfall
+  zuletztGespeichert = inhalt;
 }
 
 // Spieltag läuft 04:00 → 04:00
@@ -152,6 +158,16 @@ function tokenAblauf(t) {
 const tokenFrisch = () =>
   zugang.token && zugang.exp - Date.now() > CFG.TOKEN_PUFFER_MIN * 60_000;
 
+// 401/403 heißt: das Cookie taugt nicht mehr, da hilft nur ein neues. Alles
+// andere (502, 503, 500 …) ist der Server von UnicaCity, der gerade hustet –
+// das geht von selbst vorbei und ist kein Grund, den Zugang zu verdächtigen.
+// Beide Fälle müssen überall gleich heißen, sonst wird wieder ein Ausfall für
+// einen abgelaufenen Zugang gehalten.
+function pruefeAntwort(res) {
+  if (res.status === 401 || res.status === 403) throw new Error('AUTH');
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+}
+
 // Holt einen neuen Token. Ausgewiesen wird sich mit dem Cookie – der Token
 // allein reicht nicht, das wurde im Browser nachgemessen.
 async function erneuere() {
@@ -167,11 +183,7 @@ async function erneuere() {
       'Referer': 'https://unicacity.eu/',
     },
   });
-  // 401/403 heißt: das Cookie taugt nicht mehr, da hilft nur ein neues. Alles
-  // andere (502, 503, 500 …) ist der Server von UnicaCity, der gerade hustet –
-  // das geht von selbst vorbei und ist kein Grund, den Zugang zu verdächtigen.
-  if (res.status === 401 || res.status === 403) throw new Error('AUTH');
-  if (!res.ok) throw new Error('API_WEG ' + res.status);
+  pruefeAntwort(res);
 
   const daten = await res.json();
   const neu = daten.token || daten.accessToken || daten.data?.token;
@@ -228,8 +240,7 @@ async function api(pfad, zweiterVersuch = false) {
     zugang.exp = 0;
     return api(pfad, true);
   }
-  if (res.status === 401 || res.status === 403) throw new Error('AUTH');
-  if (!res.ok) throw new Error('HTTP ' + res.status);
+  pruefeAntwort(res);
   return res.json();
 }
 
@@ -599,19 +610,6 @@ function titelImText(titel, text) {
   return muster.test(text);
 }
 
-// Eine Notion-Unterseite darf einen erklärenden Zusatz im Titel tragen, etwa
-// "test (zweite Fassung Calderón Kartell)" für den Wiki-Artikel "test". Der
-// Zusatz muss geklammert sein und der Wiki-Titel davor vollständig stehen,
-// damit "Farm" nicht plötzlich "Farmer (Nebenjob)" trifft.
-function zusatzTitel(titel, unterseiten) {
-  const t = schluessel(titel);
-  if (!t) return undefined;
-  return unterseiten.find(u => {
-    const k = schluessel(u.titel);
-    return k.startsWith(t + ' (') && k.endsWith(')');
-  });
-}
-
 async function vergleicheNotion(state, wikiArtikel) {
   const kategorienNotion = await notionUnterseiten(CFG.NOTION_WIKI);
   const nachName = new Map(kategorienNotion.map(k => [schluessel(k.titel), k]));
@@ -632,11 +630,23 @@ async function vergleicheNotion(state, wikiArtikel) {
     // die genaue Quelle. Sonst behelfen wir uns mit dem Text der Seite und
     // ihrem Gesamtstand – dann ist die Aussage gröber.
     const unterseiten = await notionUnterseiten(nk.id);
-    const nachTitel = new Map(unterseiten.map(u => [schluessel(u.titel), u]));
+    // Eine Unterseite darf einen erklärenden Zusatz im Titel tragen, etwa
+    // "test (zweite Fassung Calderón Kartell)" für den Wiki-Artikel "test".
+    // Deshalb steht sie zusätzlich unter ihrem Titel ohne den geklammerten
+    // Zusatz im Verzeichnis. Der Zusatz muss geklammert am Ende stehen, damit
+    // "Farm" nicht plötzlich "Farmer (Nebenjob)" trifft. Die genauen Titel
+    // kommen zuletzt hinein und haben damit Vorrang.
+    const nachTitel = new Map();
+    for (const u of unterseiten) {
+      const k = schluessel(u.titel);
+      const basis = k.replace(/\s*\([^()]*\)$/, '');
+      if (basis && basis !== k && !nachTitel.has(basis)) nachTitel.set(basis, u);
+    }
+    for (const u of unterseiten) nachTitel.set(schluessel(u.titel), u);
     const text = unterseiten.length ? '' : schluessel(await notionSeitentext(nk.id));
 
     for (const a of artikel) {
-      const seite = nachTitel.get(schluessel(a.titel)) ?? zusatzTitel(a.titel, unterseiten);
+      const seite = nachTitel.get(schluessel(a.titel));
       const gefunden = seite || (text && titelImText(a.titel, text));
       if (!gefunden) { fehlen.push(a); continue; }
 
@@ -790,11 +800,11 @@ async function durchlauf() {
       // selbst, also erst melden, wenn es wirklich länger anhält – und ohne
       // Handlungsaufforderung, denn es gibt nichts zu tun.
       state.apiWegSeit ||= Date.now();
-      const minuten = Math.round((Date.now() - state.apiWegSeit) / MIN);
-      log('Abruf fehlgeschlagen:', e.message, `(seit ${minuten} min)`);
-      if (minuten >= CFG.API_WEG_MELDUNG_MIN) {
+      const weg = Date.now() - state.apiWegSeit;
+      log('Abruf fehlgeschlagen:', e.message, `(seit ${dauer(weg)})`);
+      if (weg >= CFG.API_WEG_MELDUNG_MIN * MIN) {
         await push('apiweg', '📡 UnicaCity nicht erreichbar',
-          `Der Watcher erreicht die Seite seit ${minuten} Minuten nicht (${e.message}).\n` +
+          `Der Watcher erreicht die Seite seit ${dauer(weg)} nicht (${e.message}).\n` +
           'Das ist meist der Server selbst und geht von allein vorbei – ' +
           'du musst nichts tun. Sobald es wieder läuft, bleibt es still.',
           state, 'default');
@@ -806,7 +816,7 @@ async function durchlauf() {
   }
 
   if (state.apiWegSeit) {
-    info(`Wieder erreichbar nach ${Math.round((Date.now() - state.apiWegSeit) / MIN)} min`);
+    info(`Wieder erreichbar nach ${dauer(Date.now() - state.apiWegSeit)}`);
     state.apiWegSeit = 0;
   }
 
@@ -1137,8 +1147,9 @@ if (args.includes('--test')) {
   } catch (e) {
     console.error(
       e.message === 'KEIN_COOKIE' ? '❌ UC_COOKIE ist leer.' :
-      e.message.startsWith('REFRESH') ? `❌ Erneuerung abgelehnt (${e.message}) – Cookie abgelaufen?` :
-      e.message === 'AUTH' ? '❌ Zugang abgelehnt (401/403).' :
+      e.message === 'REFRESH_OHNE_TOKEN' ? '❌ Erneuerung lieferte kein Token – Cookie abgelaufen?' :
+      e.message === 'AUTH' ? '❌ Zugang abgelehnt (401/403) – Cookie abgelaufen.' :
+      e.message.startsWith('HTTP') ? `❌ Seite antwortet nicht (${e.message}) – meist der Server selbst, geht von allein vorbei.` :
       '❌ Fehler: ' + e.message);
     process.exit(1);
   }
