@@ -152,6 +152,7 @@ const TEAM_THEMEN = [
   'ausschuettung_faellig',   // Ziel erreicht
   'event_',                  // Vorfall im Unternehmen
   'betrieb_',                // Zoohandlung leer oder knapp – da kann jeder ran
+  'nachkauf_aus',            // ohne Nachkauf läuft das Lager leer
 ];
 
 // 'lagerverlust_' beginnt mit 'lager', meint aber einen Diebstahlverdacht samt
@@ -195,6 +196,7 @@ const TEAM_LISTE = (process.env.UC_DISCORD_TEAM_THEMEN || '').trim()
 export const THEMEN = [
   ['lagerverlust_',          'Plötzlicher Lagerverlust (mit Namen)'],
   ['lager',                  'Lagerbestand niedrig'],
+  ['nachkauf_aus',           'Nachkauf setzt aus'],
   ['betrieb_leer',           'Betrieb ist leer (Zoohandlung)'],
   ['betrieb_knapp',          'Betrieb wird knapp (Zoohandlung)'],
   ['preissprung',            'Lieferengpass, Einkauf teurer'],

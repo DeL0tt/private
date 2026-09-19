@@ -199,6 +199,21 @@ Zwei Dinge bleiben geschützt: Die vorbehaltenen Befehle (`/kasse`,
 wenn der Fragende sie sonst sehen dürfte. Sonst stünde der Kassenstand für
 alle da, nur weil der Falsche getippt hat.
 
+### Nachkauf und Reichweite
+
+Solange der automatische Nachkauf läuft, füllt sich das Lager selbst – eine
+Reichweite wäre dann eine Zahl ohne Bedeutung. `/lager` sagt deshalb nur
+„Nachkauf läuft" und lässt die Hochrechnung weg.
+
+Erkannt wird das an den **Einkäufen des Systems** im Kassenbuch: Hat es in den
+letzten 90 Minuten eingekauft, läuft der Nachkauf. Liefert die API irgendwann
+ein ausdrückliches Feld dafür, hat das Vorrang.
+
+Setzt der Nachkauf aus, während Bestand abfließt, kommt eine Meldung ins Team
+(„Nachkauf scheint auszusetzen") – mitsamt der Reichweite, denn ab dann zählt
+sie wieder. Das ist der Fall, auf den es ankommt: entweder ist der Nachkauf
+abgeschaltet oder die Kasse reicht nicht.
+
 ### Reichweite des Lagers
 
 `/lager` sagt, wie lange der Bestand noch reicht. Die Zahl stammt **nicht** aus

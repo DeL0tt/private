@@ -58,6 +58,9 @@ const CFG = {
   API_WEG_MELDUNG_MIN: +(process.env.UC_API_WEG_MELDUNG_MIN || 30),
 
   // --- Betrieb (z. B. die Zoohandlung) ---
+  // Wie lange nach dem letzten Einkauf der Nachkauf noch als laufend gilt.
+  NACHKAUF_FENSTER_MIN: +(process.env.UC_NACHKAUF_FENSTER_MIN || 90),
+
   // Gelesen wird der Bestand eines einzelnen Betriebs aus /api/panel/me –
   // also bereits der echte Wert. Der Abzug bleibt nur als Notnagel für den
   // Fall, dass jemand eine Gesamtsumme statt eines Betriebs auswertet.
@@ -127,6 +130,7 @@ const leer = () => ({
   letzterLedgerStamp: 0,  // bis hierhin wurde das Kassenbuch verarbeitet
   auszahlungSumme: 0, auszahlungTag: null, auszahlungen: [],  // 35k-Topf je Spieltag
   betriebBestand: null,   // zuletzt gesehener Bestand der Zoohandlung
+  letzterEinkauf: 0,      // belegt, dass der Nachkauf läuft
   lagerVerlauf: [],       // { t, lager } für den gemessenen Absatz
   lastPush: {},
 });
@@ -646,6 +650,31 @@ function gemessenerAbsatz(state, minutenFenster = 60) {
   };
 }
 
+// Namen, unter denen ein Schalter für den Nachkauf stehen könnte. Ob die API
+// so einen liefert, ist offen – deshalb wird zusätzlich an den Buchungen
+// abgelesen, und die haben Vorrang, wenn es kein Feld gibt.
+const NACHKAUF_FELDER = ['autoBuy', 'autoRestock', 'restock', 'autoPurchase',
+                         'buyEnabled', 'nachkauf', 'autoRefill', 'autoBuyEnabled'];
+
+/**
+ * Läuft der automatische Nachkauf?
+ *
+ * Solange er läuft, füllt sich das Lager selbst – eine Reichweite wäre dann
+ * eine Zahl ohne Bedeutung. Erkannt wird er an einem ausdrücklichen Feld,
+ * sonst daran, dass das System vor Kurzem eingekauft hat.
+ */
+function nachkaufStand(f, state) {
+  for (const k of NACHKAUF_FELDER) {
+    if (typeof f?.[k] === 'boolean') return { an: f[k], quelle: 'Anzeige' };
+    if (typeof f?.stock?.[k] === 'boolean') return { an: f.stock[k], quelle: 'Anzeige' };
+  }
+  if (state.letzterEinkauf) {
+    const her = Date.now() - state.letzterEinkauf;
+    return { an: her <= CFG.NACHKAUF_FENSTER_MIN * MIN, quelle: 'Einkäufe', her };
+  }
+  return { an: null, quelle: 'unbekannt' };
+}
+
 /** Wie lange der Bestand bei gemessenem Absatz noch reicht – oder null. */
 function reichweite(state, bestand) {
   const a = gemessenerAbsatz(state);
@@ -1156,6 +1185,12 @@ async function werteBuchungenAus(state, buchungen) {
       continue;
     }
 
+    // Ein Einkauf des Systems belegt, dass der Nachkauf läuft.
+    if (kat.includes('einkauf')) {
+      state.letzterEinkauf = b.stamp;
+      log('Einkauf gesehen:', fmt(b.amount));
+    }
+
     // Gehälter und Auszahlungen zehren am 35k-Topf – mitzählen, solange die
     // Buchung vorbeikommt. Das Kassenbuch liefert nur die letzten Einträge,
     // deshalb wird summiert statt später nachgerechnet.
@@ -1348,6 +1383,27 @@ async function durchlauf() {
     state.personal = personal;
   }
 
+  // --- 2b) Nachkauf: setzt er aus, während Bestand abfließt? ---
+  // Das ist der Fall, der wirklich zählt. Läuft der Nachkauf, füllt sich das
+  // Lager selbst und eine Reichweite wäre bedeutungslos.
+  if (typeof lager === 'number') {
+    const nk = nachkaufStand(f, state);
+    const abfluss = gemessenerAbsatz(state, CFG.NACHKAUF_FENSTER_MIN);
+
+    if (nk.an === false && nk.quelle === 'Einkäufe' && abfluss?.abgeflossen > 0) {
+      const r = reichweite(state, lager);
+      await push('nachkauf_aus', '⏹️ Nachkauf scheint auszusetzen',
+        `Seit ${dauer(nk.her)} hat das System nichts eingekauft, ` +
+        `es sind aber ${abfluss.abgeflossen} Einheiten abgeflossen.\n` +
+        `Bestand: ${lager}` + (r ? `, reicht noch ${dauer(r.ms)}.` : '.') + '\n\n' +
+        'Entweder ist der Nachkauf aus oder die Kasse reicht nicht.',
+        state, 'high');
+    } else if (nk.an === true) {
+      // Läuft wieder: Sperre lösen, damit die nächste Aussetzer-Meldung kommt.
+      state.lastPush.nachkauf_aus = 0;
+    }
+  }
+
   // --- 3) Firmenzustand ---
   if (f.wagesUnpaid) {
     await push('loehne', '⚠️ Löhne nicht bezahlt',
@@ -1511,6 +1567,28 @@ const BEFEHLE = {
       const balken = '█'.repeat(Math.round(anteil / 5)) + '░'.repeat(20 - Math.round(anteil / 5));
 
       let t = `**Lager:** ${bestand} / ${kapazitaet} (${anteil} %)\n` + '`' + balken + '`';
+
+      // Läuft der Nachkauf, füllt sich das Lager selbst – dann sagt eine
+      // Reichweite nichts aus und bleibt weg.
+      const nk = nachkaufStand(f, st);
+      if (nk.an === true) {
+        t += '\n\n🔄 **Nachkauf läuft** – der Bestand füllt sich selbst auf.';
+        if (nk.quelle === 'Einkäufe' && nk.her) {
+          t += `\nLetzter Einkauf vor ${dauer(nk.her)}.`;
+        }
+        if (bestand < CFG.LAGER_SCHWELLE) {
+          t += `\n\n⚠️ Trotzdem unter der Schwelle von ${CFG.LAGER_SCHWELLE} – ` +
+               'entweder reicht das Geld nicht oder der Nachkauf kommt nicht hinterher.';
+        }
+        return t;
+      }
+
+      if (nk.an === false) {
+        t += '\n\n⏹️ **Nachkauf ist aus.**' +
+          (nk.quelle === 'Einkäufe' && nk.her
+            ? ` Seit ${dauer(nk.her)} hat das System nichts eingekauft.`
+            : '');
+      }
 
       // Gemessen statt hochgerechnet: verkauft wird schubweise, die Angabe der
       // API lässt sich nicht auf die Minute umlegen.
