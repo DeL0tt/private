@@ -58,14 +58,15 @@ const CFG = {
   API_WEG_MELDUNG_MIN: +(process.env.UC_API_WEG_MELDUNG_MIN || 30),
 
   // --- Betrieb (z. B. die Zoohandlung) ---
-  // Der angezeigte Bestand enthält einen Sockel, der nicht entnehmbar ist.
-  // Was wirklich drin ist: angezeigter Bestand minus Abzug.
+  // Gelesen wird der Bestand eines einzelnen Betriebs aus /api/panel/me –
+  // also bereits der echte Wert. Der Abzug bleibt nur als Notnagel für den
+  // Fall, dass jemand eine Gesamtsumme statt eines Betriebs auswertet.
   BETRIEB:           process.env.UC_BETRIEB || 'Zoohandlung',
   // Sicherer als der Name: die ID des Betriebs aus dem Dashboard. Ist sie
   // gesetzt, wird nur danach gesucht und der Abzug entfällt – dann steht der
   // Bestand dieses einen Betriebs da, nicht die Summe aller.
   BETRIEB_ID:        process.env.UC_BETRIEB_ID || '',
-  BETRIEB_ABZUG:    +(process.env.UC_BETRIEB_ABZUG || 100),
+  BETRIEB_ABZUG:    +(process.env.UC_BETRIEB_ABZUG || 0),
   BETRIEB_MAX:      +(process.env.UC_BETRIEB_MAX || 240),
   BETRIEB_SCHWELLE: +(process.env.UC_BETRIEB_SCHWELLE || 40),
 
@@ -319,20 +320,42 @@ function findeBetrieb(daten, name) {
     if (Array.isArray(o)) { o.forEach(x => suche(x, tiefe + 1)); return; }
     if (typeof o !== 'object') return;
     // Die ID ist eindeutig, der Name kann sich ändern – deshalb zuerst.
-    if (id && String(o.id ?? o.businessId ?? '') === id) { treffer = o; return; }
+    // In /api/panel/me heißt sie bizID.
+    if (id && String(o.bizID ?? o.id ?? o.businessId ?? '') === id) { treffer = o; return; }
     if (!id) {
       const n = o.name ?? o.title ?? o.businessName ?? o.displayName;
-      if (typeof n === 'string' && schluessel(sauber(n)).includes(ziel)) { treffer = o; return; }
+      if (typeof n === 'string' && ziel && schluessel(sauber(n)).includes(ziel)) { treffer = o; return; }
     }
     for (const v of Object.values(o)) suche(v, tiefe + 1);
   };
   suche(daten);
-  return treffer;
+  if (treffer) return treffer;
+
+  // Eine gesetzte ID ist verbindlich: Wird sie nicht gefunden, ist das ein
+  // Fehler in der Einstellung. Dann lieber nichts melden als den falschen
+  // Betrieb, dessen Zahlen echt aussehen.
+  if (id) return null;
+
+  // Ohne ID: ein Betrieb wie die Werbung zeigt zwar einen Lagerwert an, hat
+  // aber keines (hasLager: false). Bleibt genau einer mit echtem Lager übrig,
+  // ist er gemeint.
+  const mitLager = [];
+  const sammle = (o, tiefe = 0) => {
+    if (!o || tiefe > 8) return;
+    if (Array.isArray(o)) { o.forEach(x => sammle(x, tiefe + 1)); return; }
+    if (typeof o !== 'object') return;
+    if (o.hasLager === true) mitLager.push(o);
+    for (const v of Object.values(o)) sammle(v, tiefe + 1);
+  };
+  sammle(daten);
+  return mitLager.length === 1 ? mitLager[0] : null;
 }
 
 // Felder, unter denen ein Bestand stecken kann – in dieser Reihenfolge.
-const BESTAND_FELDER = ['stock', 'bestand', 'inventory', 'total', 'amount', 'quantity', 'items'];
-const KAPAZITAET_FELDER = ['capacity', 'max', 'maxStock', 'maximum', 'limit'];
+// So heißen die Felder in /api/panel/me. Die übrigen Namen bleiben als
+// Rückfallebene stehen, falls sich die API einmal ändert.
+const BESTAND_FELDER = ['lager', 'stock', 'bestand', 'inventory', 'total', 'amount', 'quantity'];
+const KAPAZITAET_FELDER = ['lagerMax', 'capacity', 'max', 'maxStock', 'maximum', 'limit'];
 
 const ersteZahl = (o, felder) => {
   for (const k of felder) if (typeof o?.[k] === 'number') return o[k];
@@ -366,15 +389,21 @@ function betriebStand(daten) {
   if (!b) return { gefunden: false };
   const roh = betriebBestand(b);
   if (!roh) return { gefunden: true, bestand: null, name: sauber(b.name || b.title || CFG.BETRIEB) };
-  // Steht die ID fest, lesen wir den Bestand genau dieses Betriebs – dann ist
-  // nichts abzuziehen. Ohne ID ist es der Gesamtwert über alle Betriebe, von
-  // dem der fremde Anteil abgezogen werden muss.
+
+  // Wir lesen immer den Bestand eines einzelnen Betriebs, nie eine Summe –
+  // der Wert stimmt also schon. Abgezogen wird nur, wenn es jemand
+  // ausdrücklich einstellt.
   const abzug = CFG.BETRIEB_ID ? 0 : CFG.BETRIEB_ABZUG;
   const verfuegbar = Math.max(0, roh.roh - abzug);
   const max = roh.kapazitaet ? Math.max(0, roh.kapazitaet - abzug) : CFG.BETRIEB_MAX;
+  // Heißt der Betrieb in der API nur "Business #35", ist der eingestellte
+  // Name (Zoohandlung) für Menschen die bessere Auskunft.
+  const apiName = sauber(b.name || b.title || '');
+  const anzeige = !apiName || /^business\s*#?\d+$/i.test(apiName) ? CFG.BETRIEB : apiName;
+
   return {
     gefunden: true,
-    name: sauber(b.name || b.title || CFG.BETRIEB),
+    name: anzeige,
     angezeigt: roh.roh,
     bestand: verfuegbar,
     max,
@@ -589,16 +618,14 @@ async function pruefeBetrieb(state) {
 
   if (stand.bestand <= 0) {
     await push('betrieb_leer', `🔴 ${stand.name} ist leer`,
-      `Im ${stand.name} ist nichts mehr zu holen (angezeigt: ${stand.angezeigt}, ` +
-      `davon ${CFG.BETRIEB_ABZUG} nicht entnehmbar).\n` +
+      `Im ${stand.name} ist nichts mehr zu holen.\n` +
       'Wer gerade spielt, kann nachfüllen.', state, 'high');
     return;
   }
 
   if (stand.bestand <= CFG.BETRIEB_SCHWELLE) {
     await push('betrieb_knapp', `⚠️ ${stand.name} wird knapp`,
-      `Noch ${stand.bestand} von ${stand.max} entnehmbar ` +
-      `(angezeigt: ${stand.angezeigt}).\nNachfüllen, bevor nichts mehr da ist.`,
+      `Noch ${stand.bestand} von ${stand.max}.\nNachfüllen, bevor nichts mehr da ist.`,
       state, 'default');
   } else {
     // Wieder aufgefüllt: die Sperre lösen, damit die nächste Warnung kommt.
@@ -1477,8 +1504,8 @@ const BEFEHLE = {
       const striche = Math.round(Math.min(100, st.anteil) / 5);
       const balken = '█'.repeat(striche) + '░'.repeat(20 - striche);
       let t = `**${st.name}: ${st.bestand} von ${st.max}**\n` + '`' + balken + '`';
-      if (!CFG.BETRIEB_ID) {
-        t += `\nGesamtlager ${st.angezeigt} – davon ${CFG.BETRIEB_ABZUG} in anderen Betrieben.`;
+      if (!CFG.BETRIEB_ID && CFG.BETRIEB_ABZUG) {
+        t += `\nGelesen ${st.angezeigt}, abzüglich ${CFG.BETRIEB_ABZUG}.`;
       }
 
       if (st.bestand <= 0) t += '\n\n🔴 **Leer.** Es kann nichts mehr entnommen werden.';

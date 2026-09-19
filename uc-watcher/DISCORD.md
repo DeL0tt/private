@@ -203,17 +203,25 @@ alle da, nur weil der Falsche getippt hat.
 
 Zeigt den Bestand der Zoohandlung.
 
-Am zuverlässigsten läuft das über die **ID** des Betriebs, die im Dashboard vor
-dem Namen steht (`ID 35`). Dann wird genau dieser Betrieb gelesen:
+Die Daten stehen in `/api/panel/me` unter `businesses`, je Betrieb mit `lager`
+und `lagerMax`. Gelesen wird der Wert **eines** Betriebs – er stimmt also
+bereits, es wird nichts verrechnet.
+
+Am zuverlässigsten läuft das über die **ID**, die im Dashboard vor dem Namen
+steht (`ID 35`):
 
 ```ini
 UC_BETRIEB_ID=35
 ```
 
-Ohne ID wird der Name gesucht und vom Gesamtlager ein fester Betrag abgezogen
-(`UC_BETRIEB_ABZUG`, Standard 100) – das ist der Anteil der übrigen Betriebe.
-Diese Rechnung stimmt nur, solange sich an denen nichts ändert; mit ID gibt es
-das Problem nicht.
+Das ist auch deshalb besser als der Name, weil die API den Betrieb unter
+Umständen nur „Business #35" nennt – gesucht würde „Zoohandlung" dann
+vergeblich. Ist die ID gesetzt und wird nicht gefunden, meldet der Befehl das,
+statt ersatzweise einen anderen Betrieb zu zeigen.
+
+Ohne ID sucht der Watcher den Namen und nimmt sonst den einzigen Betrieb mit
+echtem Lager (`hasLager`). Ein Betrieb wie die Werbung zeigt zwar einen Wert
+an, hat aber keines – der wird damit übergangen.
 
 Der Watcher meldet von sich aus, wenn es knapp wird (unter 40) oder nichts
 mehr da ist. Beides geht ins Team, und bei „leer" werden die angepingt, die
