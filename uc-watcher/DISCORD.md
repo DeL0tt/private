@@ -57,8 +57,13 @@ Der Bot ist auf drei Kanäle ausgelegt. Zwei reichen, der dritte ist optional:
 | `vorfälle` | alle | Vorfall, Kassenvorfall – **gekürzt** |
 | `probleme` | **nur du** | Kasse, Buchungen, Personal, Zeiten, Zugang, Technik – und alle Vorfälle vollständig |
 
-Ein Vorfall geht also an beide Stellen: im geteilten Kanal ohne Kassenstand und
-ohne Namensliste, bei dir vollständig.
+Jede Meldung geht **an genau eine Stelle**. Was in einem Kanal steht, bekommst
+du nicht zusätzlich in `#probleme` – du siehst die Kanäle ja ohnehin. Willst du
+die ausführliche Fassung trotzdem doppelt, stellst du in `/melden` „ich und das
+Team" beziehungsweise „ein bestimmter Kanal und ich" ein.
+
+Unabhängig davon geht die **vollständige** Fassung weiterhin per ntfy auf dein
+Handy – dort verlierst du also nichts.
 
 `#chat` bekommt nichts vom Bot.
 
@@ -131,15 +136,17 @@ Passt es, den Dienst neu starten: `sudo systemctl restart uc-watcher`
 Mit eingerichtetem `#vorfälle` sieht die Verteilung so aus – „Team" meint
 `#benachrichtigung`, „Vorfälle" den Vorfallkanal, „Du" den privaten Kanal.
 
+In der Tabelle steht, wohin eine Meldung standardmäßig geht.
+
 | Meldung | Team | Du |
 |---|---|---|
-| Lagerbestand niedrig | ✅ | ✅ |
-| Lieferengpass, Einkauf teurer | ✅ | ✅ |
-| Firma pausiert, obwohl jemand online ist | ✅ | ✅ |
-| Vorfall im Unternehmen | → `#vorfälle`, ohne Namen | ✅ mit Namen |
-| Kassenvorfall | → `#vorfälle`, ohne Kassenstand | ✅ vollständig |
-| Zwischenstand bis zur Ausschüttung | ✅ ohne Beträge | ✅ mit Gewinn |
-| Ausschüttung fällig | ✅ ohne Beträge | ✅ mit Gewinn |
+| Lagerbestand niedrig | ✅ | – |
+| Lieferengpass, Einkauf teurer | ✅ | – |
+| Firma pausiert, obwohl jemand online ist | ✅ | – |
+| Vorfall im Unternehmen | → `#vorfälle`, ohne Namen | – |
+| Kassenvorfall | → `#vorfälle`, ohne Kassenstand | – |
+| Zwischenstand bis zur Ausschüttung | ✅ ohne Beträge | – |
+| Ausschüttung fällig | ✅ ohne Beträge | – |
 | Plötzlicher Lagerverlust (Diebstahlverdacht) | – | ✅ |
 | Personal abgeworben / unvollständig | – | ✅ |
 | Löhne nicht bezahlt, Mietrückstand | – | ✅ |
@@ -148,9 +155,10 @@ Mit eingerichtetem `#vorfälle` sieht die Verteilung so aus – „Team" meint
 | Zugang abgelaufen, Seite nicht erreichbar | – | ✅ |
 | Wiki- und Notion-Abgleich | – | ✅ |
 
-Wo „ohne Namen" oder „ohne Beträge" steht, bekommt das Team eine gekürzte
-Fassung derselben Meldung – dieselbe Information, ohne das, was es nicht
-angeht.
+Wo „ohne Namen" oder „ohne Beträge" steht, ist die Fassung im geteilten Kanal
+gekürzt – dieselbe Information, ohne das, was dort niemanden angeht. Die
+ungekürzte bekommst du per ntfy, oder im Discord, wenn du bei der betreffenden
+Meldung „und ich" einstellst.
 
 Das ist nur die Voreinstellung. **Mit `/melden` stellst du jede Meldung
 einzeln um** – siehe unten. Die Tabelle gilt für alles, was du nicht selbst

@@ -141,6 +141,12 @@ export function darfNutzen(befehl, { istChef, nutzerId, rollen = [] }) {
  * Team-Kanal. Geld, Personalstand, Arbeitszeiten und alles Technische sind
  * Sache des Inhabers – das steht in keinem geteilten Kanal.
  *
+ * Was in einem Kanal steht, bekommt der Inhaber nicht zusätzlich in seinen
+ * eigenen: Er sieht die Kanäle ohnehin, und eine zweite Nachricht wäre nur
+ * Lärm. Wer die ausführliche Fassung zusätzlich will, stellt in /melden
+ * "ein bestimmter Kanal und ich" oder "ich und das Team" ein. Unabhängig
+ * davon geht die vollständige Fassung weiterhin per ntfy aufs Handy.
+ *
  * Verglichen wird der Anfang des Themas, weil viele Themen eine laufende
  * Nummer anhängen ('event_...', 'ausschuettung_std_3').
  */
@@ -241,9 +247,9 @@ export function empfaenger(thema, regeln = {}) {
 
   if (NUR_CHEF.some(x => t.startsWith(x))) return { ziel: 'chef' };
   if (CFG.VORFALL_KANAL && VORFALL_THEMEN.some(x => t.startsWith(x))) {
-    return { ziel: 'kanal', kanal: CFG.VORFALL_KANAL, auchChef: true, ...standardPing(t) };
+    return { ziel: 'kanal', kanal: CFG.VORFALL_KANAL, ...standardPing(t) };
   }
-  return { ziel: TEAM_LISTE.some(x => t.startsWith(x)) ? 'beide' : 'chef', ...standardPing(t) };
+  return { ziel: TEAM_LISTE.some(x => t.startsWith(x)) ? 'team' : 'chef', ...standardPing(t) };
 }
 
 /** Beschreibt eine Regel in einem Satz, für die Anzeige in Discord. */
