@@ -274,14 +274,11 @@ const holeFirma  = () => api('/api/panel/company');
 
 // Mögliche Adressen der Betriebsübersicht. Welche es ist, zeigt
 // --betrieb-probe; die erste, die antwortet, wird gemerkt.
+// Aus dem Programmcode des Dashboards gelesen (--api-suche): mehr Panel-
+// Adressen gibt es nicht. Eine eigene für Betriebe existiert nicht, die Daten
+// stecken also in einer dieser Antworten.
 const BETRIEB_PFADE = [
-  '/api/panel/businesses', '/api/panel/business', '/api/panel/businesses/list',
-  '/api/panel/business/list', '/api/panel/business/all',
-  '/api/businesses', '/api/business', '/api/business/list',
-  '/api/panel/company/businesses', '/api/panel/betriebe',
-  '/api/dashboard/businesses', '/api/panel/businesses/overview',
-  '/api/panel/shops', '/api/shops', '/api/panel/stores', '/api/panel/unternehmen',
-  '/api/panel/company/business', '/api/panel/company/shops',
+  '/api/panel/company', '/api/panel/me', '/api/panel/history',
 ];
 let betriebPfad = process.env.UC_BETRIEB_PFAD || '';
 
@@ -1948,6 +1945,72 @@ if (args.includes('--ausschuettung-start')) {
   process.exit(0);
 }
 
+if (args.includes('--api-suche')) {
+  // Die Seite ist eine JavaScript-Anwendung; die API-Adressen stehen als
+  // Zeichenketten in ihrem Programmcode. Statt zu raten, lesen wir sie dort.
+  const seite = args[args.indexOf('--api-suche') + 1] ||
+                'https://unicacity.eu/dashboard/businesses';
+  const kopf = { 'User-Agent': CFG.USER_AGENT, 'Accept': '*/*' };
+
+  console.log('Lade', seite, '…');
+  const html = await (await fetch(seite, { headers: kopf })).text();
+
+  // Script-Dateien einsammeln, auch die vorgeladenen Module.
+  const quellen = new Set();
+  for (const m of html.matchAll(/<script[^>]+src=["']([^"']+)["']/gi)) quellen.add(m[1]);
+  for (const m of html.matchAll(/<link[^>]+rel=["'](?:modulepreload|preload)["'][^>]+href=["']([^"']+\.js)["']/gi)) {
+    quellen.add(m[1]);
+  }
+  for (const m of html.matchAll(/["']([^"']*\/assets\/[^"']+\.js)["']/gi)) quellen.add(m[1]);
+
+  if (!quellen.size) {
+    console.log('Keine JavaScript-Dateien in der Seite gefunden.');
+    process.exit(1);
+  }
+  console.log(`${quellen.size} Skriptdatei(en) gefunden.\n`);
+
+  const pfade = new Map();   // Pfad -> in welcher Datei
+  for (const roh of quellen) {
+    const url = new URL(roh, seite).href;
+    let text;
+    try {
+      const res = await fetch(url, { headers: kopf });
+      if (!res.ok) { console.log(`  übersprungen (${res.status}): ${url}`); continue; }
+      text = await res.text();
+    } catch (e) { console.log(`  nicht ladbar: ${url} – ${e.message}`); continue; }
+
+    const datei = url.split('/').pop();
+    // Zeichenketten, die mit /api/ beginnen – auch Vorlagen mit ${...}.
+    for (const m of text.matchAll(/["'`](\/api\/[^"'`\s]{2,80})["'`]/g)) {
+      if (!pfade.has(m[1])) pfade.set(m[1], datei);
+    }
+  }
+
+  if (!pfade.size) {
+    console.log('Keine /api/-Adressen im Programmcode gefunden.');
+    console.log('Vermutlich werden sie aus Teilen zusammengesetzt.');
+    process.exit(1);
+  }
+
+  const alle = [...pfade.keys()].sort();
+  const passend = alle.filter(p => /business|betrieb|shop|store|laden/i.test(p));
+
+  if (passend.length) {
+    console.log('🎯 Passt zu "Betrieb":');
+    for (const p of passend) console.log(`   ${p}   (aus ${pfade.get(p)})`);
+    console.log('');
+  }
+  console.log(`Alle gefundenen Adressen (${alle.length}):`);
+  for (const p of alle) console.log(`   ${p}`);
+
+  if (passend.length) {
+    console.log('\nDie passendste in die .env eintragen, z. B.:');
+    console.log(`   UC_BETRIEB_PFAD=${passend[0]}`);
+    console.log('Danach: node --env-file=.env watcher.mjs --betrieb-probe');
+  }
+  process.exit(0);
+}
+
 if (args.includes('--events-probe')) {
   const s0 = load(); ladeZugang(s0);
   try { await erneuere(); } catch (e) { console.error('Kein Zugang:', e.message); process.exit(1); }
@@ -2069,6 +2132,7 @@ if (args.includes('--betrieb-probe')) {
   };
 
   let gefunden = null;
+  const trefferListe = [];
   const statistik = {};
   for (const pfad of BETRIEB_PFADE) {
     try {
@@ -2078,6 +2142,7 @@ if (args.includes('--betrieb-probe')) {
         console.log(`✅ ${status} ${pfad}`);
         console.log('   ' + felder(koerper).slice(0, 900) + '\n');
         gefunden ||= { pfad, daten: koerper };
+        trefferListe.push([pfad, koerper]);
       } else {
         const grund = { 401: 'nicht angemeldet', 403: 'keine Rechte',
                         404: 'gibt es nicht', 500: 'Serverfehler' }[status] || '';
@@ -2089,6 +2154,30 @@ if (args.includes('--betrieb-probe')) {
   }
 
   // Was die Statuscodes über die API verraten
+  // Zahlenfelder auflisten, die als Bestand in Frage kommen. Der gesuchte
+  // Wert ist um den Sockel größer als das, was entnommen werden kann.
+  if (gefunden) {
+    console.log('--- Zahlen in den Antworten, die ein Bestand sein könnten ---');
+    for (const [pfad, daten] of trefferListe) {
+      const funde = [];
+      const suche = (o, weg = '', tiefe = 0) => {
+        if (!o || tiefe > 6) return;
+        if (Array.isArray(o)) return o.forEach((x, i) => suche(x, `${weg}[${i}]`, tiefe + 1));
+        if (typeof o !== 'object') return;
+        for (const [k, v] of Object.entries(o)) {
+          if (typeof v === 'number' && v > 50 && v < 10_000) funde.push(`${weg}.${k} = ${v}`);
+          else suche(v, `${weg}.${k}`, tiefe + 1);
+        }
+      };
+      suche(daten);
+      console.log(`\n${pfad}:`);
+      console.log(funde.length ? '   ' + funde.slice(0, 40).join('\n   ') : '   (keine)');
+    }
+    console.log('\nWelche Zahl ist der Bestand der Zoohandlung?');
+    console.log('Gesucht ist die, die um ' + CFG.BETRIEB_ABZUG + ' größer ist als das,');
+    console.log('was du entnehmen kannst. Schick mir den Namen des Feldes.');
+  }
+
   if (!gefunden) {
     console.log('\nAntworten: ' + Object.entries(statistik)
       .map(([k, v]) => `${v}× ${k}`).join(', '));
