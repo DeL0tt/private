@@ -2803,6 +2803,94 @@ if (args.includes('--gehalt')) {
   process.exit(0);
 }
 
+if (args.includes('--einstellungen')) {
+  const st = load();
+  const geheim = (v) => v ? `gesetzt (${String(v).length} Zeichen)` : '—';
+  const zeig = (v) => v || '—';
+
+  // Nur zeigen, was von der Voreinstellung abweicht – sonst sieht man vor
+  // lauter Vorgaben nicht, was man selbst entschieden hat.
+  const VORGABEN = [
+    ['UC_LAGER_SCHWELLE', '500'], ['UC_LAGER_EINBRUCH_PCT', '15'],
+    ['UC_PREIS_SPRUNG_PCT', '20'], ['UC_ERINNERUNG_MIN', '60'],
+    ['UC_AUSSCHUETTUNG_STD', '12'], ['UC_TAGESWECHSEL_STD', '4'],
+    ['UC_INTERVALL_MS', '60000'], ['UC_LUECKE_MIN', '10'],
+    ['UC_API_WEG_MELDUNG_MIN', '30'], ['UC_WIKI_INTERVALL_STD', '24'],
+    ['UC_NOTION_INTERVALL_STD', '168'], ['UC_AUSZAHLUNG_LIMIT', '35000'],
+    ['UC_AUSZAHLUNG_RESET_STD', '0'], ['UC_AUSZAHLUNG_KATEGORIEN', 'auszahlung,gehalt'],
+    ['UC_BETRIEB', 'Zoohandlung'], ['UC_BETRIEB_ABZUG', '0'],
+    ['UC_BETRIEB_MAX', '240'], ['UC_BETRIEB_SCHWELLE', '40'],
+    ['UC_NACHKAUF_FENSTER_MIN', '90'], ['UC_VORFALL_ERINNERUNG_MIN', '0'],
+    ['UC_VORFALL_ERINNERUNG_MAX', '3'], ['UC_UNBEKANNTE_BUCHUNGEN', '0'],
+    ['UC_TAGESBERICHT', '1'], ['UC_AUSSCHUETTUNG_STUNDENMELDUNG', '1'],
+  ];
+
+  console.log('═══ Zugang ═══');
+  console.log('  UC_COOKIE:            ' + geheim(process.env.UC_COOKIE));
+  console.log('  UC_NTFY_TOPIC:        ' + (process.env.UC_NTFY_TOPIC ? 'gesetzt' : '— (keine Handy-Meldungen)'));
+  console.log('  UC_NOTION_TOKEN:      ' + geheim(process.env.UC_NOTION_TOKEN));
+
+  console.log('\n═══ Discord ═══');
+  console.log('  Bot-Token:            ' + geheim(process.env.UC_DISCORD_TOKEN));
+  console.log('  Server:               ' + zeig(process.env.UC_DISCORD_GUILD));
+  console.log('  Team-Kanal:           ' + zeig(process.env.UC_DISCORD_TEAM_KANAL));
+  console.log('  Vorfall-Kanal:        ' + (process.env.UC_DISCORD_VORFALL_KANAL || '— (Vorfälle gehen wie früher)'));
+  console.log('  Inhaber-Kanal:        ' + (process.env.UC_DISCORD_CHEF_KANAL || '— (dann per DM)'));
+  console.log('  Befehlskanal:         ' + (process.env.UC_DISCORD_BEFEHL_KANAL || '— (alle Antworten privat)'));
+  console.log('  Deine Discord-ID:     ' + zeig(process.env.UC_DISCORD_CHEF_ID));
+  if (process.env.UC_BETRIEB_ID) console.log('  Betrieb (ID):         ' + process.env.UC_BETRIEB_ID);
+  else console.log('  Betrieb (ID):         — (wird am Namen gesucht)');
+
+  const abweichend = VORGABEN.filter(([k, v]) => process.env[k] !== undefined && process.env[k] !== v);
+  console.log('\n═══ Von der Vorgabe abweichend ═══');
+  if (!abweichend.length) console.log('  (nichts – überall die Voreinstellung)');
+  for (const [k, v] of abweichend) {
+    console.log(`  ${k.padEnd(32)} ${process.env[k]}   (Vorgabe ${v})`);
+  }
+
+  console.log('\n═══ Regeln aus /melden ═══');
+  const regeln = ladeRegeln();
+  const namen = Object.keys(regeln);
+  if (!namen.length) console.log('  (keine – überall die Voreinstellung)');
+  for (const k of namen) {
+    const bez = k.startsWith('event_') && k !== 'event_'
+      ? `Vorfall: ${k.slice('event_'.length)}` : themaName(k);
+    console.log(`  ${bez}`);
+    console.log(`     ${regelText(regeln[k]).replace(/<#(\d+)>/g, 'Kanal $1').replace(/<@&(\d+)>/g, 'Rolle $1')}`);
+  }
+
+  console.log('\n═══ Zuordnung aus /zuordnen ═══');
+  const zu = ladeZuordnung(), eigen = zuordnungEigen();
+  if (!Object.keys(zu).length) {
+    console.log('  (niemand – "nur wer online ist" pingt damit nie)');
+  }
+  for (const [id, name] of Object.entries(zu)) {
+    const treffer = Object.keys(st.spieler || {}).find(k => k.toLowerCase() === String(name).toLowerCase());
+    console.log(`  ${id}  ->  ${name}` +
+      (treffer ? (st.spieler[treffer].online ? '   [online]' : '') : '   [im Team NICHT gefunden]') +
+      (eigen[id] ? '' : '   (aus der .env)'));
+  }
+
+  console.log('\n═══ Rechte aus /rechte ═══');
+  const rechte = ladeRechte();
+  if (!Object.keys(rechte).length) console.log('  (keine vergeben – alles bleibt beim Inhaber)');
+  for (const [befehl, r] of Object.entries(rechte)) {
+    const wer = [...(r.rollen || []).map(x => `Rolle ${x}`), ...(r.nutzer || []).map(x => `Nutzer ${x}`)];
+    if (wer.length) console.log(`  /${befehl.padEnd(14)} ${wer.join(', ')}`);
+  }
+
+  console.log('\n═══ Laufender Zustand ═══');
+  console.log('  Spieltag:             ' + (st.tag || '—'));
+  console.log('  Team-Onlinezeit:      ' + dauer(st.teamOnlineMs || 0));
+  console.log('  Lager zuletzt:        ' + (st.lager ?? '—'));
+  console.log('  Zoohandlung zuletzt:  ' + (st.betriebBestand ?? '— (noch nicht gelesen)'));
+  console.log('  Gesehene Vorfallsarten: ' +
+    (Object.keys(st.vorfallArten || {}).join(', ') || '— (seit dem Update keiner)'));
+  console.log('  Letzter Einkauf:      ' +
+    (st.letzterEinkauf ? `vor ${dauer(Date.now() - st.letzterEinkauf)}` : '— (Nachkauf unbekannt)'));
+  process.exit(0);
+}
+
 if (args.includes('--zuordnung')) {
   const st = load();
   const zu = ladeZuordnung();

@@ -528,6 +528,20 @@ gesetzt wird, hat Vorrang.
 
 ---
 
+## Was ist eigentlich eingestellt?
+
+```
+node --env-file=.env watcher.mjs --einstellungen
+```
+
+Zeigt in einem Durchgang: welche Kanäle eingetragen sind, welche Werte von der
+Voreinstellung abweichen, alle Regeln aus `/melden` im Klartext, die Zuordnung
+aus `/zuordnen` (mit Hinweis, wenn ein Name im Team nicht vorkommt), die
+vergebenen Rechte und den laufenden Zustand.
+
+Zugangsdaten werden dabei nur als „gesetzt" gemeldet, nie im Klartext – die
+Ausgabe lässt sich also gefahrlos weitergeben.
+
 ## Wenn etwas klemmt
 
 **„401 Unauthorized" oder „Discord lehnt den Token ab (4004)"**
