@@ -61,6 +61,10 @@ const CFG = {
   // Der angezeigte Bestand enthält einen Sockel, der nicht entnehmbar ist.
   // Was wirklich drin ist: angezeigter Bestand minus Abzug.
   BETRIEB:           process.env.UC_BETRIEB || 'Zoohandlung',
+  // Sicherer als der Name: die ID des Betriebs aus dem Dashboard. Ist sie
+  // gesetzt, wird nur danach gesucht und der Abzug entfällt – dann steht der
+  // Bestand dieses einen Betriebs da, nicht die Summe aller.
+  BETRIEB_ID:        process.env.UC_BETRIEB_ID || '',
   BETRIEB_ABZUG:    +(process.env.UC_BETRIEB_ABZUG || 100),
   BETRIEB_MAX:      +(process.env.UC_BETRIEB_MAX || 240),
   BETRIEB_SCHWELLE: +(process.env.UC_BETRIEB_SCHWELLE || 40),
@@ -278,7 +282,7 @@ const holeFirma  = () => api('/api/panel/company');
 // Adressen gibt es nicht. Eine eigene für Betriebe existiert nicht, die Daten
 // stecken also in einer dieser Antworten.
 const BETRIEB_PFADE = [
-  '/api/panel/company', '/api/panel/me', '/api/panel/history',
+  '/api/panel/me', '/api/panel/company', '/api/panel/history', '/api/panel/referral',
 ];
 let betriebPfad = process.env.UC_BETRIEB_PFAD || '';
 
@@ -307,14 +311,19 @@ async function holeBetriebe() {
  */
 function findeBetrieb(daten, name) {
   const ziel = schluessel(sauber(name));
-  if (!ziel) return null;
+  const id = CFG.BETRIEB_ID ? String(CFG.BETRIEB_ID) : '';
+  if (!ziel && !id) return null;
   let treffer = null;
   const suche = (o, tiefe = 0) => {
-    if (treffer || !o || tiefe > 6) return;
+    if (treffer || !o || tiefe > 8) return;
     if (Array.isArray(o)) { o.forEach(x => suche(x, tiefe + 1)); return; }
     if (typeof o !== 'object') return;
-    const n = o.name ?? o.title ?? o.businessName ?? o.displayName;
-    if (typeof n === 'string' && schluessel(sauber(n)).includes(ziel)) { treffer = o; return; }
+    // Die ID ist eindeutig, der Name kann sich ändern – deshalb zuerst.
+    if (id && String(o.id ?? o.businessId ?? '') === id) { treffer = o; return; }
+    if (!id) {
+      const n = o.name ?? o.title ?? o.businessName ?? o.displayName;
+      if (typeof n === 'string' && schluessel(sauber(n)).includes(ziel)) { treffer = o; return; }
+    }
     for (const v of Object.values(o)) suche(v, tiefe + 1);
   };
   suche(daten);
@@ -357,8 +366,12 @@ function betriebStand(daten) {
   if (!b) return { gefunden: false };
   const roh = betriebBestand(b);
   if (!roh) return { gefunden: true, bestand: null, name: sauber(b.name || b.title || CFG.BETRIEB) };
-  const verfuegbar = Math.max(0, roh.roh - CFG.BETRIEB_ABZUG);
-  const max = roh.kapazitaet ? Math.max(0, roh.kapazitaet - CFG.BETRIEB_ABZUG) : CFG.BETRIEB_MAX;
+  // Steht die ID fest, lesen wir den Bestand genau dieses Betriebs – dann ist
+  // nichts abzuziehen. Ohne ID ist es der Gesamtwert über alle Betriebe, von
+  // dem der fremde Anteil abgezogen werden muss.
+  const abzug = CFG.BETRIEB_ID ? 0 : CFG.BETRIEB_ABZUG;
+  const verfuegbar = Math.max(0, roh.roh - abzug);
+  const max = roh.kapazitaet ? Math.max(0, roh.kapazitaet - abzug) : CFG.BETRIEB_MAX;
   return {
     gefunden: true,
     name: sauber(b.name || b.title || CFG.BETRIEB),
@@ -1463,9 +1476,10 @@ const BEFEHLE = {
 
       const striche = Math.round(Math.min(100, st.anteil) / 5);
       const balken = '█'.repeat(striche) + '░'.repeat(20 - striche);
-      let t = `**${st.name}: ${st.bestand} von ${st.max}**\n` +
-        '`' + balken + '`\n' +
-        `Angezeigt werden ${st.angezeigt} – davon sind ${CFG.BETRIEB_ABZUG} nicht entnehmbar.`;
+      let t = `**${st.name}: ${st.bestand} von ${st.max}**\n` + '`' + balken + '`';
+      if (!CFG.BETRIEB_ID) {
+        t += `\nGesamtlager ${st.angezeigt} – davon ${CFG.BETRIEB_ABZUG} in anderen Betrieben.`;
+      }
 
       if (st.bestand <= 0) t += '\n\n🔴 **Leer.** Es kann nichts mehr entnommen werden.';
       else if (st.bestand <= CFG.BETRIEB_SCHWELLE) t += `\n\n⚠️ Wird knapp – unter ${CFG.BETRIEB_SCHWELLE}.`;
@@ -1970,21 +1984,38 @@ if (args.includes('--api-suche')) {
   console.log(`${quellen.size} Skriptdatei(en) gefunden.\n`);
 
   const pfade = new Map();   // Pfad -> in welcher Datei
-  for (const roh of quellen) {
-    const url = new URL(roh, seite).href;
+  const warteschlange = [...quellen];
+  const erledigt = new Set();
+  const GRENZE = 200;        // Sicherheitsnetz gegen endloses Nachladen
+
+  // Die Ansicht für die Betriebe wird erst bei Bedarf nachgeladen. Ihre
+  // Adresse steht deshalb nicht in der Hauptdatei, sondern in einem eigenen
+  // Paket, auf das die Hauptdatei nur verweist. Also den Verweisen folgen.
+  while (warteschlange.length && erledigt.size < GRENZE) {
+    const roh = warteschlange.shift();
+    let url;
+    try { url = new URL(roh, seite).href; } catch { continue; }
+    if (erledigt.has(url)) continue;
+    erledigt.add(url);
+
     let text;
     try {
       const res = await fetch(url, { headers: kopf });
-      if (!res.ok) { console.log(`  übersprungen (${res.status}): ${url}`); continue; }
+      if (!res.ok) continue;
       text = await res.text();
-    } catch (e) { console.log(`  nicht ladbar: ${url} – ${e.message}`); continue; }
+    } catch { continue; }
 
     const datei = url.split('/').pop();
-    // Zeichenketten, die mit /api/ beginnen – auch Vorlagen mit ${...}.
     for (const m of text.matchAll(/["'`](\/api\/[^"'`\s]{2,80})["'`]/g)) {
       if (!pfade.has(m[1])) pfade.set(m[1], datei);
     }
+    // Weitere Pakete, auf die diese Datei verweist
+    for (const m of text.matchAll(/["'`]((?:\.{0,2}\/)?assets\/[A-Za-z0-9._-]+\.js)["'`]/g)) {
+      const naechste = new URL(m[1].replace(/^\.\//, ''), url).href;
+      if (!erledigt.has(naechste)) warteschlange.push(naechste);
+    }
   }
+  console.log(`${erledigt.size} Datei(en) durchsucht.\n`);
 
   if (!pfade.size) {
     console.log('Keine /api/-Adressen im Programmcode gefunden.');
@@ -1993,7 +2024,7 @@ if (args.includes('--api-suche')) {
   }
 
   const alle = [...pfade.keys()].sort();
-  const passend = alle.filter(p => /business|betrieb|shop|store|laden/i.test(p));
+  const passend = alle.filter(p => /business|betrieb/i.test(p));
 
   if (passend.length) {
     console.log('🎯 Passt zu "Betrieb":');

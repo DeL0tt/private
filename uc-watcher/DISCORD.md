@@ -201,9 +201,19 @@ alle da, nur weil der Falsche getippt hat.
 
 ### Der Betrieb: `/betrieb`
 
-Zeigt den Bestand der Zoohandlung – und zwar den **entnehmbaren**. Im Betrieb
-steht ein Sockel von 100, der nicht herausgeht; angezeigt werden also z. B.
-340, tatsächlich verfügbar sind 240.
+Zeigt den Bestand der Zoohandlung.
+
+Am zuverlässigsten läuft das über die **ID** des Betriebs, die im Dashboard vor
+dem Namen steht (`ID 35`). Dann wird genau dieser Betrieb gelesen:
+
+```ini
+UC_BETRIEB_ID=35
+```
+
+Ohne ID wird der Name gesucht und vom Gesamtlager ein fester Betrag abgezogen
+(`UC_BETRIEB_ABZUG`, Standard 100) – das ist der Anteil der übrigen Betriebe.
+Diese Rechnung stimmt nur, solange sich an denen nichts ändert; mit ID gibt es
+das Problem nicht.
 
 Der Watcher meldet von sich aus, wenn es knapp wird (unter 40) oder nichts
 mehr da ist. Beides geht ins Team, und bei „leer" werden die angepingt, die
