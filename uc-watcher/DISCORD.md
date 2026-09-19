@@ -173,7 +173,7 @@ Jeder im Server kann benutzen:
 | Befehl | Zeigt |
 |---|---|
 | `/firma` | Status, Lager, Personal, wer online ist |
-| `/lager` | Bestand mit Balken, Absatz, Reichweite |
+| `/lager` | Bestand mit Balken und **gemessener** Reichweite |
 | `/ausschuettung` | Fortschritt bis zur nächsten Ausschüttung |
 | `/zeiten` | Wer gerade online ist, plus die eigene Zeit heute |
 | `/gehalt` | Wie viel vom Tagesbudget (35.000$) noch frei ist |
@@ -198,6 +198,22 @@ Zwei Dinge bleiben geschützt: Die vorbehaltenen Befehle (`/kasse`,
 `/ausschuettung` zeigen im offenen Kanal **keine Beträge** – auch dann nicht,
 wenn der Fragende sie sonst sehen dürfte. Sonst stünde der Kassenstand für
 alle da, nur weil der Falsche getippt hat.
+
+### Reichweite des Lagers
+
+`/lager` sagt, wie lange der Bestand noch reicht. Die Zahl stammt **nicht** aus
+der API: deren `salesPerMinute` ist eine Momentangröße, tatsächlich wird aber
+schubweise verkauft – alle paar Minuten ein Batzen. Wer das auf die Minute
+umlegt, bekommt eine Reichweite, die um ein Vielfaches danebenliegt.
+
+Der Watcher misst deshalb selbst: Er schreibt bei jedem Durchlauf den Bestand
+mit und rechnet daraus, wie viel über die Zeit wirklich abfließt. Lieferungen
+zählen nicht mit, nur Rückgänge. Nach etwa zehn Minuten Laufzeit steht die
+erste Aussage, danach wird sie über eine Stunde gemittelt.
+
+Dasselbe Maß schützt die Einbruchserkennung: Sie lässt mindestens den größten
+bisher beobachteten Verkaufsschub als erklärbar durchgehen, damit ein normaler
+Verkauf nicht als Diebstahl gemeldet wird.
 
 ### Der Betrieb: `/betrieb`
 

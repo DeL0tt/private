@@ -123,6 +123,7 @@ const leer = () => ({
   letzterLedgerStamp: 0,  // bis hierhin wurde das Kassenbuch verarbeitet
   auszahlungSumme: 0, auszahlungTag: null, auszahlungen: [],  // 35k-Topf je Spieltag
   betriebBestand: null,   // zuletzt gesehener Bestand der Zoohandlung
+  lagerVerlauf: [],       // { t, lager } für den gemessenen Absatz
   lastPush: {},
 });
 
@@ -581,6 +582,77 @@ function auszahlungTopf(state) {
     frei: Math.max(0, CFG.AUSZAHLUNG_LIMIT - genutzt),
     buchungen: state.auszahlungen || [],
   };
+}
+
+/**
+ * Tatsächlicher Absatz, aus dem eigenen Verlauf gemessen.
+ *
+ * salesPerMinute aus der API ist eine Momentangröße und trifft nicht zu:
+ * Verkauft wird schubweise, alle paar Minuten. Wer damit hochrechnet, bekommt
+ * eine Reichweite, die um ein Vielfaches danebenliegt. Deshalb zählen wir
+ * selbst, wie viel über die Zeit wirklich abfließt.
+ *
+ * Gezählt werden nur Rückgänge; eine Lieferung füllt auf und ist kein Absatz.
+ */
+const VERLAUF_MAX = 180;                 // Stützstellen, bei 60 s Takt = 3 Std.
+
+function merkeLager(state, lager) {
+  if (typeof lager !== 'number') return;
+  state.lagerVerlauf = [...(state.lagerVerlauf || []), { t: Date.now(), lager }]
+    .slice(-VERLAUF_MAX);
+}
+
+function gemessenerAbsatz(state, minutenFenster = 60) {
+  const verlauf = (state.lagerVerlauf || []).filter(
+    x => Date.now() - x.t <= minutenFenster * MIN);
+  if (verlauf.length < 3) return null;
+
+  const spanne = verlauf[verlauf.length - 1].t - verlauf[0].t;
+  if (spanne < 10 * MIN) return null;    // zu kurz für eine belastbare Aussage
+
+  let abgeflossen = 0, schuebe = 0, groessterSchub = 0;
+  for (let i = 1; i < verlauf.length; i++) {
+    const delta = verlauf[i - 1].lager - verlauf[i].lager;
+    if (delta > 0) {
+      abgeflossen += delta; schuebe++;
+      if (delta > groessterSchub) groessterSchub = delta;
+    }
+  }
+  if (!abgeflossen) {
+    return { proMinute: 0, abgeflossen: 0, schuebe: 0, groessterSchub: 0, minuten: spanne / MIN };
+  }
+
+  return {
+    proMinute: abgeflossen / (spanne / MIN),
+    abgeflossen,
+    schuebe,
+    groessterSchub,
+    minuten: spanne / MIN,
+  };
+}
+
+/** Wie lange der Bestand bei gemessenem Absatz noch reicht – oder null. */
+function reichweite(state, bestand) {
+  const a = gemessenerAbsatz(state);
+  if (!a || !a.proMinute) return null;
+  return { ms: bestand / a.proMinute * MIN, ...a };
+}
+
+/**
+ * Beschreibt den Absatz für eine Meldung: gemessen, wenn genug Verlauf da ist,
+ * sonst ehrlich als unbekannt. Die Angabe der API wird nicht hochgerechnet.
+ */
+function absatzText(state, f) {
+  const lager = f.stock?.total ?? 0;
+  const r = reichweite(state, lager);
+  if (r) {
+    return `${r.proMinute.toFixed(1)}/Min gemessen über ${Math.round(r.minuten)} Min ` +
+      `– reicht noch ${dauer(r.ms)}.`;
+  }
+  const a = gemessenerAbsatz(state);
+  if (a && a.proMinute === 0) return 'In der letzten Stunde ging nichts raus.';
+  return `noch nicht gemessen (API meldet ${f.stock?.salesPerMinute ?? '?'}/Min, ` +
+    'was schubweise verkauft wird und sich nicht hochrechnen lässt).';
 }
 
 function ausschuettungStand(state) {
@@ -1166,6 +1238,7 @@ async function durchlauf() {
 
   // --- 1) Lager ---
   const lager = f.stock?.total;
+  merkeLager(state, lager);
   if (typeof lager === 'number') {
     // Plötzlicher Einbruch: Ein Rückgang, den der normale Absatz nicht erklärt,
     // ist ein Vorfall – etwa ein Einbruch. Nur prüfen, wenn der Watcher
@@ -1175,8 +1248,16 @@ async function durchlauf() {
     if (state.lager !== null && seitLetzter > 0 && seitLetzter <= CFG.LUECKE_MIN * MIN) {
       const verlust = state.lager - lager;
       const minuten = seitLetzter / MIN;
-      // Großzügig gerechnet: anderthalbfacher Absatz plus etwas Spielraum
-      const laufenderAbsatz = (f.stock.salesPerMinute || 0) * minuten * 1.5 + 5;
+      // Großzügig gerechnet: anderthalbfacher Absatz plus etwas Spielraum.
+      // Gemessen, nicht aus salesPerMinute hochgerechnet – und mindestens so
+      // viel wie der größte bisher beobachtete Schub, denn verkauft wird
+      // stoßweise. Sonst gilt ein ganz normaler Verkauf als Einbruch.
+      const gemessen = gemessenerAbsatz(state, 120);
+      const proMinute = gemessen?.proMinute ?? (f.stock.salesPerMinute || 0);
+      const laufenderAbsatz = Math.max(
+        proMinute * minuten * 1.5,
+        (gemessen?.groessterSchub || 0) * 1.5,
+      ) + 5;
 
       // Dazu alles, was im selben Fenster Geld gebracht hat – Verkäufe und
       // Großaufträge kosten Bestand, sind aber kein Vorfall.
@@ -1219,8 +1300,7 @@ async function durchlauf() {
     if (lager < CFG.LAGER_SCHWELLE) {
       await push('lager', '⚠️ Lagerbestand niedrig',
         `Lager: ${lager} / ${f.stock.capacity} (Schwelle ${CFG.LAGER_SCHWELLE})\n` +
-        `Absatz: ${f.stock.salesPerMinute}/Min – reicht noch ` +
-        `${f.stock.salesPerMinute ? dauer(lager / f.stock.salesPerMinute * MIN) : '?'}.`,
+        `Absatz: ${absatzText(state, f)}`,
         state, 'high');
     } else if (state.lager !== null && state.lager < CFG.LAGER_SCHWELLE) {
       state.lastPush.lager = 0;
@@ -1409,16 +1489,33 @@ const BEFEHLE = {
     oeffentlich: true,
     async ausfuehren() {
       const f = await firmaFrisch();
+      const st = load();
       const bestand = f.stock?.total ?? 0, kapazitaet = f.stock?.capacity ?? 0;
-      const absatz = f.stock?.salesPerMinute || 0;
       const anteil = kapazitaet ? Math.round(bestand / kapazitaet * 100) : 0;
       // Ein Balken sagt auf dem Handy mehr als eine Zahl.
       const balken = '█'.repeat(Math.round(anteil / 5)) + '░'.repeat(20 - Math.round(anteil / 5));
-      return `**Lager:** ${bestand} / ${kapazitaet} (${anteil} %)\n` +
-        '`' + balken + '`\n' +
-        `Absatz: ${absatz}/Min\n` +
-        `Reicht noch: ${absatz ? dauer(bestand / absatz * MIN) : 'unbestimmt (kein Absatz)'}` +
-        (bestand < CFG.LAGER_SCHWELLE ? `\n\n⚠️ Unter der Schwelle von ${CFG.LAGER_SCHWELLE} – nachfüllen.` : '');
+
+      let t = `**Lager:** ${bestand} / ${kapazitaet} (${anteil} %)\n` + '`' + balken + '`';
+
+      // Gemessen statt hochgerechnet: verkauft wird schubweise, die Angabe der
+      // API lässt sich nicht auf die Minute umlegen.
+      const r = reichweite(st, bestand);
+      const a = gemessenerAbsatz(st);
+      if (r) {
+        t += `\n\n**Reicht noch ${dauer(r.ms)}**\n` +
+          `${r.proMinute.toFixed(1)} Einheiten/Min, gemessen über ${Math.round(r.minuten)} Min ` +
+          `(${r.abgeflossen} Stück in ${r.schuebe} Schüben).`;
+      } else if (a) {
+        t += '\n\nIn der letzten Stunde ging nichts raus – keine Reichweite berechenbar.';
+      } else {
+        t += '\n\nReichweite noch unbekannt: der Watcher misst den Absatz selbst ' +
+          'und braucht dafür etwa 10 Minuten Laufzeit.';
+      }
+
+      if (bestand < CFG.LAGER_SCHWELLE) {
+        t += `\n\n⚠️ Unter der Schwelle von ${CFG.LAGER_SCHWELLE} – nachfüllen.`;
+      }
+      return t;
     },
   },
 
