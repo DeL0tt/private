@@ -2295,15 +2295,19 @@ const BEFEHLE = {
 
       if (optionen.wiederholung !== undefined) regel.wiederholung = Number(optionen.wiederholung);
 
+      // Geprüft wird gegen das gewählte Thema, nicht gegen das abgeleitete:
+      // mit einer Vorfallsart heißt es intern 'event_ABWERBUNG', und die
+      // Prüfung auf 'event_' hätte genau die Kombination abgelehnt, für die
+      // die Vorfallsart gedacht ist.
       if (optionen.takt !== undefined) {
-        if (thema !== 'ausschuettung_std_') {
+        if (optionen.thema !== 'ausschuettung_std_') {
           return '❌ `takt:` gibt es nur beim Zwischenstand der Ausschüttung.';
         }
         regel.takt = Number(optionen.takt);
       }
 
       if (optionen.erinnerung !== undefined) {
-        if (thema !== 'event_') {
+        if (optionen.thema !== 'event_') {
           return '❌ `erinnerung:` gibt es nur beim Vorfall im Unternehmen – ' +
                  'nur der bleibt offen, bis jemand handelt.';
         }
