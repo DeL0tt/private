@@ -276,7 +276,10 @@ const holeFirma  = () => api('/api/panel/company');
 // --betrieb-probe; die erste, die antwortet, wird gemerkt.
 const BETRIEB_PFADE = [
   '/api/panel/businesses', '/api/panel/business', '/api/panel/businesses/list',
-  '/api/businesses', '/api/panel/company/businesses', '/api/panel/betriebe',
+  '/api/panel/business/list', '/api/panel/business/all',
+  '/api/businesses', '/api/business', '/api/business/list',
+  '/api/panel/company/businesses', '/api/panel/betriebe',
+  '/api/dashboard/businesses', '/api/panel/businesses/overview',
 ];
 let betriebPfad = process.env.UC_BETRIEB_PFAD || '';
 
