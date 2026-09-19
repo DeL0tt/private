@@ -5,7 +5,8 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { discordAktiv, discordSende, discordStart, discordStop, empfaenger }
+import { discordAktiv, discordSende, discordStart, discordStop, empfaenger,
+         regelText, THEMEN, themaName, ladeRegeln, speichereRegeln }
   from './discord.mjs';
 
 /* ========================= KONFIGURATION ========================= */
@@ -351,8 +352,8 @@ async function push(thema, titel, text, state, prio = 'high', extra = {}) {
   info('PUSH:', titel);
   log(text);
 
-  const ziel = extra.ziel || empfaenger(thema);
-  await discordSende({ ziel, titel, text, prio,
+  const regel = extra.ziel ? { ziel: extra.ziel } : empfaenger(thema, ladeRegeln());
+  await discordSende({ ...regel, titel, text, prio,
                        teamTitel: extra.teamTitel, teamText: extra.teamText });
 
   if (!CFG.NTFY_TOPIC) return log('  (kein UC_NTFY_TOPIC gesetzt – nur Discord)');
@@ -1207,6 +1208,111 @@ const BEFEHLE = {
         `Token gültig bis: ${zugang.exp ? new Date(zugang.exp).toLocaleTimeString('de-DE') : 'unbekannt'}\n` +
         `UnicaCity erreichbar: ${st.apiWegSeit ? `nein, seit ${dauer(Date.now() - st.apiWegSeit)}` : 'ja'}\n` +
         `Wiki-Artikel bekannt: ${Object.keys(st.wiki || {}).length}`;
+    },
+  },
+
+  melden: {
+    beschreibung: 'Einstellen, wer welche Meldung sieht und ob gepingt wird',
+    nurChef: true,
+    optionen: [
+      { name: 'thema', description: 'Welche Meldung?', type: 3, required: false,
+        choices: THEMEN.map(([k, name]) => ({ name: name.slice(0, 100), value: k })) },
+      { name: 'ziel', description: 'Wer soll sie sehen?', type: 3, required: false,
+        choices: [
+          { name: 'nur ich',              value: 'chef' },
+          { name: 'nur das Team',         value: 'team' },
+          { name: 'ich und das Team',     value: 'beide' },
+          { name: 'ein bestimmter Kanal', value: 'kanal' },
+          { name: 'gar nicht (aus)',      value: 'aus' },
+          { name: 'zurück auf Standard',  value: 'standard' },
+        ] },
+      { name: 'kanal', description: 'Kanal, wenn ziel = ein bestimmter Kanal', type: 7, required: false },
+      { name: 'ping', description: 'Wer wird benachrichtigt?', type: 3, required: false,
+        choices: [
+          { name: 'niemand',   value: 'keiner' },
+          { name: '@everyone', value: 'everyone' },
+          { name: '@here',     value: 'here' },
+          { name: 'eine Rolle (Feld rolle ausfüllen)', value: 'rolle' },
+        ] },
+      { name: 'rolle', description: 'Rolle, wenn ping = eine Rolle', type: 8, required: false },
+    ],
+
+    async ausfuehren({ optionen }) {
+      const regeln = ladeRegeln();
+
+      // Ohne Thema: zeigen, was gerade gilt.
+      if (!optionen.thema) {
+        const zeilen = THEMEN.map(([k, name]) => {
+          const eigen = !!regeln[k];
+          return `${eigen ? '✏️' : '·'} **${name}**\n   ${regelText(empfaenger(k, regeln))}`;
+        });
+        return '**Wer sieht welche Meldung?**\n' + zeilen.join('\n') +
+          '\n\n✏️ = von dir geändert · · = Voreinstellung' +
+          '\n\nÄndern: `/melden thema:… ziel:… ping:…`';
+      }
+
+      const thema = optionen.thema;
+      const name = themaName(thema);
+
+      // Nur ein Thema genannt: dessen Regel zeigen.
+      if (!optionen.ziel && !optionen.ping) {
+        return `**${name}**\n${regelText(empfaenger(thema, regeln))}\n\n` +
+          '_Zum Ändern zusätzlich `ziel:` oder `ping:` angeben._';
+      }
+
+      if (optionen.ziel === 'standard') {
+        delete regeln[thema];
+        speichereRegeln(regeln);
+        return `**${name}** steht wieder auf der Voreinstellung:\n` +
+          regelText(empfaenger(thema, regeln));
+      }
+
+      const regel = { ...(regeln[thema] || empfaenger(thema, regeln)) };
+
+      if (optionen.ziel) {
+        if (optionen.ziel === 'kanal' && !optionen.kanal) {
+          return '❌ Bei `ziel: ein bestimmter Kanal` musst du auch `kanal:` angeben.';
+        }
+        regel.ziel = optionen.ziel;
+        if (optionen.ziel === 'kanal') regel.kanal = optionen.kanal;
+        else delete regel.kanal;
+      }
+
+      if (optionen.ping) {
+        if (optionen.ping === 'rolle' && !optionen.rolle) {
+          return '❌ Bei `ping: eine Rolle` musst du auch `rolle:` angeben.';
+        }
+        regel.ping = optionen.ping === 'rolle' ? optionen.rolle : optionen.ping;
+      }
+
+      regeln[thema] = regel;
+      speichereRegeln(regeln);
+
+      let t = `✅ **${name}**\n${regelText(regel)}`;
+
+      // Bei den Meldungen mit Namen oder Beträgen einmal deutlich sagen, was
+      // da künftig mitliest. Der Inhaber darf das entscheiden – aber nicht
+      // versehentlich.
+      const heikel = {
+        'lagerverlust_': 'Namen aller Anwesenden zum Zeitpunkt des Verlusts',
+        'personal_':     'Namen der Anwesenden',
+        'vorfall_':      'Beträge, Kassenstand und Namen der Anwesenden',
+        'tagesbericht_': 'die Onlinezeiten aller Angestellten',
+        'ausschuettung_': 'den ausgeschütteten Betrag',
+        'auth':          'Hinweise auf deinen Zugang',
+      }[thema];
+      if (heikel && ['team', 'beide', 'kanal'].includes(regel.ziel)) {
+        t += `\n\n⚠️ Diese Meldung enthält ${heikel}. Das lesen ab jetzt alle mit, ` +
+             'die den Kanal sehen können.';
+      }
+      if (regel.ziel === 'aus') {
+        t += '\n\n⚠️ Diese Meldung bekommt ab jetzt **niemand** – auch du nicht.';
+      }
+      if (regel.ping === 'everyone') {
+        t += '\n\nDamit @everyone wirklich klingelt, braucht der Bot im Kanal das ' +
+             'Recht „Everyone erwähnen".';
+      }
+      return t + '\n\n_Gilt sofort, auch nach einem Neustart._';
     },
   },
 

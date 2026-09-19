@@ -183,7 +183,11 @@ Vollständige Einrichtung: **DISCORD.md**. Im Alltag reichen diese:
 | `journalctl -u uc-watcher \| grep discord` | Was der Bot macht |
 
 Im Discord selbst – für alle: `/firma`, `/lager`, `/ausschuettung`, `/zeiten`,
-`/hilfe`. Nur für dich: `/kasse`, `/tagesbericht`, `/watcher`.
+`/hilfe`. Nur für dich: `/kasse`, `/tagesbericht`, `/watcher`, `/melden`.
+
+`/melden` stellt um, wer welche Meldung sieht und ob dabei eine Rolle oder
+@everyone gepingt wird – ohne SSH, ohne Neustart. `/melden` ohne Angaben zeigt
+die aktuelle Übersicht. Die Einstellungen stehen in `uc-watcher-regeln.json`.
 
 Antworten sieht nur, wer den Befehl eingegeben hat.
 

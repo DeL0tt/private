@@ -15,9 +15,14 @@
  * Bot gerichtet sind.
  */
 
+import fs from 'node:fs';
+
 // Die Adresse ist überschreibbar, damit die Zustellung gegen einen lokalen
 // Server geprüft werden kann, ohne echte Nachrichten zu verschicken.
 const API = process.env.UC_DISCORD_API || 'https://discord.com/api/v10';
+
+// Hier landen die über /melden gesetzten Regeln.
+const REGELN_DATEI = process.env.UC_DISCORD_REGELN || './uc-watcher-regeln.json';
 
 const CFG = {
   TOKEN:      process.env.UC_DISCORD_TOKEN || '',
@@ -42,6 +47,36 @@ function appId() {
     if (/^\d{15,25}$/.test(id)) return id;
   } catch { /* fällt unten durch */ }
   return '';
+}
+
+/* ========================= REGELSPEICHER ========================= */
+
+/**
+ * Die über /melden gesetzten Regeln stehen in einer eigenen Datei, nicht im
+ * großen Zustand. Grund: durchlauf() lädt den Zustand am Anfang und schreibt
+ * ihn am Ende zurück. Eine Regel, die in der Zwischenzeit gesetzt wird, wäre
+ * mit der älteren Kopie wieder verschwunden. Eine eigene Datei kann das nicht
+ * passieren.
+ */
+let regelCache = { stand: -1, regeln: {} };
+
+export function ladeRegeln() {
+  try {
+    const stand = fs.statSync(REGELN_DATEI).mtimeMs;
+    if (stand === regelCache.stand) return regelCache.regeln;
+    const regeln = JSON.parse(fs.readFileSync(REGELN_DATEI, 'utf8'));
+    regelCache = { stand, regeln };
+    return regeln;
+  } catch {
+    return {};                       // noch nie etwas eingestellt
+  }
+}
+
+export function speichereRegeln(regeln) {
+  const tmp = REGELN_DATEI + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(regeln, null, 2));
+  fs.renameSync(tmp, REGELN_DATEI);
+  regelCache = { stand: -1, regeln: {} };    // beim nächsten Lesen neu holen
 }
 
 /* ========================= EMPFÄNGER ========================= */
@@ -76,10 +111,71 @@ const TEAM_LISTE = (process.env.UC_DISCORD_TEAM_THEMEN || '').trim()
   ? process.env.UC_DISCORD_TEAM_THEMEN.split(',').map(t => t.trim()).filter(Boolean)
   : TEAM_THEMEN;
 
-export function empfaenger(thema) {
+/**
+ * Alle Meldungsarten mit sprechendem Namen. Der Schlüssel ist der Anfang des
+ * Themas, wie push() es vergibt. Die Liste ist das, was /melden zur Auswahl
+ * anbietet – Discord erlaubt höchstens 25 Einträge.
+ */
+export const THEMEN = [
+  ['lagerverlust_',          'Plötzlicher Lagerverlust (mit Namen)'],
+  ['lager',                  'Lagerbestand niedrig'],
+  ['preissprung',            'Lieferengpass, Einkauf teurer'],
+  ['pausiert_trotz_online',  'Firma pausiert, obwohl jemand online ist'],
+  ['ausschuettung_std_',     'Ausschüttung: Zwischenstand'],
+  ['ausschuettung_faellig',  'Ausschüttung ist fällig'],
+  ['ausschuettung_',         'Ausschüttung erfolgt (mit Betrag)'],
+  ['event_',                 'Vorfall im Unternehmen'],
+  ['vorfall_',               'Kassenvorfall (mit Betrag und Namen)'],
+  ['unbekannt_',             'Unbekannte Buchung'],
+  ['personal_',              'Personal abgeworben oder unvollständig'],
+  ['loehne',                 'Löhne nicht bezahlt'],
+  ['miete',                  'Mietrückstand'],
+  ['tagesbericht_',          'Tagesbericht mit Onlinezeiten'],
+  ['auth',                   'Zugang abgelaufen'],
+  ['apiweg',                 'UnicaCity nicht erreichbar'],
+  ['wiki_',                  'Wiki-Änderungen'],
+  ['notion_zugang',          'Notion nicht erreichbar'],
+  ['notion_',                'Notion-Abgleich'],
+  ['selftest',               'Probemeldung'],
+];
+
+export const themaName = (schluessel) =>
+  THEMEN.find(([k]) => k === schluessel)?.[1] || schluessel;
+
+/**
+ * Bestimmt, wer eine Meldung bekommt und ob dabei gepingt wird.
+ *
+ * Reihenfolge: eine ausdrücklich über /melden gesetzte Regel gewinnt, sonst
+ * gelten die Voreinstellungen. Beim Vergleich zählt der längste passende
+ * Anfang, damit 'ausschuettung_faellig' nicht von 'ausschuettung_' verdeckt
+ * wird.
+ *
+ * regeln: { '<themenanfang>': { ziel, kanal, ping } } – aus dem Zustand.
+ */
+export function empfaenger(thema, regeln = {}) {
   const t = String(thema || '');
-  if (NUR_CHEF.some(x => t.startsWith(x))) return 'chef';
-  return TEAM_LISTE.some(x => t.startsWith(x)) ? 'beide' : 'chef';
+
+  const treffer = Object.keys(regeln || {})
+    .filter(k => t.startsWith(k))
+    .sort((a, b) => b.length - a.length)[0];
+  if (treffer) return { ...regeln[treffer] };
+
+  if (NUR_CHEF.some(x => t.startsWith(x))) return { ziel: 'chef' };
+  return { ziel: TEAM_LISTE.some(x => t.startsWith(x)) ? 'beide' : 'chef' };
+}
+
+/** Beschreibt eine Regel in einem Satz, für die Anzeige in Discord. */
+export function regelText(regel) {
+  const wohin = {
+    chef: 'nur an dich', team: 'nur ins Team', beide: 'an dich und ins Team',
+    kanal: regel.kanal ? `in <#${regel.kanal}>` : 'in einen Kanal (fehlt!)',
+    aus: 'gar nicht',
+  }[regel.ziel] || regel.ziel;
+  const ping = !regel.ping || regel.ping === 'keiner' ? ''
+    : regel.ping === 'everyone' ? ' · pingt @everyone'
+    : regel.ping === 'here' ? ' · pingt @here'
+    : ` · pingt <@&${regel.ping}>`;
+  return wohin + ping;
 }
 
 /* ========================= REST ========================= */
@@ -149,10 +245,21 @@ function embed(titel, text, prio, fuss) {
   };
 }
 
-async function inKanal(kanal, titel, text, prio, fuss) {
+// Ein Ping steht als Text über dem Embed – in Embeds selbst benachrichtigt
+// Discord niemanden. allowed_mentions muss es ausdrücklich erlauben, sonst
+// steht die Erwähnung nur da, ohne zu klingeln.
+function pingTeile(ping) {
+  if (!ping || ping === 'keiner') return {};
+  if (ping === 'everyone') return { content: '@everyone', allowed_mentions: { parse: ['everyone'] } };
+  if (ping === 'here')     return { content: '@here',     allowed_mentions: { parse: ['everyone'] } };
+  return { content: `<@&${ping}>`, allowed_mentions: { roles: [String(ping)] } };
+}
+
+async function inKanal(kanal, titel, text, prio, fuss, ping) {
   if (!kanal) return;
   try {
-    await rest(`/channels/${kanal}/messages`, 'POST', { embeds: [embed(titel, text, prio, fuss)] });
+    await rest(`/channels/${kanal}/messages`, 'POST',
+      { embeds: [embed(titel, text, prio, fuss)], ...pingTeile(ping) });
   } catch (e) { console.error('  Discord-Meldung fehlgeschlagen:', e.message); }
 }
 
@@ -163,14 +270,21 @@ async function inKanal(kanal, titel, text, prio, fuss) {
  *       'team'  – nur in den Team-Kanal
  *       'beide' – an beide, das Team bekommt teamText/teamTitel, falls gesetzt
  */
-export async function discordSende({ ziel, titel, text, prio = 'high', teamTitel, teamText }) {
-  if (!discordAktiv()) return;
+export async function discordSende({ ziel, kanal, ping, titel, text,
+                                     prio = 'high', teamTitel, teamText }) {
+  if (!discordAktiv() || ziel === 'aus') return;
 
   if (ziel === 'chef' || ziel === 'beide') {
+    // In der DM wird nicht gepingt – da kommt die Meldung ohnehin nur bei dir an.
     await inKanal(await chefKanal(), titel, text, prio, 'nur für den Firmeninhaber');
   }
   if (ziel === 'team' || ziel === 'beide') {
-    await inKanal(CFG.TEAM_KANAL, teamTitel || titel, teamText || text, prio);
+    await inKanal(CFG.TEAM_KANAL, teamTitel || titel, teamText || text, prio, undefined, ping);
+  }
+  if (ziel === 'kanal') {
+    // Ein frei gewählter Kanal bekommt die Team-Fassung: dort können Leute
+    // mitlesen, die nicht der Inhaber sind.
+    await inKanal(kanal, teamTitel || titel, teamText || text, prio, undefined, ping);
   }
 }
 

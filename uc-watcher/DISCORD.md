@@ -108,10 +108,17 @@ Wo „ohne Namen" oder „ohne Beträge" steht, bekommt das Team eine gekürzte
 Fassung derselben Meldung – dieselbe Information, ohne das, was es nicht
 angeht.
 
-Die Team-Liste lässt sich ändern. `UC_DISCORD_TEAM_THEMEN=lager,event_`
-etwa stellt nur noch diese beiden zu, alles andere geht ausschließlich an
-dich. Die Ausnahmen `lagerverlust_` und `personal_` bleiben davon unberührt:
-die gehen **nie** ins Team, auch wenn man sie einträgt.
+Das ist nur die Voreinstellung. **Mit `/melden` stellst du jede Meldung
+einzeln um** – siehe unten. Die Tabelle gilt für alles, was du nicht selbst
+geändert hast.
+
+Die Voreinstellung lässt sich auch pauschal verschieben:
+`UC_DISCORD_TEAM_THEMEN=lager,event_` stellt dem Team nur noch diese beiden
+zu. Dieser Schalter ist ein grobes Werkzeug, darum greift er bei
+`lagerverlust_` und `personal_` nicht – die enthalten Namen von Anwesenden
+und sollen nicht durch einen Tippfehler in einer Liste öffentlich werden. Über
+`/melden` kannst du sie trotzdem freigeben, dort ist es eine bewusste
+Einzelentscheidung und der Bot sagt dir vorher, was drinsteht.
 
 ---
 
@@ -134,6 +141,7 @@ Nur für dich:
 | `/kasse` | Kassenstand, Gewinn, letzte fünf Buchungen |
 | `/tagesbericht` | Onlinezeiten des ganzen Teams |
 | `/watcher` | Läuft er, Token-Ablauf, Erreichbarkeit |
+| `/melden` | Einstellen, wer welche Meldung sieht und ob gepingt wird |
 
 Antworten sind **nur für den Fragenden sichtbar** – es entsteht kein
 Geplapper im Kanal, und `/kasse` zeigt niemandem sonst deine Zahlen. Bei
@@ -142,6 +150,57 @@ denselben Befehl ohne.
 
 Versucht ein Angestellter `/kasse`, bekommt er nur den Hinweis, dass das dem
 Inhaber vorbehalten ist. Der Befehl wird dabei nicht ausgeführt.
+
+### Meldungen umstellen: `/melden`
+
+Damit änderst du im Discord selbst, **ohne SSH und ohne Neustart**, wer welche
+Meldung sieht.
+
+`/melden` ohne alles zeigt eine Übersicht aller 20 Meldungsarten mit ihrem
+aktuellen Ziel. Ein ✏️ markiert, was du selbst geändert hast.
+
+`/melden thema:<Meldung>` zeigt nur diese eine Regel.
+
+Zum Ändern kommen `ziel:` und/oder `ping:` dazu:
+
+| `ziel:` | Wirkung |
+|---|---|
+| nur ich | geht ausschließlich an dich |
+| nur das Team | geht ausschließlich in den Team-Kanal |
+| ich und das Team | beides, das Team in der gekürzten Fassung |
+| ein bestimmter Kanal | in einen frei gewählten Kanal (`kanal:` ausfüllen) |
+| gar nicht (aus) | die Meldung entfällt komplett, auch für dich |
+| zurück auf Standard | die Voreinstellung aus der Tabelle oben gilt wieder |
+
+| `ping:` | Wirkung |
+|---|---|
+| niemand | nur die Nachricht, keine Benachrichtigung |
+| @everyone | alle im Kanal werden angepingt |
+| @here | alle, die gerade online sind |
+| eine Rolle | eine bestimmte Rolle (`rolle:` ausfüllen) |
+
+**Beispiele:**
+
+```
+/melden thema:Lagerbestand niedrig  ziel:nur das Team  ping:eine Rolle  rolle:@Lagerdienst
+/melden thema:Vorfall im Unternehmen  ping:@everyone
+/melden thema:Wiki-Änderungen  ziel:gar nicht (aus)
+/melden thema:Tagesbericht mit Onlinezeiten  ziel:zurück auf Standard
+```
+
+Drei Dinge dazu:
+
+- **In der DM wird nie gepingt.** Ein Ping wirkt nur in Kanälen – bei dir
+  kommt die Meldung ohnehin direkt an.
+- **Bei heiklen Meldungen warnt der Bot.** Stellst du etwas mit Namen oder
+  Beträgen auf einen geteilten Kanal um, sagt die Antwort dir, was dort
+  künftig mitgelesen wird. Verboten wird es nicht – es ist deine Firma.
+- **Für @everyone braucht der Bot ein Recht.** Ohne „Everyone erwähnen" im
+  Kanal steht die Erwähnung nur da, ohne zu klingeln.
+
+Die Regeln liegen in `uc-watcher-regeln.json` neben dem Zustand und gelten
+sofort, auch nach einem Neustart. Löschst du die Datei, gilt wieder die
+Tabelle oben.
 
 ### Eigene Zeiten für Angestellte
 
