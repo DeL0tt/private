@@ -54,7 +54,7 @@ Der Bot ist auf drei Kanäle ausgelegt. Zwei reichen, der dritte ist optional:
 | Kanal | Wer sieht ihn | Was reinkommt |
 |---|---|---|
 | `benachrichtigung` | alle | Lager, Lieferengpass, Firma pausiert, Ausschüttung |
-| `vorfälle` | alle | Vorfall, Kassenvorfall, unbekannte Buchung – **gekürzt** |
+| `vorfälle` | alle | Vorfall, Kassenvorfall – **gekürzt** |
 | `probleme` | **nur du** | Kasse, Buchungen, Personal, Zeiten, Zugang, Technik – und alle Vorfälle vollständig |
 
 Ein Vorfall geht also an beide Stellen: im geteilten Kanal ohne Kassenstand und
@@ -138,7 +138,6 @@ Mit eingerichtetem `#vorfälle` sieht die Verteilung so aus – „Team" meint
 | Firma pausiert, obwohl jemand online ist | ✅ | ✅ |
 | Vorfall im Unternehmen | → `#vorfälle`, ohne Namen | ✅ mit Namen |
 | Kassenvorfall | → `#vorfälle`, ohne Kassenstand | ✅ vollständig |
-| Unbekannte Buchung | → `#vorfälle`, ohne Kassenstand | ✅ vollständig |
 | Zwischenstand bis zur Ausschüttung | ✅ ohne Beträge | ✅ mit Gewinn |
 | Ausschüttung fällig | ✅ ohne Beträge | ✅ mit Gewinn |
 | Plötzlicher Lagerverlust (Diebstahlverdacht) | – | ✅ |
@@ -176,8 +175,49 @@ Jeder im Server kann benutzen:
 | `/firma` | Status, Lager, Personal, wer online ist |
 | `/lager` | Bestand mit Balken, Absatz, Reichweite |
 | `/ausschuettung` | Fortschritt bis zur nächsten Ausschüttung |
-| `/zeiten` | Die eigene Onlinezeit heute |
+| `/zeiten` | Wer gerade online ist, plus die eigene Zeit heute |
+| `/gehalt` | Wie viel vom Tagesbudget (35.000$) noch frei ist |
 | `/hilfe` | Welche Befehle es gibt |
+
+### Ein Kanal für Befehle
+
+Antworten sind normalerweise **nur für den Fragenden sichtbar**. In einem
+eigenen Befehlskanal ist das unpraktisch – dort soll das Team mitlesen können.
+Dafür gibt es `UC_DISCORD_BEFEHL_KANAL`:
+
+```ini
+UC_DISCORD_BEFEHL_KANAL=123456789012345678    # z. B. #befehle
+```
+
+Dort antworten `/firma`, `/lager`, `/ausschuettung`, `/zeiten` und `/gehalt`
+**für alle sichtbar**. Überall sonst bleiben sie privat.
+
+Zwei Dinge bleiben geschützt: Die vorbehaltenen Befehle (`/kasse`,
+`/tagesbericht`, …) antworten **auch dort privat**. Und `/firma` und
+`/ausschuettung` zeigen im offenen Kanal **keine Beträge** – auch dann nicht,
+wenn der Fragende sie sonst sehen dürfte. Sonst stünde der Kassenstand für
+alle da, nur weil der Falsche getippt hat.
+
+### Das Tagesbudget: `/gehalt`
+
+Gehälter und Auszahlungen zehren an einem gemeinsamen Topf von 35.000$ je
+Spieltag. `/gehalt` zeigt, wie viel davon noch frei ist, und listet auf, was
+heute schon entnommen wurde.
+
+Gezählt werden Buchungen der Kategorien `auszahlung` und `gehalt`. **Löhne
+zählen bewusst nicht** – das sind die NPC-Kosten der Firma, kein Geld, das
+sich jemand auszahlt.
+
+Passt die Rechnung nicht zum Spiel, lässt sich beides ändern:
+
+```ini
+UC_AUSZAHLUNG_LIMIT=35000
+UC_AUSZAHLUNG_KATEGORIEN=auszahlung,gehalt
+```
+
+`node --env-file=.env watcher.mjs --gehalt` zeigt dasselbe auf dem Server,
+samt der gezählten Buchungen – damit lässt sich prüfen, ob eine Kategorie
+fehlt.
 
 Standardmäßig nur für dich – einzeln weitergebbar (siehe unten):
 
@@ -245,6 +285,13 @@ Zum Ändern kommen `ziel:` und/oder `ping:` dazu:
 | ich und das Team | beides, das Team in der gekürzten Fassung |
 | ein bestimmter Kanal | in einen frei gewählten Kanal (`kanal:` ausfüllen) |
 | ein bestimmter Kanal und ich | zusätzlich zu dir – der Kanal bekommt die gekürzte Fassung |
+
+Beim Zwischenstand der Ausschüttung gibt es zusätzlich `takt:`:
+
+```
+/melden thema:Ausschüttung: Zwischenstand  takt:alle drei Stunden
+/melden thema:Ausschüttung: Zwischenstand  takt:nur wenn die Ausschüttung fällig ist
+```
 | gar nicht (aus) | die Meldung entfällt komplett, auch für dich |
 | zurück auf Standard | die Voreinstellung aus der Tabelle oben gilt wieder |
 
@@ -255,6 +302,11 @@ Zum Ändern kommen `ziel:` und/oder `ping:` dazu:
 | @everyone | alle im Kanal werden angepingt |
 | @here | alle, die im Discord gerade online sind |
 | eine Rolle | eine bestimmte Rolle (`rolle:` ausfüllen) |
+
+**Voreingestellt** pingt ein **Vorfall im Unternehmen** und eine **pausierte
+Firma** bereits die Leute, die gerade spielen – beides hat eine Frist oder
+kostet laufend Geld. Das wirkt, sobald die Konten per `/zuordnen` bekannt
+sind; vorher bleibt es still.
 
 > `@here` und „ingame online" sind nicht dasselbe: `@here` meint, wer gerade
 > Discord offen hat, auch am Handy im Bus. „Ingame online" meint, wer wirklich

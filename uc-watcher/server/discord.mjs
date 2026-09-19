@@ -31,6 +31,9 @@ const CFG = {
   TEAM_KANAL:    process.env.UC_DISCORD_TEAM_KANAL || '',
   CHEF_KANAL:    process.env.UC_DISCORD_CHEF_KANAL || '',
   VORFALL_KANAL: process.env.UC_DISCORD_VORFALL_KANAL || '',
+  // Kanal, in dem Befehlsantworten für alle sichtbar sind statt nur für den
+  // Fragenden. Anderswo bleibt jede Antwort privat.
+  BEFEHL_KANAL:  process.env.UC_DISCORD_BEFEHL_KANAL || '',
   CHEF_ID:    process.env.UC_DISCORD_CHEF_ID || '',
 };
 
@@ -159,7 +162,19 @@ const NUR_CHEF = ['lagerverlust_', 'personal_'];
 // gehen zusätzlich an den Inhaber, weil dort die vollständige Fassung mit
 // Kassenstand und Anwesenheitsliste steht – im geteilten Kanal die gekürzte.
 // Ohne UC_DISCORD_VORFALL_KANAL bleibt alles beim Inhaber.
-const VORFALL_THEMEN = ['event_', 'vorfall_', 'unbekannt_'];
+const VORFALL_THEMEN = ['event_', 'vorfall_'];
+
+// Wo von Haus aus gepingt wird. Ein Vorfall hat eine Frist und eine pausierte
+// Firma kostet laufend Geld – beides muss jemanden erreichen, der gerade
+// spielen ist. Gepingt wird nur, wer per /zuordnen bekannt ist; ohne
+// Zuordnung bleibt es still. Über /melden änderbar.
+const PING_VOREINSTELLUNG = { 'event_': 'online', 'pausiert_trotz_online': 'online' };
+
+const standardPing = (t) => {
+  const treffer = Object.keys(PING_VOREINSTELLUNG)
+    .filter(k => t.startsWith(k)).sort((a, b) => b.length - a.length)[0];
+  return treffer ? { ping: PING_VOREINSTELLUNG[treffer] } : {};
+};
 
 // Mit UC_DISCORD_TEAM_THEMEN lässt sich die Team-Liste komplett ersetzen, etwa
 // auf 'lager,event_', wenn dem Team weniger zugestellt werden soll.
@@ -182,7 +197,6 @@ export const THEMEN = [
   ['ausschuettung_',         'Ausschüttung erfolgt (mit Betrag)'],
   ['event_',                 'Vorfall im Unternehmen'],
   ['vorfall_',               'Kassenvorfall (mit Betrag und Namen)'],
-  ['unbekannt_',             'Unbekannte Buchung'],
   ['personal_',              'Personal abgeworben oder unvollständig'],
   ['loehne',                 'Löhne nicht bezahlt'],
   ['miete',                  'Mietrückstand'],
@@ -218,9 +232,9 @@ export function empfaenger(thema, regeln = {}) {
 
   if (NUR_CHEF.some(x => t.startsWith(x))) return { ziel: 'chef' };
   if (CFG.VORFALL_KANAL && VORFALL_THEMEN.some(x => t.startsWith(x))) {
-    return { ziel: 'kanal', kanal: CFG.VORFALL_KANAL, auchChef: true };
+    return { ziel: 'kanal', kanal: CFG.VORFALL_KANAL, auchChef: true, ...standardPing(t) };
   }
-  return { ziel: TEAM_LISTE.some(x => t.startsWith(x)) ? 'beide' : 'chef' };
+  return { ziel: TEAM_LISTE.some(x => t.startsWith(x)) ? 'beide' : 'chef', ...standardPing(t) };
 }
 
 /** Beschreibt eine Regel in einem Satz, für die Anzeige in Discord. */
@@ -449,7 +463,11 @@ export async function fuehreAus(interaktion, befehle) {
   const nutzer = interaktion.member?.user || interaktion.user || {};
   const rollen = interaktion.member?.roles || [];
   const istChef = !!CFG.CHEF_ID && nutzer.id === CFG.CHEF_ID;
-  const heimlich = b.heimlich !== false;              // Standard: nur der Fragende sieht es
+  // Antworten sind privat – außer der Befehl ist dafür freigegeben und wird im
+  // Befehlskanal benutzt. Dann liest das ganze Team mit, was gewollt ist.
+  const imBefehlKanal = !!CFG.BEFEHL_KANAL && interaktion.channel_id === CFG.BEFEHL_KANAL;
+  const oeffentlich = !!b.oeffentlich && imBefehlKanal;
+  const heimlich = !oeffentlich;
 
   // Ein vorbehaltener Befehl lässt sich per /rechte an Rollen oder einzelne
   // Konten weitergeben – außer er ist ausdrücklich nicht übertragbar.
@@ -471,7 +489,7 @@ export async function fuehreAus(interaktion, befehle) {
   try {
     const optionen = {};
     for (const o of interaktion.data?.options || []) optionen[o.name] = o.value;
-    const ergebnis = await b.ausfuehren({ istChef, nutzer, rollen, optionen, darf });
+    const ergebnis = await b.ausfuehren({ istChef, nutzer, rollen, optionen, darf, oeffentlich });
     await antworte(interaktion, ergebnis, heimlich);
     log('Befehl', name, 'von', nutzer.username || nutzer.id);
   } catch (e) {

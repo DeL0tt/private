@@ -57,6 +57,11 @@ const CFG = {
   // normal und sollen nicht aufs Handy.
   API_WEG_MELDUNG_MIN: +(process.env.UC_API_WEG_MELDUNG_MIN || 30),
 
+  // Obergrenze für Auszahlungen und Gehälter je Spieltag
+  AUSZAHLUNG_LIMIT: +(process.env.UC_AUSZAHLUNG_LIMIT || 35_000),
+  // Unbekannte Buchungen melden – aus, weil es vor allem Lärm war
+  UNBEKANNTE_BUCHUNGEN: process.env.UC_UNBEKANNTE_BUCHUNGEN === '1',
+
   LUECKE_MIN:       +(process.env.UC_LUECKE_MIN || 10),
   TAGESWECHSEL_STD: +(process.env.UC_TAGESWECHSEL_STD || 4),
 
@@ -71,7 +76,14 @@ const VORFALL_KATEGORIEN = [
   'einbruch', 'diebstahl', 'strafe', 'bußgeld', 'bussgeld', 'sabotage',
 ];
 
-// Bekannte, harmlose Kategorien – alles andere wird als unbekannt gemeldet.
+// Was aus dem 35.000$-Topf für Auszahlungen und Gehälter genommen wird.
+// Löhne stehen bewusst nicht dabei: das sind die NPC-Kosten der Firma, kein
+// Geld, das sich ein Mitarbeiter auszahlt.
+const AUSZAHLUNG_KATEGORIEN =
+  (process.env.UC_AUSZAHLUNG_KATEGORIEN || 'auszahlung,gehalt')
+    .split(',').map(w => w.trim().toLowerCase()).filter(Boolean);
+
+// Bekannte, harmlose Kategorien – alles andere landet im Log.
 const NORMALE_KATEGORIEN = [
   'verkauf', 'einkauf', 'löhne', 'loehne', 'nebenkosten', 'talent',
   'ausschüttung', 'ausschuettung', 'einzahlung', 'auszahlung', 'quest', 'auftrag',
@@ -96,6 +108,7 @@ const leer = () => ({
   preise: null,            // letzte Einkaufspreise je Ware
   letzterLagerTick: 0,
   letzterLedgerStamp: 0,  // bis hierhin wurde das Kassenbuch verarbeitet
+  auszahlungSumme: 0, auszahlungTag: null, auszahlungen: [],  // 35k-Topf je Spieltag
   lastPush: {},
 });
 
@@ -394,6 +407,27 @@ async function push(thema, titel, text, state, prio = 'high', extra = {}) {
 
 /* ========================= AUSSCHÜTTUNG ========================= */
 
+/**
+ * Stand des Topfes für Auszahlungen und Gehälter, der je Spieltag gilt.
+ * Setzt beim Tageswechsel (04:00) zurück, denn dann beginnt er von vorn.
+ */
+function auszahlungTopf(state) {
+  const heute = spieltag();
+  if (state.auszahlungTag !== heute) {
+    state.auszahlungTag = heute;
+    state.auszahlungSumme = 0;
+    state.auszahlungen = [];
+  }
+  const genutzt = state.auszahlungSumme || 0;
+  return {
+    tag: heute,
+    genutzt,
+    limit: CFG.AUSZAHLUNG_LIMIT,
+    frei: Math.max(0, CFG.AUSZAHLUNG_LIMIT - genutzt),
+    buchungen: state.auszahlungen || [],
+  };
+}
+
 function ausschuettungStand(state) {
   const ziel = CFG.AUSSCHUETTUNG_STD * 3_600_000;
   const rest = Math.max(0, ziel - state.teamOnlineMs);
@@ -411,8 +445,13 @@ function ausschuettungStand(state) {
 async function pruefeAusschuettung(state) {
   const ziel = CFG.AUSSCHUETTUNG_STD * 3_600_000;
 
+  // Wie oft der Zwischenstand kommt, ist über /melden einstellbar: 1 = jede
+  // Stunde, 3 = alle drei, 0 = gar nicht (nur die fertige Ausschüttung).
+  const takt = ladeRegeln()['ausschuettung_std_']?.takt
+    ?? (CFG.AUSSCHUETTUNG_STUNDENMELDUNG ? 1 : 0);
+
   const stunden = Math.floor(state.teamOnlineMs / 3_600_000);
-  if (CFG.AUSSCHUETTUNG_STUNDENMELDUNG
+  if (takt > 0 && stunden % takt === 0
       && stunden > (state.gemeldeteStunde || 0) && stunden < CFG.AUSSCHUETTUNG_STD) {
     state.gemeldeteStunde = stunden;
     const wer = Object.entries(state.spieler).filter(([, p]) => p.online).map(([n]) => n);
@@ -446,19 +485,42 @@ async function pruefeAusschuettung(state) {
 /* ========================= VORFÄLLE ========================= */
 
 // Das Ereignis der Firma lesbar machen, ohne seinen Aufbau zu kennen.
+// Felder, die das Spiel mitschickt, die aber niemand lesen will: technische
+// Kennungen und Flaggen. Der Rest wird benannt statt roh ausgegeben.
+const EREIGNIS_EGAL = ['type', 'interactive', 'id', 'eventid', 'key'];
+
 function ereignisText(ev) {
   if (!ev) return '';
   if (typeof ev === 'string') return sauber(ev);
-  const zeilen = [];
+
+  const teile = [];
+  const name = sauber(ev.name || ev.title || '');
+  const text = sauber(ev.description || ev.text || '');
+  if (name) teile.push(`**${name}**`);
+  if (text) teile.push(text);
+
+  // Die Frist ist das Wichtigste am Vorfall – sie kommt ans Ende, gut sichtbar.
+  const minuten = ev.minutesLeft ?? ev.minutes ?? null;
+  if (minuten !== null && minuten !== undefined) {
+    teile.push(`⏳ Noch ${minuten} ${minuten === 1 ? 'Minute' : 'Minuten'} Zeit`);
+  }
+
+  // Alles, was das Spiel sonst noch mitschickt, geht nicht verloren – aber
+  // erst nach dem, was man wirklich liest.
+  const rest = [];
   for (const [k, v] of Object.entries(ev)) {
     if (v === null || typeof v === 'object') continue;
+    if (EREIGNIS_EGAL.includes(k.toLowerCase())) continue;
+    if (['name', 'title', 'description', 'text', 'minutesleft', 'minutes'].includes(k.toLowerCase())) continue;
     let wert = v;
     if (/ms$/i.test(k) && typeof v === 'number' && v > 1000) wert = dauer(v);
     else if (/(endsAt|expires|until|bis)/i.test(k) && typeof v === 'number' && v > 1e12)
       wert = new Date(v).toLocaleTimeString('de-DE');
-    zeilen.push(`${k}: ${typeof wert === 'string' ? sauber(wert) : wert}`);
+    rest.push(`${k}: ${typeof wert === 'string' ? sauber(wert) : wert}`);
   }
-  return zeilen.join('\n');
+  if (rest.length) teile.push(rest.join('\n'));
+
+  return teile.join('\n\n');
 }
 
 // Was kostet der Einkauf gerade, im Schnitt über alle Waren?
@@ -815,17 +877,28 @@ async function werteBuchungenAus(state, buchungen) {
       continue;
     }
 
-    // Unbekannte Kategorie: einmal melden, damit nichts untergeht
+    // Gehälter und Auszahlungen zehren am 35k-Topf – mitzählen, solange die
+    // Buchung vorbeikommt. Das Kassenbuch liefert nur die letzten Einträge,
+    // deshalb wird summiert statt später nachgerechnet.
+    if (AUSZAHLUNG_KATEGORIEN.some(w => kat.includes(w))) {
+      auszahlungTopf(state);                    // setzt bei Tageswechsel zurück
+      state.auszahlungSumme = (state.auszahlungSumme || 0) + Math.abs(b.amount);
+      state.auszahlungen = [...(state.auszahlungen || []),
+        { stamp: b.stamp, kategorie: sauber(b.category), detail, betrag: Math.abs(b.amount) }
+      ].slice(-20);
+      log('Auszahlung gezählt:', sauber(b.category), fmt(Math.abs(b.amount)));
+      continue;
+    }
+
+    // Unbekannte Kategorien landen nur im Log. Als Meldung waren sie vor allem
+    // Lärm – sie treten häufig auf und es gibt nie etwas zu tun.
     if (!NORMALE_KATEGORIEN.some(w => kat.includes(w))) {
-      const bericht = onlineBericht(state);
-      await push(`unbekannt_${kat}`, `❔ Unbekannte Buchung: ${sauber(b.category)}`,
-        `${detail}\nBetrag: ${fmt(b.amount)}\n` +
-        `Kassenstand danach: ${fmt(b.balance)}\n` +
-        (bericht.length ? `\nOnline zu dem Zeitpunkt:\n${bericht.join('\n')}\n` : '') +
-        '\nDiese Kategorie kennt der Watcher noch nicht.', state, 'default', {
-          teamText: `${detail}\nBetrag: ${fmt(b.amount)}\n\n` +
-            'Diese Kategorie kennt der Watcher noch nicht.',
-        });
+      log('Unbekannte Buchung:', sauber(b.category), fmt(b.amount), detail);
+      if (CFG.UNBEKANNTE_BUCHUNGEN) {
+        await push(`unbekannt_${kat}`, `❔ Unbekannte Buchung: ${sauber(b.category)}`,
+          `${detail}\nBetrag: ${fmt(b.amount)}\nKassenstand danach: ${fmt(b.balance)}\n` +
+          '\nDiese Kategorie kennt der Watcher noch nicht.', state, 'default');
+      }
     }
   }
 
@@ -1103,7 +1176,8 @@ async function firmaFrisch() {
 const BEFEHLE = {
   firma: {
     beschreibung: 'Zustand der Firma: Status, Lager, Personal, wer online ist',
-    async ausfuehren({ darf }) {
+    oeffentlich: true,
+    async ausfuehren({ darf, oeffentlich }) {
       const f = await firmaFrisch();
       const online = (f.members || []).filter(m => m.online);
       let t = `**${f.name}** · Level ${f.level} · ${sauber(f.status)}\n` +
@@ -1116,13 +1190,18 @@ const BEFEHLE = {
       // Beträge nur für den Inhaber.
       // Wer /kasse benutzen darf, sieht die Beträge auch hier – sonst wäre
       // die Zurückhaltung an dieser Stelle sinnlos.
-      if (darf('kasse')) t += `\n\nKasse: ${fmt(f.kasse?.balance)} · Gewinn: ${fmt(f.kasse?.profitSincePayout)}`;
+      // Im offenen Kanal nie Beträge, auch wenn der Fragende sie dürfte –
+      // sonst stünden sie für alle da, nur weil der Falsche getippt hat.
+      if (darf('kasse') && !oeffentlich) {
+        t += `\n\nKasse: ${fmt(f.kasse?.balance)} · Gewinn: ${fmt(f.kasse?.profitSincePayout)}`;
+      }
       return t;
     },
   },
 
   lager: {
     beschreibung: 'Lagerbestand, Absatz und wie lange der Bestand noch reicht',
+    oeffentlich: true,
     async ausfuehren() {
       const f = await firmaFrisch();
       const bestand = f.stock?.total ?? 0, kapazitaet = f.stock?.capacity ?? 0;
@@ -1140,7 +1219,8 @@ const BEFEHLE = {
 
   ausschuettung: {
     beschreibung: 'Wie weit ist die Team-Onlinezeit bis zur nächsten Ausschüttung',
-    async ausfuehren({ darf }) {
+    oeffentlich: true,
+    async ausfuehren({ darf, oeffentlich }) {
       const st = load();
       const ziel = CFG.AUSSCHUETTUNG_STD * 3_600_000;
       const anteil = Math.min(100, Math.round(st.teamOnlineMs / ziel * 100));
@@ -1150,8 +1230,9 @@ const BEFEHLE = {
         (st.teamOnlineMs >= ziel
           ? '✅ Ziel erreicht – die Ausschüttung kann gemacht werden.'
           : `Noch ${dauer(ziel - st.teamOnlineMs)}.`);
-      if (darf('kasse') && st.gewinn !== null) t += `\n\nGewinn bisher: ${fmt(st.gewinn)}`;
-      if (darf('kasse') && st.letzteAusschuettung) {
+      const zahlen = darf('kasse') && !oeffentlich;
+      if (zahlen && st.gewinn !== null) t += `\n\nGewinn bisher: ${fmt(st.gewinn)}`;
+      if (zahlen && st.letzteAusschuettung) {
         t += `\nLetzte Ausschüttung: ${new Date(st.letzteAusschuettung).toLocaleString('de-DE')}`;
       }
       return t;
@@ -1159,36 +1240,66 @@ const BEFEHLE = {
   },
 
   zeiten: {
-    beschreibung: 'Onlinezeit heute – die eigene, für den Inhaber die des ganzen Teams',
-    async ausfuehren({ darf, nutzer }) {
+    beschreibung: 'Wer ist gerade online, und wie lange war ich heute da',
+    oeffentlich: true,
+    async ausfuehren({ nutzer, oeffentlich }) {
       const st = load();
       const eintraege = Object.entries(st.spieler || {});
-      if (!eintraege.length) return '_Noch keine Zeiten erfasst._';
+      const online = eintraege.filter(([, p]) => p.online).map(([n]) => n);
 
-      if (darf('tagesbericht')) {
-        const zeilen = eintraege
-          .sort((a, b) => (b[1].gesamtMs || 0) - (a[1].gesamtMs || 0))
-          .map(([name, p]) =>
-            `${p.online ? '🟢' : '⚪'} ${name.padEnd(18)} ${dauer(p.gesamtMs || 0).padStart(14)}`);
-        return `**Onlinezeit am Spieltag ${st.tag || '?'}**\n` + tabelle(zeilen);
-      }
+      // Wer gerade spielt, darf jeder wissen – das steht ohnehin im Spiel.
+      // Wie lange wer da war, gehört in den Tagesbericht, nicht hierhin.
+      let t = online.length
+        ? `🟢 **Gerade online (${online.length}):** ${online.join(', ')}`
+        : '⚪ **Gerade ist niemand aus der Firma online.**';
 
-      // Ohne Zuordnung kann niemandem seine eigene Zeit gezeigt werden. Dann
-      // bleibt es bei der Summe – fremde Arbeitszeiten gehen keinen an.
-      const meinName = ladeZuordnung()[nutzer.id];
-      if (!meinName) {
-        const gesamt = eintraege.reduce((n, [, p]) => n + (p.gesamtMs || 0), 0);
-        return `**Team heute:** ${dauer(gesamt)} zusammen, ` +
-          `${eintraege.filter(([, p]) => p.online).length} gerade online.\n\n` +
-          '_Für die eigene Zeit muss dein Discord-Konto einem Spielernamen ' +
-          'zugeordnet sein – sag dem Inhaber Bescheid._';
+      t += `\n\nTeam-Onlinezeit bis zur Ausschüttung: ${dauer(st.teamOnlineMs)} ` +
+           `von ${CFG.AUSSCHUETTUNG_STD} Std.`;
+
+      // Die eigene Zeit nur in einer privaten Antwort – im offenen Kanal
+      // würde sie jeden angehen.
+      if (!oeffentlich) {
+        const meinName = ladeZuordnung()[nutzer.id];
+        if (meinName) {
+          const p = st.spieler[Object.keys(st.spieler || {})
+            .find(k => k.toLowerCase() === String(meinName).toLowerCase()) || ''];
+          t += p
+            ? `\n\n**Du (${meinName}):** heute ${dauer(p.gesamtMs || 0)}`
+            : `\n\n_Für **${meinName}** liegen heute noch keine Zeiten vor._`;
+        } else {
+          t += '\n\n_Für deine eigene Zeit muss dein Konto zugeordnet sein – ' +
+               'sag dem Inhaber Bescheid._';
+        }
       }
-      const p = st.spieler[meinName];
-      if (!p) return `_Für **${meinName}** liegen heute keine Zeiten vor._`;
-      return `**${meinName}** – heute ${dauer(p.gesamtMs || 0)}\n` +
-        `Status: ${p.online ? '🟢 online' : '⚪ offline'}\n` +
-        `Aktuelle Sitzung: ${dauer(p.online ? Date.now() - p.seit : p.sitzungMs)}` +
-        (p.rolle ? `\nRolle: ${p.rolle}` : '');
+      return t;
+    },
+  },
+
+  gehalt: {
+    beschreibung: 'Wie viel vom Tagesbudget für Auszahlungen und Gehälter noch frei ist',
+    oeffentlich: true,
+    async ausfuehren() {
+      const st = load();
+      const topf = auszahlungTopf(st);
+      const anteil = Math.round(topf.genutzt / topf.limit * 100);
+      const balken = '█'.repeat(Math.round(anteil / 5)) + '░'.repeat(20 - Math.round(anteil / 5));
+
+      let t = `**Noch frei: ${fmt(topf.frei)}**\n` +
+        '`' + balken + '`\n' +
+        `${fmt(topf.genutzt)} von ${fmt(topf.limit)} sind heute raus (${anteil} %).`;
+
+      if (!topf.frei) t += '\n\n🔴 Das Tagesbudget ist aufgebraucht.';
+      else if (anteil >= 80) t += '\n\n⚠️ Es wird knapp.';
+
+      if (topf.buchungen.length) {
+        const zeilen = topf.buchungen.slice(-8).reverse().map(x =>
+          `${new Date(x.stamp).toLocaleTimeString('de-DE').slice(0, 5)} ` +
+          `${(x.detail || x.kategorie).slice(0, 24).padEnd(24)} ${fmt(x.betrag).padStart(12)}`);
+        t += '\n\n**Heute entnommen**\n' + tabelle(zeilen);
+      } else {
+        t += '\n\n_Heute wurde noch nichts entnommen._';
+      }
+      return t + `\n\n_Setzt sich täglich um ${CFG.TAGESWECHSEL_STD}:00 Uhr zurück._`;
     },
   },
 
@@ -1446,6 +1557,15 @@ const BEFEHLE = {
           { name: 'eine Rolle (Feld rolle ausfüllen)', value: 'rolle' },
         ] },
       { name: 'rolle', description: 'Rolle, wenn ping = eine Rolle', type: 8, required: false },
+      { name: 'takt', description: 'Nur beim Zwischenstand der Ausschüttung: wie oft?',
+        type: 3, required: false,
+        choices: [
+          { name: 'jede Stunde',                   value: '1' },
+          { name: 'alle zwei Stunden',             value: '2' },
+          { name: 'alle drei Stunden',             value: '3' },
+          { name: 'alle sechs Stunden',            value: '6' },
+          { name: 'nur wenn die Ausschüttung fällig ist', value: '0' },
+        ] },
     ],
 
     async ausfuehren({ optionen }) {
@@ -1466,7 +1586,7 @@ const BEFEHLE = {
       const name = themaName(thema);
 
       // Nur ein Thema genannt: dessen Regel zeigen.
-      if (!optionen.ziel && !optionen.ping) {
+      if (!optionen.ziel && !optionen.ping && !optionen.takt) {
         return `**${name}**\n${regelText(empfaenger(thema, regeln))}\n\n` +
           '_Zum Ändern zusätzlich `ziel:` oder `ping:` angeben._';
       }
@@ -1504,10 +1624,23 @@ const BEFEHLE = {
         regel.ping = optionen.ping === 'rolle' ? optionen.rolle : optionen.ping;
       }
 
+      if (optionen.takt !== undefined) {
+        if (thema !== 'ausschuettung_std_') {
+          return '❌ `takt:` gibt es nur beim Zwischenstand der Ausschüttung.';
+        }
+        regel.takt = Number(optionen.takt);
+      }
+
       regeln[thema] = regel;
       speichereRegeln(regeln);
 
       let t = `✅ **${name}**\n${regelText(regel)}`;
+      if (regel.takt !== undefined) {
+        t += regel.takt === 0
+          ? '\n\nKein Zwischenstand mehr – es kommt nur noch die Meldung, ' +
+            'wenn die Ausschüttung fällig ist.'
+          : `\n\nZwischenstand ${regel.takt === 1 ? 'jede Stunde' : `alle ${regel.takt} Stunden`}.`;
+      }
 
       // Bei den Meldungen mit Namen oder Beträgen einmal deutlich sagen, was
       // da künftig mitliest. Der Inhaber darf das entscheiden – aber nicht
@@ -1593,6 +1726,24 @@ if (args.includes('--ausschuettung-start')) {
   s.teamOnlineMs = 0; s.gemeldeteStunde = 0; s.faelligGemeldet = false;
   s.letzteAusschuettung = Date.now();
   save(s); console.log('Zähler neu gestartet.'); console.table(ausschuettungStand(s));
+  process.exit(0);
+}
+
+if (args.includes('--gehalt')) {
+  const st = load();
+  const topf = auszahlungTopf(st);
+  console.log(`Spieltag ${topf.tag} – Topf für Auszahlungen und Gehälter`);
+  console.log(`  Grenze:  ${fmt(topf.limit)}`);
+  console.log(`  Genutzt: ${fmt(topf.genutzt)}`);
+  console.log(`  Frei:    ${fmt(topf.frei)}`);
+  if (topf.buchungen.length) {
+    console.table(topf.buchungen.map(b => ({
+      Zeit: new Date(b.stamp).toLocaleTimeString('de-DE'),
+      Kategorie: b.kategorie, Detail: b.detail, Betrag: fmt(b.betrag),
+    })));
+  } else console.log('\n  Heute wurde noch nichts entnommen.');
+  console.log('\nGezählt werden Buchungen der Kategorien: ' + AUSZAHLUNG_KATEGORIEN.join(', '));
+  console.log('Anpassbar über UC_AUSZAHLUNG_KATEGORIEN und UC_AUSZAHLUNG_LIMIT.');
   process.exit(0);
 }
 
