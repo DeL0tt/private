@@ -70,8 +70,12 @@ const CFG = {
   BETRIEB_MAX:      +(process.env.UC_BETRIEB_MAX || 240),
   BETRIEB_SCHWELLE: +(process.env.UC_BETRIEB_SCHWELLE || 40),
 
-  // Obergrenze für Auszahlungen und Gehälter je Spieltag
+  // Obergrenze für Auszahlungen und Gehälter je Tag
   AUSZAHLUNG_LIMIT: +(process.env.UC_AUSZAHLUNG_LIMIT || 35_000),
+  // Wann der Topf zurückgesetzt wird. Das ist Mitternacht und damit etwas
+  // anderes als der Spieltag, der um 04:00 wechselt – die beiden nicht
+  // verwechseln, sonst zeigt der Befehl nachts einen falschen Stand.
+  AUSZAHLUNG_RESET_STD: +(process.env.UC_AUSZAHLUNG_RESET_STD ?? 0),
   // Unbekannte Buchungen melden – aus, weil es vor allem Lärm war
   UNBEKANNTE_BUCHUNGEN: process.env.UC_UNBEKANNTE_BUCHUNGEN === '1',
 
@@ -564,11 +568,22 @@ async function push(thema, titel, text, state, prio = 'high', extra = {}) {
 /* ========================= AUSSCHÜTTUNG ========================= */
 
 /**
- * Stand des Topfes für Auszahlungen und Gehälter, der je Spieltag gilt.
- * Setzt beim Tageswechsel (04:00) zurück, denn dann beginnt er von vorn.
+ * Der Tag, auf den sich der Auszahlungstopf bezieht. Nicht der Spieltag:
+ * der beginnt um 04:00, der Topf aber um Mitternacht.
+ */
+function budgetTag(d = new Date()) {
+  const verschoben = new Date(d.getTime() - CFG.AUSZAHLUNG_RESET_STD * 3_600_000);
+  return `${verschoben.getFullYear()}-` +
+    `${String(verschoben.getMonth() + 1).padStart(2, '0')}-` +
+    `${String(verschoben.getDate()).padStart(2, '0')}`;
+}
+
+/**
+ * Stand des Topfes für Auszahlungen und Gehälter. Setzt um Mitternacht
+ * zurück (einstellbar über UC_AUSZAHLUNG_RESET_STD).
  */
 function auszahlungTopf(state) {
-  const heute = spieltag();
+  const heute = budgetTag();
   if (state.auszahlungTag !== heute) {
     state.auszahlungTag = heute;
     state.auszahlungSumme = 0;
@@ -1627,15 +1642,9 @@ const BEFEHLE = {
       if (!topf.frei) t += '\n\n🔴 Das Tagesbudget ist aufgebraucht.';
       else if (anteil >= 80) t += '\n\n⚠️ Es wird knapp.';
 
-      if (topf.buchungen.length) {
-        const zeilen = topf.buchungen.slice(-8).reverse().map(x =>
-          `${new Date(x.stamp).toLocaleTimeString('de-DE').slice(0, 5)} ` +
-          `${(x.detail || x.kategorie).slice(0, 24).padEnd(24)} ${fmt(x.betrag).padStart(12)}`);
-        t += '\n\n**Heute entnommen**\n' + tabelle(zeilen);
-      } else {
-        t += '\n\n_Heute wurde noch nichts entnommen._';
-      }
-      return t + `\n\n_Setzt sich täglich um ${CFG.TAGESWECHSEL_STD}:00 Uhr zurück._`;
+      // Bewusst nur die Summe: wer wann wie viel gezogen hat, ist für die
+      // Frage "wie viel geht noch" ohne Belang und macht die Antwort lang.
+      return t + `\n\n_Setzt sich täglich um ${String(CFG.AUSZAHLUNG_RESET_STD).padStart(2, '0')}:00 Uhr zurück._`;
     },
   },
 
@@ -2444,10 +2453,13 @@ if (args.includes('--betrieb-probe')) {
 if (args.includes('--gehalt')) {
   const st = load();
   const topf = auszahlungTopf(st);
-  console.log(`Spieltag ${topf.tag} – Topf für Auszahlungen und Gehälter`);
+  console.log(`Topf für Auszahlungen und Gehälter – Tag ${topf.tag}`);
+  console.log(`  Zurücksetzung um ${String(CFG.AUSZAHLUNG_RESET_STD).padStart(2, '0')}:00 Uhr`);
   console.log(`  Grenze:  ${fmt(topf.limit)}`);
   console.log(`  Genutzt: ${fmt(topf.genutzt)}`);
   console.log(`  Frei:    ${fmt(topf.frei)}`);
+  // Hier – anders als in Discord – mit Einzelposten, denn damit lässt sich
+  // prüfen, ob die richtigen Kategorien gezählt werden.
   if (topf.buchungen.length) {
     console.table(topf.buchungen.map(b => ({
       Zeit: new Date(b.stamp).toLocaleTimeString('de-DE'),

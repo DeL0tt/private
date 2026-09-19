@@ -264,9 +264,14 @@ UC_BETRIEB_SCHWELLE=40
 
 ### Das Tagesbudget: `/gehalt`
 
-Gehälter und Auszahlungen zehren an einem gemeinsamen Topf von 35.000$ je
-Spieltag. `/gehalt` zeigt, wie viel davon noch frei ist, und listet auf, was
-heute schon entnommen wurde.
+Gehälter und Auszahlungen zehren an einem gemeinsamen Topf von 35.000$ je Tag.
+`/gehalt` zeigt, wie viel davon noch frei ist, und listet auf, was heute schon
+entnommen wurde.
+
+Der Topf setzt sich **um Mitternacht** zurück. Das ist bewusst etwas anderes
+als der Spieltag des Watchers, der um 04:00 wechselt – Onlinezeiten und
+Tagesbericht richten sich nach dem, das Budget nicht. Falls das Spiel es
+anders handhabt: `UC_AUSZAHLUNG_RESET_STD`.
 
 Gezählt werden Buchungen der Kategorien `auszahlung` und `gehalt`. **Löhne
 zählen bewusst nicht** – das sind die NPC-Kosten der Firma, kein Geld, das
