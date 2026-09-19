@@ -57,6 +57,14 @@ const CFG = {
   // normal und sollen nicht aufs Handy.
   API_WEG_MELDUNG_MIN: +(process.env.UC_API_WEG_MELDUNG_MIN || 30),
 
+  // --- Betrieb (z. B. die Zoohandlung) ---
+  // Der angezeigte Bestand enthält einen Sockel, der nicht entnehmbar ist.
+  // Was wirklich drin ist: angezeigter Bestand minus Abzug.
+  BETRIEB:           process.env.UC_BETRIEB || 'Zoohandlung',
+  BETRIEB_ABZUG:    +(process.env.UC_BETRIEB_ABZUG || 100),
+  BETRIEB_MAX:      +(process.env.UC_BETRIEB_MAX || 240),
+  BETRIEB_SCHWELLE: +(process.env.UC_BETRIEB_SCHWELLE || 40),
+
   // Obergrenze für Auszahlungen und Gehälter je Spieltag
   AUSZAHLUNG_LIMIT: +(process.env.UC_AUSZAHLUNG_LIMIT || 35_000),
   // Unbekannte Buchungen melden – aus, weil es vor allem Lärm war
@@ -109,6 +117,7 @@ const leer = () => ({
   letzterLagerTick: 0,
   letzterLedgerStamp: 0,  // bis hierhin wurde das Kassenbuch verarbeitet
   auszahlungSumme: 0, auszahlungTag: null, auszahlungen: [],  // 35k-Topf je Spieltag
+  betriebBestand: null,   // zuletzt gesehener Bestand der Zoohandlung
   lastPush: {},
 });
 
@@ -262,6 +271,101 @@ async function api(pfad, zweiterVersuch = false) {
 }
 
 const holeFirma  = () => api('/api/panel/company');
+
+// Mögliche Adressen der Betriebsübersicht. Welche es ist, zeigt
+// --betrieb-probe; die erste, die antwortet, wird gemerkt.
+const BETRIEB_PFADE = [
+  '/api/panel/businesses', '/api/panel/business', '/api/panel/businesses/list',
+  '/api/businesses', '/api/panel/company/businesses', '/api/panel/betriebe',
+];
+let betriebPfad = process.env.UC_BETRIEB_PFAD || '';
+
+async function holeBetriebe() {
+  if (betriebPfad) return api(betriebPfad);
+  let letzterFehler;
+  for (const pfad of BETRIEB_PFADE) {
+    try {
+      const d = await api(pfad);
+      betriebPfad = pfad;
+      log('Betriebe kommen von', pfad);
+      return d;
+    } catch (e) {
+      letzterFehler = e;
+      // 401/403 heißt Zugangsproblem, nicht falscher Pfad – dann abbrechen.
+      if (e.message === 'AUTH') throw e;
+    }
+  }
+  throw new Error('BETRIEB_PFAD_UNBEKANNT' + (letzterFehler ? ` (${letzterFehler.message})` : ''));
+}
+
+/**
+ * Sucht einen Betrieb am Namen, egal wie tief er in der Antwort steckt.
+ * Die genaue Form der Antwort kennen wir nicht, deshalb wird gesucht statt
+ * einen festen Pfad anzunehmen.
+ */
+function findeBetrieb(daten, name) {
+  const ziel = schluessel(sauber(name));
+  if (!ziel) return null;
+  let treffer = null;
+  const suche = (o, tiefe = 0) => {
+    if (treffer || !o || tiefe > 6) return;
+    if (Array.isArray(o)) { o.forEach(x => suche(x, tiefe + 1)); return; }
+    if (typeof o !== 'object') return;
+    const n = o.name ?? o.title ?? o.businessName ?? o.displayName;
+    if (typeof n === 'string' && schluessel(sauber(n)).includes(ziel)) { treffer = o; return; }
+    for (const v of Object.values(o)) suche(v, tiefe + 1);
+  };
+  suche(daten);
+  return treffer;
+}
+
+// Felder, unter denen ein Bestand stecken kann – in dieser Reihenfolge.
+const BESTAND_FELDER = ['stock', 'bestand', 'inventory', 'total', 'amount', 'quantity', 'items'];
+const KAPAZITAET_FELDER = ['capacity', 'max', 'maxStock', 'maximum', 'limit'];
+
+const ersteZahl = (o, felder) => {
+  for (const k of felder) if (typeof o?.[k] === 'number') return o[k];
+  return null;
+};
+
+/** Liest Bestand und Kapazität aus einem Betrieb heraus. */
+function betriebBestand(betrieb) {
+  if (!betrieb) return null;
+  const direkt = ersteZahl(betrieb, BESTAND_FELDER);
+  if (direkt !== null) {
+    return { roh: direkt, kapazitaet: ersteZahl(betrieb, KAPAZITAET_FELDER) };
+  }
+  // Verschachtelt, etwa { stock: { total: 340, capacity: 400 } }
+  for (const k of BESTAND_FELDER) {
+    const v = betrieb[k];
+    if (v && typeof v === 'object' && !Array.isArray(v)) {
+      const zahl = ersteZahl(v, BESTAND_FELDER);
+      if (zahl !== null) return { roh: zahl, kapazitaet: ersteZahl(v, KAPAZITAET_FELDER) };
+    }
+  }
+  return null;
+}
+
+/**
+ * Bestand des beobachteten Betriebs, bereits um den Sockel bereinigt.
+ * Der Abzug ist das, was im Betrieb steht, aber nicht entnommen werden kann.
+ */
+function betriebStand(daten) {
+  const b = findeBetrieb(daten, CFG.BETRIEB);
+  if (!b) return { gefunden: false };
+  const roh = betriebBestand(b);
+  if (!roh) return { gefunden: true, bestand: null, name: sauber(b.name || b.title || CFG.BETRIEB) };
+  const verfuegbar = Math.max(0, roh.roh - CFG.BETRIEB_ABZUG);
+  const max = roh.kapazitaet ? Math.max(0, roh.kapazitaet - CFG.BETRIEB_ABZUG) : CFG.BETRIEB_MAX;
+  return {
+    gefunden: true,
+    name: sauber(b.name || b.title || CFG.BETRIEB),
+    angezeigt: roh.roh,
+    bestand: verfuegbar,
+    max,
+    anteil: max ? Math.round(verfuegbar / max * 100) : 0,
+  };
+}
 const holeLedger = (id) => api(`/api/panel/company/ledger?companyId=${id}&days=1&limit=40`);
 
 /* ========================= SPIELERZEITEN ========================= */
@@ -447,6 +551,45 @@ function ausschuettungStand(state) {
       ? new Date(state.letzteAusschuettung).toLocaleString('de-DE') : 'unbekannt',
     Gewinn: state.gewinn === null ? '–' : fmt(state.gewinn),
   };
+}
+
+/**
+ * Meldet, wenn im beobachteten Betrieb nichts mehr zu holen ist. Die Meldung
+ * geht ans ganze Team – wer gerade spielt, kann nachfüllen.
+ */
+async function pruefeBetrieb(state) {
+  if (!CFG.BETRIEB) return;
+  let stand;
+  try {
+    stand = betriebStand(await betriebeFrisch());
+  } catch (e) {
+    // Die Betriebe sind Beiwerk: schlägt der Abruf fehl, stört das den Rest
+    // der Überwachung nicht.
+    log('Betrieb nicht abrufbar:', e.message);
+    return;
+  }
+  if (!stand.gefunden || stand.bestand === null) return;
+
+  state.betriebBestand = stand.bestand;
+
+  if (stand.bestand <= 0) {
+    await push('betrieb_leer', `🔴 ${stand.name} ist leer`,
+      `Im ${stand.name} ist nichts mehr zu holen (angezeigt: ${stand.angezeigt}, ` +
+      `davon ${CFG.BETRIEB_ABZUG} nicht entnehmbar).\n` +
+      'Wer gerade spielt, kann nachfüllen.', state, 'high');
+    return;
+  }
+
+  if (stand.bestand <= CFG.BETRIEB_SCHWELLE) {
+    await push('betrieb_knapp', `⚠️ ${stand.name} wird knapp`,
+      `Noch ${stand.bestand} von ${stand.max} entnehmbar ` +
+      `(angezeigt: ${stand.angezeigt}).\nNachfüllen, bevor nichts mehr da ist.`,
+      state, 'default');
+  } else {
+    // Wieder aufgefüllt: die Sperre lösen, damit die nächste Warnung kommt.
+    state.lastPush.betrieb_knapp = 0;
+    state.lastPush.betrieb_leer = 0;
+  }
 }
 
 async function pruefeAusschuettung(state) {
@@ -1150,6 +1293,9 @@ async function durchlauf() {
     }
   } catch (e) { log('Kassenbuch nicht auswertbar:', e.message); }
 
+  // --- 5b) Betrieb (Zoohandlung): Bestand im Auge behalten ---
+  await pruefeBetrieb(state);
+
   // --- 6) Ausschüttung ---
   await pruefeAusschuettung(state);
 
@@ -1178,6 +1324,16 @@ async function firmaFrisch() {
   const daten = await holeFirma();
   firmaPuffer = { zeit: Date.now(), daten: daten.company };
   return firmaPuffer.daten;
+}
+
+// Wie bei der Firma: kurz puffern, damit mehrere Leute hintereinander nicht
+// mehrere Abfragen auslösen.
+let betriebPuffer = { zeit: 0, daten: null };
+async function betriebeFrisch() {
+  if (betriebPuffer.daten && Date.now() - betriebPuffer.zeit < 20_000) return betriebPuffer.daten;
+  const daten = await holeBetriebe();
+  betriebPuffer = { zeit: Date.now(), daten };
+  return daten;
 }
 
 const BEFEHLE = {
@@ -1278,6 +1434,39 @@ const BEFEHLE = {
                'sag dem Inhaber Bescheid._';
         }
       }
+      return t;
+    },
+  },
+
+  betrieb: {
+    beschreibung: 'Bestand der Zoohandlung – was wirklich entnommen werden kann',
+    oeffentlich: true,
+    async ausfuehren() {
+      let daten;
+      try {
+        daten = await betriebeFrisch();
+      } catch (e) {
+        return e.message.startsWith('BETRIEB_PFAD_UNBEKANNT')
+          ? '❌ Der Watcher findet die Betriebsübersicht nicht. Auf dem Server ' +
+            '`node --env-file=.env watcher.mjs --betrieb-probe` ausführen.'
+          : `❌ Abruf fehlgeschlagen: ${e.message}`;
+      }
+
+      const st = betriebStand(daten);
+      if (!st.gefunden) return `❌ Einen Betrieb namens **${CFG.BETRIEB}** gibt es dort nicht.`;
+      if (st.bestand === null) {
+        return `❌ **${st.name}** gefunden, aber der Bestand steht in keinem bekannten Feld. ` +
+               '`--betrieb-probe` zeigt, wie die Antwort aussieht.';
+      }
+
+      const striche = Math.round(Math.min(100, st.anteil) / 5);
+      const balken = '█'.repeat(striche) + '░'.repeat(20 - striche);
+      let t = `**${st.name}: ${st.bestand} von ${st.max}**\n` +
+        '`' + balken + '`\n' +
+        `Angezeigt werden ${st.angezeigt} – davon sind ${CFG.BETRIEB_ABZUG} nicht entnehmbar.`;
+
+      if (st.bestand <= 0) t += '\n\n🔴 **Leer.** Es kann nichts mehr entnommen werden.';
+      else if (st.bestand <= CFG.BETRIEB_SCHWELLE) t += `\n\n⚠️ Wird knapp – unter ${CFG.BETRIEB_SCHWELLE}.`;
       return t;
     },
   },
@@ -1751,6 +1940,73 @@ if (args.includes('--ausschuettung-start')) {
   s.teamOnlineMs = 0; s.gemeldeteStunde = 0; s.faelligGemeldet = false;
   s.letzteAusschuettung = Date.now();
   save(s); console.log('Zähler neu gestartet.'); console.table(ausschuettungStand(s));
+  process.exit(0);
+}
+
+if (args.includes('--betrieb-probe')) {
+  const s0 = load(); ladeZugang(s0);
+  try { await erneuere(); } catch (e) { console.error('Kein Zugang:', e.message); process.exit(1); }
+
+  const felder = (o, tiefe = 0) => {
+    if (Array.isArray(o)) return o.length ? `[${o.length}× ${felder(o[0], tiefe + 1)}]` : '[]';
+    if (o && typeof o === 'object') {
+      const k = Object.keys(o);
+      return tiefe > 2 ? `{${k.slice(0, 10).join(', ')}}` :
+        '{' + k.slice(0, 14).map(n => `${n}: ${felder(o[n], tiefe + 1)}`).join(', ') + '}';
+    }
+    return typeof o;
+  };
+
+  console.log('Suche die Betriebsübersicht …\n');
+  let gefunden = null;
+  for (const pfad of BETRIEB_PFADE) {
+    try {
+      const d = await api(pfad);
+      console.log(`✅ ${pfad}`);
+      console.log('   ' + felder(d).slice(0, 900) + '\n');
+      gefunden ||= { pfad, daten: d };
+    } catch (e) {
+      console.log(`❌ ${pfad} — ${e.message}`);
+    }
+  }
+
+  if (!gefunden) {
+    console.log('\nKeine der Adressen hat geantwortet. Öffne die Seite');
+    console.log('https://unicacity.eu/dashboard/businesses im Browser, drücke F12,');
+    console.log('gehe auf "Netzwerk", lade neu und schau, welche Adresse mit /api/');
+    console.log('abgefragt wird. Die dann eintragen: UC_BETRIEB_PFAD=/api/…');
+    process.exit(1);
+  }
+
+  console.log(`\nBrauchbar: ${gefunden.pfad}`);
+  const st = betriebStand(gefunden.daten);
+  if (!st.gefunden) {
+    console.log(`\n⚠️ Ein Betrieb namens "${CFG.BETRIEB}" kommt darin nicht vor.`);
+    console.log('   Vorhandene Namen:');
+    const namen = [];
+    const suche = (o, t = 0) => {
+      if (!o || t > 6) return;
+      if (Array.isArray(o)) return o.forEach(x => suche(x, t + 1));
+      if (typeof o !== 'object') return;
+      const n = o.name ?? o.title ?? o.businessName;
+      if (typeof n === 'string') namen.push(sauber(n));
+      for (const v of Object.values(o)) suche(v, t + 1);
+    };
+    suche(gefunden.daten);
+    console.log('   ' + ([...new Set(namen)].join(', ') || '(keine gefunden)'));
+    console.log('\n   Passenden Namen eintragen: UC_BETRIEB=…');
+  } else if (st.bestand === null) {
+    console.log(`\n⚠️ "${st.name}" gefunden, aber kein bekanntes Bestandsfeld.`);
+    console.log('   Der Eintrag sieht so aus:');
+    console.log('   ' + felder(findeBetrieb(gefunden.daten, CFG.BETRIEB)).slice(0, 600));
+    console.log('\n   Schick mir diese Zeile, dann ergänze ich das Feld.');
+  } else {
+    console.log(`\n✅ ${st.name}: angezeigt ${st.angezeigt}, entnehmbar ${st.bestand} von ${st.max}`);
+    console.log(`   (Abzug ${CFG.BETRIEB_ABZUG}, Warnschwelle ${CFG.BETRIEB_SCHWELLE})`);
+    if (gefunden.pfad !== BETRIEB_PFADE[0]) {
+      console.log(`\n   Zum Festlegen in die .env: UC_BETRIEB_PFAD=${gefunden.pfad}`);
+    }
+  }
   process.exit(0);
 }
 

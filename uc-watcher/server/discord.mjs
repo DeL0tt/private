@@ -151,6 +151,7 @@ const TEAM_THEMEN = [
   'ausschuettung_std_',      // Zwischenstand bis zur Ausschüttung
   'ausschuettung_faellig',   // Ziel erreicht
   'event_',                  // Vorfall im Unternehmen
+  'betrieb_',                // Zoohandlung leer oder knapp – da kann jeder ran
 ];
 
 // 'lagerverlust_' beginnt mit 'lager', meint aber einen Diebstahlverdacht samt
@@ -168,7 +169,11 @@ const VORFALL_THEMEN = ['event_', 'vorfall_'];
 // Firma kostet laufend Geld – beides muss jemanden erreichen, der gerade
 // spielen ist. Gepingt wird nur, wer per /zuordnen bekannt ist; ohne
 // Zuordnung bleibt es still. Über /melden änderbar.
-const PING_VOREINSTELLUNG = { 'event_': 'online', 'pausiert_trotz_online': 'online' };
+const PING_VOREINSTELLUNG = {
+  'event_': 'online',
+  'pausiert_trotz_online': 'online',
+  'betrieb_leer': 'online',        // leer heißt: jemand muss jetzt nachfüllen
+};
 
 const standardPing = (t) => {
   const treffer = Object.keys(PING_VOREINSTELLUNG)
@@ -190,6 +195,8 @@ const TEAM_LISTE = (process.env.UC_DISCORD_TEAM_THEMEN || '').trim()
 export const THEMEN = [
   ['lagerverlust_',          'Plötzlicher Lagerverlust (mit Namen)'],
   ['lager',                  'Lagerbestand niedrig'],
+  ['betrieb_leer',           'Betrieb ist leer (Zoohandlung)'],
+  ['betrieb_knapp',          'Betrieb wird knapp (Zoohandlung)'],
   ['preissprung',            'Lieferengpass, Einkauf teurer'],
   ['pausiert_trotz_online',  'Firma pausiert, obwohl jemand online ist'],
   ['ausschuettung_std_',     'Ausschüttung: Zwischenstand'],

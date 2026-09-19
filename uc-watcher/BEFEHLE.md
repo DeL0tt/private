@@ -97,6 +97,7 @@ cd ~/private/uc-watcher/server
 | `node --env-file=.env watcher.mjs --wiki-probe` | Wiki-API abklopfen (nur zum Erkunden) |
 | `node --env-file=.env watcher.mjs --discord-test` | Discord-Befehle registrieren und je eine Probemeldung schicken |
 | `node --env-file=.env watcher.mjs --discord-pruefe` | Prüft den Bot-Token, ohne ihn anzuzeigen |
+| `node --env-file=.env watcher.mjs --betrieb-probe` | Adresse der Betriebsübersicht suchen und Bestand prüfen |
 | `node --env-file=.env watcher.mjs --gehalt` | Tagesbudget für Auszahlungen und Gehälter |
 | `node --env-file=.env watcher.mjs --zuordnung` | Wer ist welchem Discord-Konto zugeordnet, und wen würde ein Online-Ping treffen |
 
@@ -186,7 +187,7 @@ Vollständige Einrichtung: **DISCORD.md**. Im Alltag reichen diese:
 | `journalctl -u uc-watcher \| grep discord` | Was der Bot macht |
 
 Im Discord selbst – für alle: `/firma`, `/lager`, `/ausschuettung`, `/zeiten`,
-`/gehalt`,
+`/gehalt`, `/betrieb`,
 `/hilfe`. Vorbehalten: `/kasse`, `/tagesbericht`, `/watcher`, `/melden`,
 `/zuordnen` – einzeln weitergebbar mit `/rechte` an eine Rolle oder eine
 Person. `/rechte` selbst bleibt immer beim Inhaber.

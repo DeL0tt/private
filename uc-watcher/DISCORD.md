@@ -177,6 +177,7 @@ Jeder im Server kann benutzen:
 | `/ausschuettung` | Fortschritt bis zur nächsten Ausschüttung |
 | `/zeiten` | Wer gerade online ist, plus die eigene Zeit heute |
 | `/gehalt` | Wie viel vom Tagesbudget (35.000$) noch frei ist |
+| `/betrieb` | Bestand der Zoohandlung – was wirklich entnehmbar ist |
 | `/hilfe` | Welche Befehle es gibt |
 
 ### Ein Kanal für Befehle
@@ -197,6 +198,35 @@ Zwei Dinge bleiben geschützt: Die vorbehaltenen Befehle (`/kasse`,
 `/ausschuettung` zeigen im offenen Kanal **keine Beträge** – auch dann nicht,
 wenn der Fragende sie sonst sehen dürfte. Sonst stünde der Kassenstand für
 alle da, nur weil der Falsche getippt hat.
+
+### Der Betrieb: `/betrieb`
+
+Zeigt den Bestand der Zoohandlung – und zwar den **entnehmbaren**. Im Betrieb
+steht ein Sockel von 100, der nicht herausgeht; angezeigt werden also z. B.
+340, tatsächlich verfügbar sind 240.
+
+Der Watcher meldet von sich aus, wenn es knapp wird (unter 40) oder nichts
+mehr da ist. Beides geht ins Team, und bei „leer" werden die angepingt, die
+gerade spielen – die können nachfüllen.
+
+Beim ersten Mal muss die Adresse der Betriebsübersicht gefunden werden:
+
+```
+node --env-file=.env watcher.mjs --betrieb-probe
+```
+
+Das probiert die üblichen Adressen durch und sagt am Ende, ob es die
+Zoohandlung samt Bestand lesen konnte. Findet es nichts, öffne
+https://unicacity.eu/dashboard/businesses im Browser, drücke F12 →
+**Netzwerk**, lade neu und sieh nach, welche `/api/…`-Adresse abgefragt wird.
+Die kommt dann in die `.env`:
+
+```ini
+UC_BETRIEB_PFAD=/api/…
+UC_BETRIEB=Zoohandlung
+UC_BETRIEB_ABZUG=100
+UC_BETRIEB_SCHWELLE=40
+```
 
 ### Das Tagesbudget: `/gehalt`
 
