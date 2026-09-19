@@ -28,8 +28,9 @@ const CFG = {
   TOKEN:      process.env.UC_DISCORD_TOKEN || '',
   APP_ID:     process.env.UC_DISCORD_APP_ID || '',
   GUILD:      process.env.UC_DISCORD_GUILD || '',
-  TEAM_KANAL: process.env.UC_DISCORD_TEAM_KANAL || '',
-  CHEF_KANAL: process.env.UC_DISCORD_CHEF_KANAL || '',
+  TEAM_KANAL:    process.env.UC_DISCORD_TEAM_KANAL || '',
+  CHEF_KANAL:    process.env.UC_DISCORD_CHEF_KANAL || '',
+  VORFALL_KANAL: process.env.UC_DISCORD_VORFALL_KANAL || '',
   CHEF_ID:    process.env.UC_DISCORD_CHEF_ID || '',
 };
 
@@ -133,6 +134,12 @@ const TEAM_THEMEN = [
 // werden vor der Team-Liste geprüft.
 const NUR_CHEF = ['lagerverlust_', 'personal_'];
 
+// Vorfälle bekommen einen eigenen Kanal, wenn einer eingerichtet ist. Sie
+// gehen zusätzlich an den Inhaber, weil dort die vollständige Fassung mit
+// Kassenstand und Anwesenheitsliste steht – im geteilten Kanal die gekürzte.
+// Ohne UC_DISCORD_VORFALL_KANAL bleibt alles beim Inhaber.
+const VORFALL_THEMEN = ['event_', 'vorfall_', 'unbekannt_'];
+
 // Mit UC_DISCORD_TEAM_THEMEN lässt sich die Team-Liste komplett ersetzen, etwa
 // auf 'lager,event_', wenn dem Team weniger zugestellt werden soll.
 const TEAM_LISTE = (process.env.UC_DISCORD_TEAM_THEMEN || '').trim()
@@ -189,6 +196,9 @@ export function empfaenger(thema, regeln = {}) {
   if (treffer) return { ...regeln[treffer] };
 
   if (NUR_CHEF.some(x => t.startsWith(x))) return { ziel: 'chef' };
+  if (CFG.VORFALL_KANAL && VORFALL_THEMEN.some(x => t.startsWith(x))) {
+    return { ziel: 'kanal', kanal: CFG.VORFALL_KANAL, auchChef: true };
+  }
   return { ziel: TEAM_LISTE.some(x => t.startsWith(x)) ? 'beide' : 'chef' };
 }
 
@@ -196,7 +206,9 @@ export function empfaenger(thema, regeln = {}) {
 export function regelText(regel) {
   const wohin = {
     chef: 'nur an dich', team: 'nur ins Team', beide: 'an dich und ins Team',
-    kanal: regel.kanal ? `in <#${regel.kanal}>` : 'in einen Kanal (fehlt!)',
+    kanal: regel.kanal
+      ? `in <#${regel.kanal}>${regel.auchChef ? ' und an dich' : ''}`
+      : 'in einen Kanal (fehlt!)',
     aus: 'gar nicht',
   }[regel.ziel] || regel.ziel;
   const ping = !regel.ping || regel.ping === 'keiner' ? ''
@@ -312,11 +324,11 @@ async function inKanal(kanal, titel, text, prio, fuss, ping, pingNutzer) {
  *       'team'  – nur in den Team-Kanal
  *       'beide' – an beide, das Team bekommt teamText/teamTitel, falls gesetzt
  */
-export async function discordSende({ ziel, kanal, ping, pingNutzer, titel, text,
+export async function discordSende({ ziel, kanal, auchChef, ping, pingNutzer, titel, text,
                                      prio = 'high', teamTitel, teamText }) {
   if (!discordAktiv() || ziel === 'aus') return;
 
-  if (ziel === 'chef' || ziel === 'beide') {
+  if (ziel === 'chef' || ziel === 'beide' || (ziel === 'kanal' && auchChef)) {
     // Geht die Meldung in einen eigenen Kanal, darf dort auch gepingt werden.
     // In einer DM wäre ein Ping sinnlos: sie erreicht ohnehin nur dich, und
     // @everyone gibt es in einer DM nicht.

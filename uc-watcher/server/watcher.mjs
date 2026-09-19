@@ -1344,7 +1344,8 @@ const BEFEHLE = {
           { name: 'nur ich',              value: 'chef' },
           { name: 'nur das Team',         value: 'team' },
           { name: 'ich und das Team',     value: 'beide' },
-          { name: 'ein bestimmter Kanal', value: 'kanal' },
+          { name: 'ein bestimmter Kanal',       value: 'kanal' },
+          { name: 'ein bestimmter Kanal und ich', value: 'kanal_chef' },
           { name: 'gar nicht (aus)',      value: 'aus' },
           { name: 'zurück auf Standard',  value: 'standard' },
         ] },
@@ -1393,12 +1394,20 @@ const BEFEHLE = {
       const regel = { ...(regeln[thema] || empfaenger(thema, regeln)) };
 
       if (optionen.ziel) {
-        if (optionen.ziel === 'kanal' && !optionen.kanal) {
-          return '❌ Bei `ziel: ein bestimmter Kanal` musst du auch `kanal:` angeben.';
+        const inKanal = optionen.ziel === 'kanal' || optionen.ziel === 'kanal_chef';
+        if (inKanal && !optionen.kanal) {
+          return '❌ Bei einem Kanal als Ziel musst du auch `kanal:` angeben.';
         }
-        regel.ziel = optionen.ziel;
-        if (optionen.ziel === 'kanal') regel.kanal = optionen.kanal;
-        else delete regel.kanal;
+        regel.ziel = inKanal ? 'kanal' : optionen.ziel;
+        if (inKanal) {
+          regel.kanal = optionen.kanal;
+          // "und ich" heißt: der Kanal bekommt die gekürzte Fassung, du die
+          // vollständige mit Beträgen und Namen.
+          if (optionen.ziel === 'kanal_chef') regel.auchChef = true;
+          else delete regel.auchChef;
+        } else {
+          delete regel.kanal; delete regel.auchChef;
+        }
       }
 
       if (optionen.ping) {
@@ -1553,7 +1562,18 @@ if (args.includes('--discord-test')) {
     text: 'Wenn das im Team-Kanal steht, sind die Betriebsmeldungen richtig ' +
           'eingerichtet (Lager, Lieferengpass, Ausschüttung, Vorfälle).',
   });
-  console.log('Gesendet. Prüfe beide Kanäle – und dass im Team-Kanal *nur* die zweite steht.');
+  if (process.env.UC_DISCORD_VORFALL_KANAL) {
+    await discordSende({
+      ziel: 'kanal', kanal: process.env.UC_DISCORD_VORFALL_KANAL, prio: 'default',
+      titel: '🔔 Probe: Meldung für Vorfälle',
+      text: 'Hier landen Vorfälle im Unternehmen, Kassenvorfälle und unbekannte ' +
+            'Buchungen – ohne Kassenstand und ohne Namenslisten. Die vollständige ' +
+            'Fassung bekommt nur der Inhaber.',
+    });
+    console.log('Gesendet. Prüfe alle drei Kanäle.');
+  } else {
+    console.log('Gesendet. Prüfe beide Kanäle – und dass im Team-Kanal *nur* die zweite steht.');
+  }
   // Kurz warten, damit die Zustellung durch ist, dann Verbindung schließen.
   await new Promise(r => setTimeout(r, 1500));
   discordStop();

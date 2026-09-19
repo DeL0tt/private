@@ -47,21 +47,28 @@ braucht nur seine eigenen Befehle.
 
 Mehr Rechte braucht er nicht. Er liest nichts, löscht nichts, kickt niemanden.
 
-## 3. Die zwei Kanäle anlegen
+## 3. Die Kanäle
 
-Im Server brauchst du zwei Textkanäle:
+Der Bot ist auf drei Kanäle ausgelegt. Zwei reichen, der dritte ist optional:
 
-1. **`#firma-team`** – für die Angestellten. Normaler Kanal, alle dürfen rein.
-2. **`#firma-leitung`** – nur für dich. So machst du ihn privat:
-   Kanal anlegen → beim Anlegen **Privater Kanal** einschalten → nur dich
-   (und den Bot) hinzufügen. Oder nachträglich: Rechtsklick auf den Kanal →
-   **Kanal bearbeiten** → **Berechtigungen** → bei `@everyone` das Recht
-   **Kanal ansehen** auf ❌ stellen, für dich und den Bot auf ✅.
+| Kanal | Wer sieht ihn | Was reinkommt |
+|---|---|---|
+| `benachrichtigung` | alle | Lager, Lieferengpass, Firma pausiert, Ausschüttung |
+| `vorfälle` | alle | Vorfall, Kassenvorfall, unbekannte Buchung – **gekürzt** |
+| `probleme` | **nur du** | Kasse, Buchungen, Personal, Zeiten, Zugang, Technik – und alle Vorfälle vollständig |
 
-> Prüfe danach, dass der **Bot** beide Kanäle sehen und beschreiben darf –
-> beim privaten Kanal wird er sonst mit ausgeschlossen und die Meldungen
-> kommen nirgends an. Im Zweifel den Bot im privaten Kanal ausdrücklich
-> hinzufügen.
+Ein Vorfall geht also an beide Stellen: im geteilten Kanal ohne Kassenstand und
+ohne Namensliste, bei dir vollständig.
+
+`#chat` bekommt nichts vom Bot.
+
+**Den privaten Kanal anlegen:** Kanal anlegen → **Privater Kanal** einschalten →
+dich hinzufügen. Oder nachträglich: Rechtsklick → **Kanal bearbeiten** →
+**Berechtigungen** → bei `@everyone` **Kanal ansehen** auf ❌.
+
+> **Der häufigste Fehler:** Im privaten Kanal ist der Bot mit ausgesperrt. Füge
+> ihn dort ausdrücklich hinzu (**Kanal ansehen** und **Nachrichten senden** auf
+> ✅), sonst kommt bei dir nichts an und im Log steht `Discord 403`.
 
 ## 4. IDs besorgen
 
@@ -73,9 +80,10 @@ Danach mit Rechtsklick **ID kopieren**:
 | Was | Wo | Für |
 |---|---|---|
 | Server-ID | Rechtsklick auf den Servernamen | `UC_DISCORD_GUILD` |
-| Team-Kanal-ID | Rechtsklick auf den Kanal | `UC_DISCORD_TEAM_KANAL` |
+| Kanal für alle | Rechtsklick auf `#benachrichtigung` | `UC_DISCORD_TEAM_KANAL` |
+| Kanal für Vorfälle | Rechtsklick auf `#vorfälle` | `UC_DISCORD_VORFALL_KANAL` |
 | Deine Nutzer-ID | Rechtsklick auf dich selbst | `UC_DISCORD_CHEF_ID` |
-| Inhaber-Kanal-ID | Rechtsklick auf `#firma-leitung` | `UC_DISCORD_CHEF_KANAL` |
+| Privater Kanal | Rechtsklick auf `#probleme` | `UC_DISCORD_CHEF_KANAL` |
 
 ## 5. In die `.env` eintragen
 
@@ -86,9 +94,10 @@ nano ~/private/uc-watcher/server/.env
 ```ini
 UC_DISCORD_TOKEN=der.kopierte.token
 UC_DISCORD_GUILD=123456789012345678
-UC_DISCORD_TEAM_KANAL=123456789012345678    # #firma-team
-UC_DISCORD_CHEF_KANAL=123456789012345678    # #firma-leitung, nur du
-UC_DISCORD_CHEF_ID=123456789012345678       # deine Nutzer-ID
+UC_DISCORD_TEAM_KANAL=123456789012345678       # #benachrichtigung
+UC_DISCORD_VORFALL_KANAL=123456789012345678    # #vorfälle
+UC_DISCORD_CHEF_KANAL=123456789012345678       # #probleme, nur du
+UC_DISCORD_CHEF_ID=123456789012345678          # deine Nutzer-ID
 ```
 
 `UC_DISCORD_CHEF_ID` brauchst du auch mit eigenem Kanal: daran erkennt der Bot
@@ -101,11 +110,12 @@ cd ~/private/uc-watcher/server
 node --env-file=.env watcher.mjs --discord-test
 ```
 
-Das registriert die Befehle und schickt **je eine Probemeldung**. Prüfe
-beides:
+Das registriert die Befehle und schickt **in jeden eingerichteten Kanal eine
+Probemeldung**. Prüfe:
 
-- Kam die Inhaber-Meldung bei dir an?
-- Steht im Team-Kanal **nur** die Team-Meldung?
+- Kam in `#probleme` die Inhaber-Meldung an?
+- Steht in `#benachrichtigung` **nur** die Team-Meldung?
+- Steht in `#vorfälle` **nur** die Vorfall-Meldung?
 
 Passt es, den Dienst neu starten: `sudo systemctl restart uc-watcher`
 
@@ -118,18 +128,22 @@ Passt es, den Dienst neu starten: `sudo systemctl restart uc-watcher`
 
 ## Wer bekommt was
 
+Mit eingerichtetem `#vorfälle` sieht die Verteilung so aus – „Team" meint
+`#benachrichtigung`, „Vorfälle" den Vorfallkanal, „Du" den privaten Kanal.
+
 | Meldung | Team | Du |
 |---|---|---|
 | Lagerbestand niedrig | ✅ | ✅ |
 | Lieferengpass, Einkauf teurer | ✅ | ✅ |
 | Firma pausiert, obwohl jemand online ist | ✅ | ✅ |
-| Vorfall im Unternehmen | ✅ ohne Namen | ✅ mit Namen |
+| Vorfall im Unternehmen | → `#vorfälle`, ohne Namen | ✅ mit Namen |
+| Kassenvorfall | → `#vorfälle`, ohne Kassenstand | ✅ vollständig |
+| Unbekannte Buchung | → `#vorfälle`, ohne Kassenstand | ✅ vollständig |
 | Zwischenstand bis zur Ausschüttung | ✅ ohne Beträge | ✅ mit Gewinn |
 | Ausschüttung fällig | ✅ ohne Beträge | ✅ mit Gewinn |
 | Plötzlicher Lagerverlust (Diebstahlverdacht) | – | ✅ |
 | Personal abgeworben / unvollständig | – | ✅ |
 | Löhne nicht bezahlt, Mietrückstand | – | ✅ |
-| Kassenvorfälle, unbekannte Buchungen | – | ✅ |
 | Ausschüttung erfolgt (Betrag) | – | ✅ |
 | Tagesbericht mit Onlinezeiten | – | ✅ |
 | Zugang abgelaufen, Seite nicht erreichbar | – | ✅ |
@@ -201,6 +215,7 @@ Zum Ändern kommen `ziel:` und/oder `ping:` dazu:
 | nur das Team | geht ausschließlich in den Team-Kanal |
 | ich und das Team | beides, das Team in der gekürzten Fassung |
 | ein bestimmter Kanal | in einen frei gewählten Kanal (`kanal:` ausfüllen) |
+| ein bestimmter Kanal und ich | zusätzlich zu dir – der Kanal bekommt die gekürzte Fassung |
 | gar nicht (aus) | die Meldung entfällt komplett, auch für dich |
 | zurück auf Standard | die Voreinstellung aus der Tabelle oben gilt wieder |
 
