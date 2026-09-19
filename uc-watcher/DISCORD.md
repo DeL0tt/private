@@ -286,12 +286,22 @@ Zum Ändern kommen `ziel:` und/oder `ping:` dazu:
 | ein bestimmter Kanal | in einen frei gewählten Kanal (`kanal:` ausfüllen) |
 | ein bestimmter Kanal und ich | zusätzlich zu dir – der Kanal bekommt die gekürzte Fassung |
 
-Beim Zwischenstand der Ausschüttung gibt es zusätzlich `takt:`:
+Dazu kommen zwei Einstellungen, wie **oft** eine Meldung kommt:
+
+| Option | Wirkung |
+|---|---|
+| `wiederholung:` | Wie lange Ruhe ist, bevor dieselbe Meldung wiederkommt – 15 Min. bis „erst am nächsten Tag". Ohne Angabe: eine Stunde. |
+| `takt:` | Nur beim **Zwischenstand der Ausschüttung**: stündlich, alle zwei, drei oder sechs Stunden – oder gar nicht, dann kommt nur noch die fällige Ausschüttung. |
 
 ```
 /melden thema:Ausschüttung: Zwischenstand  takt:alle drei Stunden
 /melden thema:Ausschüttung: Zwischenstand  takt:nur wenn die Ausschüttung fällig ist
+/melden thema:Lagerbestand niedrig  wiederholung:nach 3 Stunden
+/melden thema:Wiki-Änderungen  ziel:gar nicht (aus)
 ```
+
+`ziel: gar nicht (aus)` schaltet eine Meldung **vollständig** ab – auch die
+Benachrichtigung aufs Handy über ntfy, nicht nur die im Discord.
 | gar nicht (aus) | die Meldung entfällt komplett, auch für dich |
 | zurück auf Standard | die Voreinstellung aus der Tabelle oben gilt wieder |
 

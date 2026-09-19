@@ -191,9 +191,14 @@ Im Discord selbst – für alle: `/firma`, `/lager`, `/ausschuettung`, `/zeiten`
 `/zuordnen` – einzeln weitergebbar mit `/rechte` an eine Rolle oder eine
 Person. `/rechte` selbst bleibt immer beim Inhaber.
 
-`/melden` stellt um, wer welche Meldung sieht und ob dabei eine Rolle oder
-@everyone gepingt wird – ohne SSH, ohne Neustart. `/melden` ohne Angaben zeigt
-die aktuelle Übersicht. Die Einstellungen stehen in `uc-watcher-regeln.json`.
+`/melden` stellt um, wer welche Meldung sieht, ob dabei gepingt wird, wie oft
+sie sich wiederholt – und ob sie überhaupt kommt. Alles ohne SSH und ohne
+Neustart. `/melden` ohne Angaben zeigt die Übersicht. Die Einstellungen stehen
+in `uc-watcher-regeln.json`.
+
+`/rechte` vergibt die vorbehaltenen Befehle an Rollen oder Personen.
+`/zuordnen` verbindet Discord-Konten mit Spielernamen, damit „nur wer ingame
+online ist" pingen kann.
 
 Antworten sieht nur, wer den Befehl eingegeben hat.
 

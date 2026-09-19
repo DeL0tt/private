@@ -251,7 +251,15 @@ export function regelText(regel) {
     : regel.ping === 'everyone' ? ' · pingt @everyone'
     : regel.ping === 'here' ? ' · pingt @here'
     : ` · pingt <@&${regel.ping}>`;
-  return wohin + ping;
+  const takt = regel.takt === undefined ? ''
+    : regel.takt === 0 ? ' · kein Zwischenstand'
+    : regel.takt === 1 ? ' · stündlich'
+    : ` · alle ${regel.takt} Std.`;
+  const ruhe = regel.wiederholung === undefined ? ''
+    : regel.wiederholung >= 1440 ? ' · höchstens einmal am Tag'
+    : regel.wiederholung >= 60 ? ` · frühestens nach ${regel.wiederholung / 60} Std. wieder`
+    : ` · frühestens nach ${regel.wiederholung} Min. wieder`;
+  return wohin + ping + takt + ruhe;
 }
 
 /**

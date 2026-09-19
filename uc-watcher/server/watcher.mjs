@@ -376,14 +376,21 @@ function onlineDiscordIds(state) {
  * bekommt das Team denselben Text.
  */
 async function push(thema, titel, text, state, prio = 'high', extra = {}) {
+  const regel = extra.ziel ? { ziel: extra.ziel } : empfaenger(thema, ladeRegeln());
+
+  // "Gar nicht" heißt gar nicht: auch kein ntfy aufs Handy. Sonst wäre die
+  // Einstellung eine Halbwahrheit.
+  if (regel.ziel === 'aus') return log('Abgeschaltet:', thema);
+
+  // Wie lange dieselbe Meldung Ruhe gibt, ist je Thema über /melden
+  // einstellbar – sonst gilt die allgemeine Vorgabe.
+  const ruhe = (regel.wiederholung ?? CFG.ERINNERUNG_MIN) * MIN;
   const now = Date.now();
-  if (now - (state.lastPush[thema] || 0) < CFG.ERINNERUNG_MIN * MIN) return log('Cooldown:', thema);
+  if (now - (state.lastPush[thema] || 0) < ruhe) return log('Cooldown:', thema);
   state.lastPush[thema] = now;
 
   info('PUSH:', titel);
   log(text);
-
-  const regel = extra.ziel ? { ziel: extra.ziel } : empfaenger(thema, ladeRegeln());
   await discordSende({ ...regel, titel, text, prio,
                        pingNutzer: regel.ping === 'online' ? onlineDiscordIds(state) : undefined,
                        teamTitel: extra.teamTitel, teamText: extra.teamText });
@@ -1557,6 +1564,16 @@ const BEFEHLE = {
           { name: 'eine Rolle (Feld rolle ausfüllen)', value: 'rolle' },
         ] },
       { name: 'rolle', description: 'Rolle, wenn ping = eine Rolle', type: 8, required: false },
+      { name: 'wiederholung', description: 'Wie lange Ruhe, bevor dieselbe Meldung wiederkommt?',
+        type: 3, required: false,
+        choices: [
+          { name: 'nach 15 Minuten',   value: '15' },
+          { name: 'nach 30 Minuten',   value: '30' },
+          { name: 'nach 1 Stunde',     value: '60' },
+          { name: 'nach 3 Stunden',    value: '180' },
+          { name: 'nach 12 Stunden',   value: '720' },
+          { name: 'erst am nächsten Tag', value: '1440' },
+        ] },
       { name: 'takt', description: 'Nur beim Zwischenstand der Ausschüttung: wie oft?',
         type: 3, required: false,
         choices: [
@@ -1586,7 +1603,7 @@ const BEFEHLE = {
       const name = themaName(thema);
 
       // Nur ein Thema genannt: dessen Regel zeigen.
-      if (!optionen.ziel && !optionen.ping && !optionen.takt) {
+      if (!optionen.ziel && !optionen.ping && !optionen.takt && !optionen.wiederholung) {
         return `**${name}**\n${regelText(empfaenger(thema, regeln))}\n\n` +
           '_Zum Ändern zusätzlich `ziel:` oder `ping:` angeben._';
       }
@@ -1624,6 +1641,8 @@ const BEFEHLE = {
         regel.ping = optionen.ping === 'rolle' ? optionen.rolle : optionen.ping;
       }
 
+      if (optionen.wiederholung !== undefined) regel.wiederholung = Number(optionen.wiederholung);
+
       if (optionen.takt !== undefined) {
         if (thema !== 'ausschuettung_std_') {
           return '❌ `takt:` gibt es nur beim Zwischenstand der Ausschüttung.';
@@ -1635,6 +1654,12 @@ const BEFEHLE = {
       speichereRegeln(regeln);
 
       let t = `✅ **${name}**\n${regelText(regel)}`;
+      if (regel.wiederholung !== undefined) {
+        const w = regel.wiederholung;
+        t += `\n\nDieselbe Meldung kommt frühestens ` +
+          (w >= 1440 ? 'am nächsten Tag' : w >= 60 ? `nach ${w / 60} Std.` : `nach ${w} Min.`) +
+          ' wieder.';
+      }
       if (regel.takt !== undefined) {
         t += regel.takt === 0
           ? '\n\nKein Zwischenstand mehr – es kommt nur noch die Meldung, ' +
