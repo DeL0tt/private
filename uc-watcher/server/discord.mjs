@@ -275,8 +275,12 @@ export async function discordSende({ ziel, kanal, ping, titel, text,
   if (!discordAktiv() || ziel === 'aus') return;
 
   if (ziel === 'chef' || ziel === 'beide') {
-    // In der DM wird nicht gepingt – da kommt die Meldung ohnehin nur bei dir an.
-    await inKanal(await chefKanal(), titel, text, prio, 'nur für den Firmeninhaber');
+    // Geht die Meldung in einen eigenen Kanal, darf dort auch gepingt werden.
+    // In einer DM wäre ein Ping sinnlos: sie erreicht ohnehin nur dich, und
+    // @everyone gibt es in einer DM nicht.
+    const eigenerKanal = !!CFG.CHEF_KANAL;
+    await inKanal(await chefKanal(), titel, text, prio,
+                  'nur für den Firmeninhaber', eigenerKanal ? ping : undefined);
   }
   if (ziel === 'team' || ziel === 'beide') {
     await inKanal(CFG.TEAM_KANAL, teamTitel || titel, teamText || text, prio, undefined, ping);

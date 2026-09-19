@@ -1,10 +1,21 @@
 # Discord-Bot einrichten
 
 Der Watcher kann seine Meldungen zusätzlich nach Discord schicken und dort
-Slash-Commands beantworten. Zwei getrennte Empfänger:
+Slash-Commands beantworten. Alles läuft in **einem** Discord-Server, getrennt
+über zwei Kanäle:
 
-- **Team-Kanal** – Betriebliches, auf das die Angestellten reagieren können
-- **Du** (DM oder eigener Kanal) – Geld, Personal, Arbeitszeiten, Technik
+- **Team-Kanal**, den alle sehen – Betriebliches, auf das die Angestellten
+  reagieren können
+- **Inhaber-Kanal**, den nur du sehen kannst – Geld, Personal, Arbeitszeiten,
+  Technik
+
+Der Bot selbst läuft weiter auf deiner Oracle-VM, im selben Dienst wie der
+Watcher (`uc-watcher`). Discord hostet nichts – der Bot verbindet sich von
+deinem Server aus dorthin. Ein zusätzlicher Dienst ist nicht nötig.
+
+Statt eines Inhaber-Kanals kann der Bot dir auch eine DM schicken; die Kanal-
+Variante ist aber die bessere, weil dort auch Pings funktionieren und du
+alles an einem Ort hast.
 
 Die Einrichtung dauert etwa zehn Minuten und ist einmalig. Ohne
 `UC_DISCORD_TOKEN` bleibt alles wie bisher – nur ntfy.
@@ -36,7 +47,23 @@ braucht nur seine eigenen Befehle.
 
 Mehr Rechte braucht er nicht. Er liest nichts, löscht nichts, kickt niemanden.
 
-## 3. IDs besorgen
+## 3. Die zwei Kanäle anlegen
+
+Im Server brauchst du zwei Textkanäle:
+
+1. **`#firma-team`** – für die Angestellten. Normaler Kanal, alle dürfen rein.
+2. **`#firma-leitung`** – nur für dich. So machst du ihn privat:
+   Kanal anlegen → beim Anlegen **Privater Kanal** einschalten → nur dich
+   (und den Bot) hinzufügen. Oder nachträglich: Rechtsklick auf den Kanal →
+   **Kanal bearbeiten** → **Berechtigungen** → bei `@everyone` das Recht
+   **Kanal ansehen** auf ❌ stellen, für dich und den Bot auf ✅.
+
+> Prüfe danach, dass der **Bot** beide Kanäle sehen und beschreiben darf –
+> beim privaten Kanal wird er sonst mit ausgeschlossen und die Meldungen
+> kommen nirgends an. Im Zweifel den Bot im privaten Kanal ausdrücklich
+> hinzufügen.
+
+## 4. IDs besorgen
 
 Discord zeigt IDs nur im Entwicklermodus:
 **Einstellungen → Erweitert → Entwicklermodus** einschalten.
@@ -48,8 +75,9 @@ Danach mit Rechtsklick **ID kopieren**:
 | Server-ID | Rechtsklick auf den Servernamen | `UC_DISCORD_GUILD` |
 | Team-Kanal-ID | Rechtsklick auf den Kanal | `UC_DISCORD_TEAM_KANAL` |
 | Deine Nutzer-ID | Rechtsklick auf dich selbst | `UC_DISCORD_CHEF_ID` |
+| Inhaber-Kanal-ID | Rechtsklick auf `#firma-leitung` | `UC_DISCORD_CHEF_KANAL` |
 
-## 4. In die `.env` eintragen
+## 5. In die `.env` eintragen
 
 ```
 nano ~/private/uc-watcher/server/.env
@@ -58,9 +86,13 @@ nano ~/private/uc-watcher/server/.env
 ```ini
 UC_DISCORD_TOKEN=der.kopierte.token
 UC_DISCORD_GUILD=123456789012345678
-UC_DISCORD_TEAM_KANAL=123456789012345678
-UC_DISCORD_CHEF_ID=123456789012345678
+UC_DISCORD_TEAM_KANAL=123456789012345678    # #firma-team
+UC_DISCORD_CHEF_KANAL=123456789012345678    # #firma-leitung, nur du
+UC_DISCORD_CHEF_ID=123456789012345678       # deine Nutzer-ID
 ```
+
+`UC_DISCORD_CHEF_ID` brauchst du auch mit eigenem Kanal: daran erkennt der Bot
+bei den Befehlen, dass du der Inhaber bist.
 
 Speichern (`Strg+O`, `Enter`, `Strg+X`), dann:
 
@@ -77,11 +109,10 @@ beides:
 
 Passt es, den Dienst neu starten: `sudo systemctl restart uc-watcher`
 
-> Damit dir der Bot eine DM schicken kann, musst du mit ihm einen Server
-> teilen und Direktnachrichten von Servermitgliedern erlauben
-> (**Einstellungen → Privatsphäre**). Klappt das nicht, lege einen Kanal an,
-> den nur du sehen kannst, und setze dessen ID als `UC_DISCORD_CHEF_KANAL` –
-> dann geht es dorthin statt per DM.
+> Lässt du `UC_DISCORD_CHEF_KANAL` leer, schickt der Bot dir stattdessen eine
+> DM. Dafür musst du Direktnachrichten von Servermitgliedern erlauben
+> (**Einstellungen → Privatsphäre**), und Pings gibt es dort nicht. Mit
+> gesetztem Kanal ist beides kein Thema.
 
 ---
 
@@ -190,8 +221,8 @@ Zum Ändern kommen `ziel:` und/oder `ping:` dazu:
 
 Drei Dinge dazu:
 
-- **In der DM wird nie gepingt.** Ein Ping wirkt nur in Kanälen – bei dir
-  kommt die Meldung ohnehin direkt an.
+- **Pings wirken in Kanälen**, auch in deinem Inhaber-Kanal. Nur in einer DM
+  gibt es sie nicht – dort erreicht dich die Meldung ohnehin direkt.
 - **Bei heiklen Meldungen warnt der Bot.** Stellst du etwas mit Namen oder
   Beträgen auf einen geteilten Kanal um, sagt die Antwort dir, was dort
   künftig mitgelesen wird. Verboten wird es nicht – es ist deine Firma.
@@ -228,9 +259,14 @@ Scope darf der Bot keine Befehle anlegen. Neu einladen und
 `--discord-test` erneut laufen lassen. Mit gesetzter `UC_DISCORD_GUILD`
 gelten sie sofort, ohne bis zu eine Stunde.
 
-**Keine DM, aber der Team-Kanal geht**
-→ Siehe den Hinweis in Abschnitt 4: DMs erlauben oder
-`UC_DISCORD_CHEF_KANAL` benutzen.
+**Der Team-Kanal geht, der Inhaber-Kanal nicht**
+→ Fast immer darf der Bot den privaten Kanal nicht sehen. Kanal bearbeiten →
+Berechtigungen → Bot hinzufügen, **Kanal ansehen** und **Nachrichten senden**
+auf ✅. Im Log steht dann `Discord 403 bei POST /channels/…`.
+
+**Gar keine Meldung an dich, weder Kanal noch DM**
+→ Ist `UC_DISCORD_CHEF_KANAL` leer *und* DMs gesperrt, hat der Bot keinen Weg
+zu dir. Entweder Kanal setzen oder DMs erlauben (Abschnitt 5).
 
 **Meldungen doppelt auf dem Handy**
 → ntfy und Discord liefern beide. Wenn du nur noch Discord willst,

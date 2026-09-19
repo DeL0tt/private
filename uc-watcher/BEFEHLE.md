@@ -191,6 +191,9 @@ die aktuelle Übersicht. Die Einstellungen stehen in `uc-watcher-regeln.json`.
 
 Antworten sieht nur, wer den Befehl eingegeben hat.
 
+Zwei Kanäle im selben Server: `#firma-team` für alle (`UC_DISCORD_TEAM_KANAL`)
+und ein privater Kanal nur für dich (`UC_DISCORD_CHEF_KANAL`).
+
 **Was ins Team geht:** Lager, Lieferengpass, Firma pausiert, Ausschüttung,
 Vorfälle – bei den letzten beiden ohne Beträge und ohne Namen.
 **Was nur du bekommst:** Kasse, Buchungen, Personal, Arbeitszeiten,
