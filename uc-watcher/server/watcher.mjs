@@ -2154,28 +2154,83 @@ if (args.includes('--betrieb-probe')) {
   }
 
   // Was die Statuscodes über die API verraten
-  // Zahlenfelder auflisten, die als Bestand in Frage kommen. Der gesuchte
-  // Wert ist um den Sockel größer als das, was entnommen werden kann.
   if (gefunden) {
-    console.log('--- Zahlen in den Antworten, die ein Bestand sein könnten ---');
+    // Wurde ein Wert mitgegeben, suchen wir genau den – als Zahl, als Text und
+    // als Summe einer Liste. Sonst listen wir alles Zahlenartige auf.
+    const gesucht = Number(args[args.indexOf('--betrieb-probe') + 1]);
+    const suchen = Number.isFinite(gesucht);
+
     for (const [pfad, daten] of trefferListe) {
-      const funde = [];
-      const suche = (o, weg = '', tiefe = 0) => {
-        if (!o || tiefe > 6) return;
-        if (Array.isArray(o)) return o.forEach((x, i) => suche(x, `${weg}[${i}]`, tiefe + 1));
-        if (typeof o !== 'object') return;
+      const funde = [], summen = [], alles = [];
+      const gesehen = new WeakSet();
+
+      const geh = (o, weg) => {
+        if (!o || typeof o !== 'object') return;
+        if (gesehen.has(o)) return;      // Ringe im Datensatz abfangen
+        gesehen.add(o);
+
+        if (Array.isArray(o)) {
+          // Summiert sich die Liste auf den gesuchten Wert?
+          if (suchen) {
+            const zahlen = o.map(x => typeof x === 'number' ? x : null).filter(x => x !== null);
+            if (zahlen.length && Math.abs(zahlen.reduce((a, b) => a + b, 0) - gesucht) <= 1) {
+              summen.push(`${weg} (Summe von ${zahlen.length} Zahlen)`);
+            }
+            // Auch Listen von Objekten: jedes Zahlenfeld einzeln aufsummieren
+            const felder = new Set();
+            for (const x of o) if (x && typeof x === 'object' && !Array.isArray(x)) {
+              for (const [k, v] of Object.entries(x)) if (typeof v === 'number') felder.add(k);
+            }
+            for (const f of felder) {
+              const summe = o.reduce((a, x) => a + (typeof x?.[f] === 'number' ? x[f] : 0), 0);
+              if (Math.abs(summe - gesucht) <= 1) summen.push(`Summe von ${weg}[].${f} = ${summe}`);
+            }
+          }
+          o.forEach((x, i) => geh(x, `${weg}[${i}]`));
+          return;
+        }
+
         for (const [k, v] of Object.entries(o)) {
-          if (typeof v === 'number' && v > 50 && v < 10_000) funde.push(`${weg}.${k} = ${v}`);
-          else suche(v, `${weg}.${k}`, tiefe + 1);
+          const pfadHier = `${weg}.${k}`;
+          if (typeof v === 'number') {
+            alles.push(`${pfadHier} = ${v}`);
+            if (suchen && Math.abs(v - gesucht) <= 1) funde.push(`${pfadHier} = ${v}`);
+          } else if (typeof v === 'string') {
+            if (suchen && v.replace(/[^0-9]/g, '') === String(gesucht)) {
+              funde.push(`${pfadHier} = "${v}"  (als Text)`);
+            }
+          } else geh(v, pfadHier);
         }
       };
-      suche(daten);
-      console.log(`\n${pfad}:`);
-      console.log(funde.length ? '   ' + funde.slice(0, 40).join('\n   ') : '   (keine)');
+      geh(daten, '');
+
+      console.log(`\n=== ${pfad} ===`);
+      if (suchen) {
+        if (funde.length) {
+          console.log(`🎯 ${gesucht} steht hier:`);
+          for (const f of funde) console.log('   ' + f);
+        }
+        if (summen.length) {
+          console.log(`🎯 ${gesucht} ergibt sich als Summe:`);
+          for (const f of summen) console.log('   ' + f);
+        }
+        if (!funde.length && !summen.length) console.log(`   ${gesucht} kommt nicht vor.`);
+      }
+      console.log(`   (${alles.length} Zahlenfelder insgesamt)`);
+      if (!suchen || (!funde.length && !summen.length)) {
+        const auswahl = alles.filter(z => {
+          const n = Number(z.split(' = ').pop());
+          return n > 20 && n < 100_000;
+        });
+        console.log('   ' + (auswahl.slice(0, 60).join('\n   ') || '(keine passenden)'));
+      }
     }
-    console.log('\nWelche Zahl ist der Bestand der Zoohandlung?');
-    console.log('Gesucht ist die, die um ' + CFG.BETRIEB_ABZUG + ' größer ist als das,');
-    console.log('was du entnehmen kannst. Schick mir den Namen des Feldes.');
+
+    if (!suchen) {
+      console.log('\nTipp: Den gesuchten Wert direkt mitgeben, dann wird gezielt');
+      console.log('gesucht – auch als Text und als Summe einer Liste:');
+      console.log('   node --env-file=.env watcher.mjs --betrieb-probe 219');
+    }
   }
 
   if (!gefunden) {
