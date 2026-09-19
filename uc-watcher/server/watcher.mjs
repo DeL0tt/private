@@ -99,6 +99,12 @@ const CFG = {
 };
 
 // Kassenbuch-Kategorien, die einen Vorfall darstellen (Groß/Klein egal).
+// Vorfallsarten, die es im Spiel gibt. Nur als Starthilfe für die Auswahl in
+// /melden – der Watcher ergänzt selbst, was ihm tatsächlich begegnet.
+const VORFALL_BEKANNT = (process.env.UC_VORFALL_ARTEN ||
+  'ABWERBUNG,RAZZIA,UEBERFALL,EINBRUCH,DIEBSTAHL,SABOTAGE,STEUERPRUEFUNG,LIEFERENGPASS')
+  .split(',').map(a => a.trim().toUpperCase()).filter(Boolean);
+
 const VORFALL_KATEGORIEN = [
   'steuerprüfung', 'steuerpruefung', 'razzia', 'überfall', 'ueberfall',
   'einbruch', 'diebstahl', 'strafe', 'bußgeld', 'bussgeld', 'sabotage',
@@ -2080,7 +2086,7 @@ const BEFEHLE = {
           { name: 'nach 12 Stunden',   value: '720' },
           { name: 'erst am nächsten Tag', value: '1440' },
         ] },
-      { name: 'vorfallart', description: 'Nur bei Vorfällen: nur für diese Art gelten (z. B. ABWERBUNG)',
+      { name: 'vorfallart', description: 'Nur bei Vorfällen: Art wählen oder eintippen, z. B. ABWERBUNG',
         type: 3, required: false, autocomplete: true },
       { name: 'erinnerung', description: 'Nur bei Vorfällen: nachfassen, solange er offen ist',
         type: 3, required: false,
@@ -2112,16 +2118,26 @@ const BEFEHLE = {
         .filter(k => k.startsWith('event_') && k !== 'event_')
         .map(k => k.slice('event_'.length));
 
-      const arten = [...new Set([...Object.keys(gesehen), ...ausRegeln])]
-        .filter(a => a.toLowerCase().includes(String(eingabe).toLowerCase()))
+      const such = String(eingabe || '').toLowerCase();
+      const arten = [...new Set([...Object.keys(gesehen), ...ausRegeln, ...VORFALL_BEKANNT])]
+        .filter(a => a.toLowerCase().includes(such))
         .sort((a, b) => (gesehen[b]?.zuletzt || 0) - (gesehen[a]?.zuletzt || 0));
 
-      return arten.map(a => ({
-        name: gesehen[a]
-          ? `${a} (${gesehen[a].anzahl}× gesehen)`.slice(0, 100)
-          : `${a} (eingestellt)`,
+      const liste = arten.map(a => ({
+        name: (gesehen[a] ? `${a} (${gesehen[a].anzahl}× gesehen)`
+              : ausRegeln.includes(a) ? `${a} (eingestellt)`
+              : `${a} (bekannte Art)`).slice(0, 100),
         value: a,
       }));
+
+      // Getipptes immer anbieten: der Watcher kennt nur Arten, die er selbst
+      // schon gesehen hat – ohne das wäre das Feld vor dem ersten Vorfall
+      // leer und damit unbenutzbar.
+      const eigen = String(eingabe || '').toUpperCase().replace(/[^A-Z0-9]+/g, '_');
+      if (eigen && !liste.some(x => x.value === eigen)) {
+        liste.unshift({ name: `${eigen} (so übernehmen)`.slice(0, 100), value: eigen });
+      }
+      return liste;
     },
 
     async ausfuehren({ optionen }) {

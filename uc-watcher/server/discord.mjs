@@ -486,7 +486,8 @@ export async function schlageVor(interaktion, befehle) {
   let choices = [];
   try {
     choices = (await b.vorschlaege(offen.name, String(offen.value || ''))) || [];
-  } catch (e) { log('Vorschläge fehlgeschlagen:', e.message); }
+  } catch (e) { console.error('  Vorschläge fehlgeschlagen:', e.message); }
+  log(`Vorschläge für ${offen.name}: ${choices.length}`);
 
   await rest(`/interactions/${interaktion.id}/${interaktion.token}/callback`, 'POST',
     { type: 8, data: { choices: choices.slice(0, 25) } }).catch(e => log('Vorschlag:', e.message));

@@ -392,9 +392,10 @@ Dazu kommen zwei Einstellungen, wie **oft** eine Meldung kommt:
 
 **Einzelne Vorfallsarten:** Mit `vorfallart:` gilt eine Einstellung nur für
 diese eine Art – eine Abwerbung kostet Geld und darf ruhig zweimal stören,
-ein belangloser Vorfall nicht. Das Feld schlägt dir die Arten vor, die der
-Watcher bereits gesehen hat, samt Anzahl; du musst also nichts auswendig
-wissen. Eine Regel für eine Art schlägt die allgemeine, und `/melden` ohne
+ein belangloser Vorfall nicht. Das Feld schlägt dir Arten vor: die, die der
+Watcher schon gesehen hat (mit Anzahl), die bereits eingestellten, und eine
+Startliste der im Spiel üblichen. Steht deine nicht dabei, tipp sie einfach –
+sie wird als „so übernehmen" angeboten. Auswendig wissen musst du nichts. Eine Regel für eine Art schlägt die allgemeine, und `/melden` ohne
 Angaben listet beide untereinander auf.
 
 **Zum Nachfassen bei Vorfällen:** Ein Vorfall hat eine Frist – bei einer
