@@ -390,6 +390,9 @@ node --env-file=.env watcher.mjs --push-test           # Handy-Zustellung prüfe
 | `LUECKE_MIN` | `UC_LUECKE_MIN` | 10 | Pause, ab der eine neue Sitzung zählt |
 | `ERINNERUNG_MIN` | `UC_ERINNERUNG_MIN` | 60 | Cooldown je Thema |
 | `API_WEG_MELDUNG_MIN` | `UC_API_WEG_MELDUNG_MIN` | 30 | Minuten Ausfall, bis „nicht erreichbar“ gemeldet wird |
+| `DISCORD_TOKEN` | `UC_DISCORD_TOKEN` | – | Bot-Token; leer = Discord aus (siehe DISCORD.md) |
+| `DISCORD_TEAM_KANAL` | `UC_DISCORD_TEAM_KANAL` | – | Kanal für Betriebsmeldungen ans Team |
+| `DISCORD_CHEF_ID` | `UC_DISCORD_CHEF_ID` | – | Deine Discord-ID für die Inhaber-Meldungen |
 | `POLL_INTERVAL_MS` | `UC_INTERVALL_MS` | 60000 | Prüfintervall |
 | `ONLINE_FENSTER_MIN` | – | 180 | Zeitfenster für „wer war online" |
 | `DEBUG` | `UC_DEBUG` | aus | ausführliches Log |

@@ -5,6 +5,8 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { discordAktiv, discordSende, discordStart, discordStop, empfaenger }
+  from './discord.mjs';
 
 /* ========================= KONFIGURATION ========================= */
 
@@ -333,14 +335,27 @@ function onlineBericht(state, fensterMin = 180) {
 
 const PRIO = { min: 1, low: 2, default: 3, high: 4, urgent: 5 };
 
-async function push(thema, titel, text, state, prio = 'high') {
+/**
+ * Schickt eine Meldung raus: an ntfy (dein Handy) und, falls eingerichtet,
+ * an Discord.
+ *
+ * extra.teamText / extra.teamTitel: entschärfte Fassung für den Team-Kanal,
+ * ohne Geldbeträge und ohne Namenslisten. Fehlt sie bei einem Team-Thema,
+ * bekommt das Team denselben Text.
+ */
+async function push(thema, titel, text, state, prio = 'high', extra = {}) {
   const now = Date.now();
   if (now - (state.lastPush[thema] || 0) < CFG.ERINNERUNG_MIN * MIN) return log('Cooldown:', thema);
   state.lastPush[thema] = now;
 
   info('PUSH:', titel);
   log(text);
-  if (!CFG.NTFY_TOPIC) return console.warn('  (kein UC_NTFY_TOPIC gesetzt – nicht gesendet)');
+
+  const ziel = extra.ziel || empfaenger(thema);
+  await discordSende({ ziel, titel, text, prio,
+                       teamTitel: extra.teamTitel, teamText: extra.teamText });
+
+  if (!CFG.NTFY_TOPIC) return log('  (kein UC_NTFY_TOPIC gesetzt – nur Discord)');
 
   // Als JSON, nicht per HTTP-Header: Header dürfen nur Latin-1, unsere Titel
   // enthalten Emojis und Umlaute.
@@ -387,7 +402,13 @@ async function pruefeAusschuettung(state) {
       `Noch ${dauer(ziel - state.teamOnlineMs)} bis zur nächsten Ausschüttung.` +
       (state.gewinn !== null ? `\nGewinn bisher: ${fmt(state.gewinn)}` : '') +
       (wer.length ? `\n\nGerade online: ${wer.join(', ')}` : ''),
-      state, 'low');
+      state, 'low', {
+        // Das Team sieht den Fortschritt, aber keine Beträge.
+        teamText:
+          `Team-Onlinezeit: ${dauer(state.teamOnlineMs)}\n` +
+          `Noch ${dauer(ziel - state.teamOnlineMs)} bis zur nächsten Ausschüttung.` +
+          (wer.length ? `\n\nGerade online: ${wer.join(', ')}` : ''),
+      });
   }
 
   if (state.teamOnlineMs >= ziel && !state.faelligGemeldet) {
@@ -395,7 +416,10 @@ async function pruefeAusschuettung(state) {
     await push('ausschuettung_faellig', '💰 Ausschüttung ist fällig',
       `${CFG.AUSSCHUETTUNG_STD} Std. Team-Onlinezeit erreicht (${dauer(state.teamOnlineMs)}).` +
       (state.gewinn !== null ? `\nAktueller Gewinn: ${fmt(state.gewinn)}` : ''),
-      state, 'high');
+      state, 'high', {
+        teamText: `${CFG.AUSSCHUETTUNG_STD} Std. Team-Onlinezeit erreicht ` +
+          `(${dauer(state.teamOnlineMs)}). Die Ausschüttung kann gemacht werden.`,
+      });
   }
 }
 
@@ -949,7 +973,14 @@ async function durchlauf() {
           (ex.cooldownLeftMs ? `, wieder möglich in ${dauer(ex.cooldownLeftMs)}` : '')
         : '') +
       (bericht.length ? `\n\nOnline zum Zeitpunkt:\n${bericht.join('\n')}` : ''),
-      state, 'urgent');
+      state, 'urgent', {
+        // Wer online war, ist eine Frage für den Inhaber, nicht fürs Team.
+        teamText: ereignisText(f.event) +
+          (ex.maxSlots
+            ? `\n\nExpresslieferung: ${ex.freeSlots ?? '?'} von ${ex.maxSlots} Plätzen frei` +
+              `, Aufschlag ${Math.round((ex.surcharge || 0) * 100)} %`
+            : ''),
+      });
   }
 
   // --- Einkaufspreise: Sprung deutet auf einen Lieferengpass hin ---
@@ -974,7 +1005,14 @@ async function durchlauf() {
             (ex.cooldownLeftMs ? `, wieder möglich in ${dauer(ex.cooldownLeftMs)}` : '')
           : '') +
         (bericht.length ? `\n\nOnline zum Zeitpunkt:\n${bericht.join('\n')}` : ''),
-        state, 'high');
+        state, 'high', {
+          teamText: `Einkaufspreise im Schnitt +${aenderung.toFixed(0)} %\n\n` +
+            teuerste.join('\n') +
+            (ex.maxSlots
+              ? `\n\nExpresslieferung: ${ex.freeSlots ?? '?'} von ${ex.maxSlots} Plätzen frei` +
+                `, Aufschlag ${Math.round((ex.surcharge || 0) * 100)} %`
+              : ''),
+        });
     }
     state.preise = preiseJetzt;
   }
@@ -1013,6 +1051,177 @@ async function durchlauf() {
                    online: members.filter(m => m.online).map(m => m.name) });
 }
 
+/* ========================= DISCORD-BEFEHLE ========================= */
+
+// Ordnet Discord-Konten den Spielernamen in UnicaCity zu, damit /zeiten jedem
+// die eigene Zeit zeigen kann. Format: "123456789:LottiMi,987654321:Max"
+const SPIELER_ZU_DISCORD = new Map(
+  (process.env.UC_DISCORD_SPIELER || '').split(',')
+    .map(e => e.split(':').map(t => t.trim()))
+    .filter(([id, name]) => id && name)
+    .map(([id, name]) => [id, name]));
+
+const tabelle = (zeilen) => zeilen.length ? '```\n' + zeilen.join('\n') + '\n```' : '_keine Daten_';
+
+// Die Firma wird für mehrere Befehle gebraucht. Ein kurzer Puffer verhindert,
+// dass fünf Leute hintereinander fünf API-Abfragen auslösen.
+let firmaPuffer = { zeit: 0, daten: null };
+async function firmaFrisch() {
+  if (firmaPuffer.daten && Date.now() - firmaPuffer.zeit < 20_000) return firmaPuffer.daten;
+  const daten = await holeFirma();
+  firmaPuffer = { zeit: Date.now(), daten: daten.company };
+  return firmaPuffer.daten;
+}
+
+const BEFEHLE = {
+  firma: {
+    beschreibung: 'Zustand der Firma: Status, Lager, Personal, wer online ist',
+    async ausfuehren({ istChef }) {
+      const f = await firmaFrisch();
+      const online = (f.members || []).filter(m => m.online);
+      let t = `**${f.name}** · Level ${f.level} · ${sauber(f.status)}\n` +
+        `Lager: ${f.stock?.total} / ${f.stock?.capacity}\n` +
+        `Personal: ${Array.isArray(f.employees) ? f.employees.length : '?'} / ${f.maxEmployees ?? '?'}\n` +
+        `Team online: ${online.length} von ${(f.members || []).length}` +
+        (online.length ? ` (${online.map(m => m.name).join(', ')})` : '');
+      if (f.wagesUnpaid) t += '\n⚠️ Die Löhne konnten nicht gezahlt werden.';
+      if (f.rentStrikes > 0) t += `\n⚠️ Mietmahnungen: ${f.rentStrikes} von ${f.rentStrikesMax}`;
+      // Beträge nur für den Inhaber.
+      if (istChef) t += `\n\nKasse: ${fmt(f.kasse?.balance)} · Gewinn: ${fmt(f.kasse?.profitSincePayout)}`;
+      return t;
+    },
+  },
+
+  lager: {
+    beschreibung: 'Lagerbestand, Absatz und wie lange der Bestand noch reicht',
+    async ausfuehren() {
+      const f = await firmaFrisch();
+      const bestand = f.stock?.total ?? 0, kapazitaet = f.stock?.capacity ?? 0;
+      const absatz = f.stock?.salesPerMinute || 0;
+      const anteil = kapazitaet ? Math.round(bestand / kapazitaet * 100) : 0;
+      // Ein Balken sagt auf dem Handy mehr als eine Zahl.
+      const balken = '█'.repeat(Math.round(anteil / 5)) + '░'.repeat(20 - Math.round(anteil / 5));
+      return `**Lager:** ${bestand} / ${kapazitaet} (${anteil} %)\n` +
+        '`' + balken + '`\n' +
+        `Absatz: ${absatz}/Min\n` +
+        `Reicht noch: ${absatz ? dauer(bestand / absatz * MIN) : 'unbestimmt (kein Absatz)'}` +
+        (bestand < CFG.LAGER_SCHWELLE ? `\n\n⚠️ Unter der Schwelle von ${CFG.LAGER_SCHWELLE} – nachfüllen.` : '');
+    },
+  },
+
+  ausschuettung: {
+    beschreibung: 'Wie weit ist die Team-Onlinezeit bis zur nächsten Ausschüttung',
+    async ausfuehren({ istChef }) {
+      const st = load();
+      const ziel = CFG.AUSSCHUETTUNG_STD * 3_600_000;
+      const anteil = Math.min(100, Math.round(st.teamOnlineMs / ziel * 100));
+      const balken = '█'.repeat(Math.round(anteil / 5)) + '░'.repeat(20 - Math.round(anteil / 5));
+      let t = `**Ausschüttung:** ${dauer(st.teamOnlineMs)} von ${CFG.AUSSCHUETTUNG_STD} Std. (${anteil} %)\n` +
+        '`' + balken + '`\n' +
+        (st.teamOnlineMs >= ziel
+          ? '✅ Ziel erreicht – die Ausschüttung kann gemacht werden.'
+          : `Noch ${dauer(ziel - st.teamOnlineMs)}.`);
+      if (istChef && st.gewinn !== null) t += `\n\nGewinn bisher: ${fmt(st.gewinn)}`;
+      if (istChef && st.letzteAusschuettung) {
+        t += `\nLetzte Ausschüttung: ${new Date(st.letzteAusschuettung).toLocaleString('de-DE')}`;
+      }
+      return t;
+    },
+  },
+
+  zeiten: {
+    beschreibung: 'Onlinezeit heute – die eigene, für den Inhaber die des ganzen Teams',
+    async ausfuehren({ istChef, nutzer }) {
+      const st = load();
+      const eintraege = Object.entries(st.spieler || {});
+      if (!eintraege.length) return '_Noch keine Zeiten erfasst._';
+
+      if (istChef) {
+        const zeilen = eintraege
+          .sort((a, b) => (b[1].gesamtMs || 0) - (a[1].gesamtMs || 0))
+          .map(([name, p]) =>
+            `${p.online ? '🟢' : '⚪'} ${name.padEnd(18)} ${dauer(p.gesamtMs || 0).padStart(14)}`);
+        return `**Onlinezeit am Spieltag ${st.tag || '?'}**\n` + tabelle(zeilen);
+      }
+
+      // Ohne Zuordnung kann niemandem seine eigene Zeit gezeigt werden. Dann
+      // bleibt es bei der Summe – fremde Arbeitszeiten gehen keinen an.
+      const meinName = SPIELER_ZU_DISCORD.get(nutzer.id);
+      if (!meinName) {
+        const gesamt = eintraege.reduce((n, [, p]) => n + (p.gesamtMs || 0), 0);
+        return `**Team heute:** ${dauer(gesamt)} zusammen, ` +
+          `${eintraege.filter(([, p]) => p.online).length} gerade online.\n\n` +
+          '_Für die eigene Zeit muss dein Discord-Konto einem Spielernamen ' +
+          'zugeordnet sein – sag dem Inhaber Bescheid._';
+      }
+      const p = st.spieler[meinName];
+      if (!p) return `_Für **${meinName}** liegen heute keine Zeiten vor._`;
+      return `**${meinName}** – heute ${dauer(p.gesamtMs || 0)}\n` +
+        `Status: ${p.online ? '🟢 online' : '⚪ offline'}\n` +
+        `Aktuelle Sitzung: ${dauer(p.online ? Date.now() - p.seit : p.sitzungMs)}` +
+        (p.rolle ? `\nRolle: ${p.rolle}` : '');
+    },
+  },
+
+  kasse: {
+    beschreibung: 'Kassenstand, Gewinn und die letzten Buchungen (nur Inhaber)',
+    nurChef: true,
+    async ausfuehren() {
+      const f = await firmaFrisch();
+      let t = `**Kasse:** ${fmt(f.kasse?.balance)}\n` +
+        `Gewinn seit der letzten Ausschüttung: ${fmt(f.kasse?.profitSincePayout)}`;
+      try {
+        const l = await holeLedger(f.id);
+        const letzte = (l.entries || []).slice(-5).reverse()
+          .map(b => `${new Date(b.stamp).toLocaleTimeString('de-DE').slice(0, 5)} ` +
+                    `${sauber(b.category).padEnd(20).slice(0, 20)} ${fmt(b.amount).padStart(14)}`);
+        if (letzte.length) t += '\n\n**Letzte Buchungen**\n' + tabelle(letzte);
+      } catch (e) { t += `\n\n_Kassenbuch nicht abrufbar: ${e.message}_`; }
+      return t;
+    },
+  },
+
+  tagesbericht: {
+    beschreibung: 'Onlinezeiten des Spieltags als Übersicht (nur Inhaber)',
+    nurChef: true,
+    async ausfuehren() {
+      const st = load();
+      const zeilen = Object.entries(st.spieler || {})
+        .sort((a, b) => (b[1].gesamtMs || 0) - (a[1].gesamtMs || 0))
+        .map(([name, p]) => `${p.online ? '🟢' : '⚪'} ${name.padEnd(18)} ` +
+          `${dauer(p.gesamtMs || 0).padStart(14)}  ${p.rolle || ''}`);
+      const gesamt = Object.values(st.spieler || {}).reduce((n, p) => n + (p.gesamtMs || 0), 0);
+      return `**Spieltag ${st.tag || '?'}** (04:00 bis 04:00)\n` + tabelle(zeilen) +
+        `\nSumme: ${dauer(gesamt)} · davon Firma gelaufen: ${dauer(st.teamOnlineMs)}`;
+    },
+  },
+
+  watcher: {
+    beschreibung: 'Läuft der Watcher, und wann war der letzte Abruf (nur Inhaber)',
+    nurChef: true,
+    async ausfuehren() {
+      const st = load();
+      const seit = process.uptime();
+      return `**Watcher läuft** seit ${dauer(seit * 1000)}\n` +
+        `Intervall: ${CFG.INTERVALL_MS / 1000}s\n` +
+        `Token gültig bis: ${zugang.exp ? new Date(zugang.exp).toLocaleTimeString('de-DE') : 'unbekannt'}\n` +
+        `UnicaCity erreichbar: ${st.apiWegSeit ? `nein, seit ${dauer(Date.now() - st.apiWegSeit)}` : 'ja'}\n` +
+        `Wiki-Artikel bekannt: ${Object.keys(st.wiki || {}).length}`;
+    },
+  },
+
+  hilfe: {
+    beschreibung: 'Welche Befehle es gibt',
+    async ausfuehren({ istChef }) {
+      const zeilen = Object.entries(BEFEHLE)
+        .filter(([, b]) => istChef || !b.nurChef)
+        .map(([name, b]) => `/${name} – ${b.beschreibung}`);
+      return '**Befehle des UC-Watchers**\n' + zeilen.join('\n') +
+        (istChef ? '' : '\n\n_Weitere Befehle sind dem Firmeninhaber vorbehalten._');
+    },
+  },
+};
+
 /* ========================= START ========================= */
 
 const args = process.argv.slice(2);
@@ -1049,6 +1258,33 @@ if (args.includes('--ausschuettung-start')) {
   s.teamOnlineMs = 0; s.gemeldeteStunde = 0; s.faelligGemeldet = false;
   s.letzteAusschuettung = Date.now();
   save(s); console.log('Zähler neu gestartet.'); console.table(ausschuettungStand(s));
+  process.exit(0);
+}
+
+if (args.includes('--discord-test')) {
+  if (!discordAktiv()) {
+    console.error('UC_DISCORD_TOKEN ist nicht gesetzt – siehe DISCORD.md.');
+    process.exit(1);
+  }
+  console.log('Registriere Befehle …');
+  await discordStart(BEFEHLE, { ohneGateway: true });
+  console.log('Schicke je eine Probemeldung …');
+  await discordSende({
+    ziel: 'chef', prio: 'default',
+    titel: '🔔 Probe: Meldung für den Inhaber',
+    text: 'Wenn du das siehst, kommen die Meldungen an, die nur dich betreffen ' +
+          '(Kasse, Personal, Zugang, Technik).',
+  });
+  await discordSende({
+    ziel: 'team', prio: 'default',
+    titel: '🔔 Probe: Meldung fürs Team',
+    text: 'Wenn das im Team-Kanal steht, sind die Betriebsmeldungen richtig ' +
+          'eingerichtet (Lager, Lieferengpass, Ausschüttung, Vorfälle).',
+  });
+  console.log('Gesendet. Prüfe beide Kanäle – und dass im Team-Kanal *nur* die zweite steht.');
+  // Kurz warten, damit die Zustellung durch ist, dann Verbindung schließen.
+  await new Promise(r => setTimeout(r, 1500));
+  discordStop();
   process.exit(0);
 }
 
@@ -1157,5 +1393,20 @@ if (args.includes('--test')) {
 }
 
 info(`UC-Watcher läuft – Intervall ${CFG.INTERVALL_MS / 1000}s, Zustand: ${CFG.STATE_FILE}`);
+
+if (discordAktiv()) {
+  // Schlägt die Anmeldung fehl, läuft der Watcher trotzdem weiter – die
+  // Überwachung ist wichtiger als der Bot.
+  discordStart(BEFEHLE).catch(e => console.error('Discord-Start fehlgeschlagen:', e.message));
+} else {
+  info('Discord nicht eingerichtet (UC_DISCORD_TOKEN fehlt) – Meldungen gehen nur an ntfy.');
+}
+
+// systemd schickt beim Neustart SIGTERM. Dann die Gateway-Verbindung ordentlich
+// schließen, statt sie abreißen zu lassen.
+for (const signal of ['SIGTERM', 'SIGINT']) {
+  process.on(signal, () => { info('Beende …'); discordStop(); process.exit(0); });
+}
+
 await durchlauf();
 setInterval(() => durchlauf().catch(e => console.error('Fehler:', e)), CFG.INTERVALL_MS);

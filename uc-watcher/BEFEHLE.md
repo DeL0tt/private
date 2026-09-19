@@ -1,6 +1,6 @@
 # UC-Watcher – Befehlsübersicht
 
-Spickzettel für den laufenden Betrieb. Stand 17.09.2026.
+Spickzettel für den laufenden Betrieb. Stand 19.09.2026.
 
 **Eckdaten:** Server `89.168.78.21` (Oracle Cloud, Ubuntu) · Benutzer `ubuntu` ·
 Verzeichnis `~/private/uc-watcher/server` · Dienst `uc-watcher` ·
@@ -95,6 +95,7 @@ cd ~/private/uc-watcher/server
 | `node --env-file=.env watcher.mjs --ausschuettung-start` | Zähler **auf null** setzen – nach einer tatsächlichen Ausschüttung |
 | `node --env-file=.env watcher.mjs --notion` | Wiki-/Notion-Abgleich sofort, mit Titelliste |
 | `node --env-file=.env watcher.mjs --wiki-probe` | Wiki-API abklopfen (nur zum Erkunden) |
+| `node --env-file=.env watcher.mjs --discord-test` | Discord-Befehle registrieren und je eine Probemeldung schicken |
 
 Diese Befehle laufen **zusätzlich** zum Dienst und stören ihn nicht.
 
@@ -130,6 +131,9 @@ Speichern mit `Strg+O`, `Enter`, schließen mit `Strg+X`. Danach **immer**
 | `UC_WIKI_INTERVALL_STD` | `24` | Takt der Wiki-Prüfung |
 | `UC_NOTION_INTERVALL_STD` | `168` | Takt des Notion-Abgleichs (168 = wöchentlich) |
 | `UC_INTERVALL_MS` | `60000` | Abfragetakt der Firma in Millisekunden |
+| `UC_DISCORD_TOKEN` | – | Bot-Token; leer = kein Discord |
+| `UC_DISCORD_TEAM_KANAL` | – | Kanal für die Angestellten |
+| `UC_DISCORD_CHEF_ID` | – | Deine Discord-ID für Inhaber-Meldungen |
 | `UC_DEBUG` | aus | `1` macht die Logs gesprächig |
 
 ---
@@ -152,6 +156,14 @@ meldet sich von selbst wieder. Die Meldung kommt erst nach 30 Minuten Ausfall.
 → Das Cookie ist abgelaufen. Im Browser neu bei unicacity.eu anmelden, Cookie aus
 den Entwicklerwerkzeugen kopieren, in die `.env` eintragen, Dienst neu starten.
 
+**Discord: „lehnt den Token ab (4004)"**
+→ Token neu erzeugen (Developer Portal → Bot → Reset Token), in die `.env`,
+Dienst neu starten. Bei diesem Fehler versucht der Bot bewusst nicht weiter.
+
+**Discord: Befehle tauchen nicht auf**
+→ Einladung ohne `applications.commands` erzeugt. Neu einladen, dann
+`--discord-test`.
+
 **Dienst startet nicht**
 → `journalctl -u uc-watcher -n 50 --no-pager` zeigt den Grund. Meist ein Tippfehler
 in der `.env` (fehlendes Gleichheitszeichen, Zeilenumbruch mitten im Cookie).
@@ -161,7 +173,31 @@ in der `.env` (fehlendes Gleichheitszeichen, Zeilenumbruch mitten im Cookie).
 
 ---
 
-## 7. Notion
+## 7. Discord
+
+Vollständige Einrichtung: **DISCORD.md**. Im Alltag reichen diese:
+
+| Befehl | Zweck |
+|---|---|
+| `node --env-file=.env watcher.mjs --discord-test` | Befehle neu registrieren, Zustellung prüfen |
+| `journalctl -u uc-watcher \| grep discord` | Was der Bot macht |
+
+Im Discord selbst – für alle: `/firma`, `/lager`, `/ausschuettung`, `/zeiten`,
+`/hilfe`. Nur für dich: `/kasse`, `/tagesbericht`, `/watcher`.
+
+Antworten sieht nur, wer den Befehl eingegeben hat.
+
+**Was ins Team geht:** Lager, Lieferengpass, Firma pausiert, Ausschüttung,
+Vorfälle – bei den letzten beiden ohne Beträge und ohne Namen.
+**Was nur du bekommst:** Kasse, Buchungen, Personal, Arbeitszeiten,
+Lagerverlust, Zugang und Technik.
+
+Nach einer Änderung an `UC_DISCORD_*` immer `--discord-test`, sonst merkst du
+erst im Ernstfall, dass die Zustellung nicht stimmt.
+
+---
+
+## 8. Notion
 
 - Wiki-Spiegel: 17 Kategorien, 110 Artikel, je eine Unterseite
 - Backup vom Umbau: Seite „Wiki (Kopie vom 17.09.)"
