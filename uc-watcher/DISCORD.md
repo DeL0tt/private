@@ -308,10 +308,25 @@ gesetzt wird, hat Vorrang.
 
 ## Wenn etwas klemmt
 
-**„Discord lehnt den Token ab (4004)"**
-→ Token falsch oder zurückgesetzt. Neu kopieren, in die `.env`, Dienst neu
-starten. Der Bot versucht es bei diesem Fehler bewusst **nicht** endlos
-weiter.
+**„401 Unauthorized" oder „Discord lehnt den Token ab (4004)"**
+→ Der Token stimmt nicht. Was genau, sagt dir:
+
+```
+node --env-file=.env watcher.mjs --discord-pruefe
+```
+
+Das prüft die Form des Werts, ohne ihn anzuzeigen: Anzahl der Teile, Länge,
+versehentliche Umbrüche, und ob überhaupt eine Anwendungs-ID darin steckt.
+
+Häufigste Ursache ist ein verwechselter Wert. Der Bot-Token steht im Developer
+Portal unter **Bot** → **Reset Token** und besteht aus **drei durch Punkte
+getrennten Teilen**. Nicht zu verwechseln mit der Client-ID (nur Ziffern), dem
+Client-Secret (ein Block) oder der Einladungs-URL.
+
+Kommt zusätzlich „Anwendungs-ID nicht ermittelbar", ist es dieselbe Ursache –
+die ID steckt im Token.
+
+Bei diesem Fehler versucht der Bot bewusst **nicht** endlos weiter.
 
 **Befehle erscheinen nicht in Discord**
 → Wurde die Einladung mit **applications.commands** erzeugt? Ohne diesen

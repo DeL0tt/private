@@ -219,6 +219,31 @@ export function regelText(regel) {
   return wohin + ping;
 }
 
+/**
+ * Beschreibt den eingetragenen Token, ohne ihn auszugeben. Gedacht für den
+ * Fall, dass Discord ihn ablehnt und man wissen will, warum.
+ */
+export function pruefeToken() {
+  const roh = process.env.UC_DISCORD_TOKEN ?? '';
+  const t = roh.trim();
+  const teile = t.split('.');
+  let id = '';
+  try { id = Buffer.from(teile[0], 'base64url').toString('utf8'); } catch { /* bleibt leer */ }
+
+  return {
+    gesetzt: !!t,
+    laenge: t.length,
+    teile: teile.length,
+    anfuehrungszeichen: /^["']|["']$/.test(t),
+    // Leerzeichen am Rand fängt trim() ab; mittendrin deutet auf einen
+    // Zeilenumbruch beim Kopieren hin.
+    leerzeichenInnen: /\s/.test(t),
+    randLeerzeichen: roh !== t,
+    anwendungsId: /^\d{15,25}$/.test(id) ? id : '',
+    nurZiffern: /^\d+$/.test(t),
+  };
+}
+
 /* ========================= REST ========================= */
 
 // Discord bremst bei zu vielen Anfragen mit 429 und sagt dabei, wie lange man
@@ -244,7 +269,12 @@ async function rest(pfad, methode = 'GET', koerper, zweiterVersuch = false) {
   if (!res.ok) {
     // Der Token darf nie im Log landen, die Fehlerantwort von Discord enthält
     // ihn auch nicht – der Pfad ist unbedenklich.
-    throw new Error(`Discord ${res.status} bei ${methode} ${pfad}: ` +
+    const hinweis =
+      res.status === 401 ? ' — der Token wird abgelehnt, siehe --discord-pruefe'
+      : res.status === 403 ? ' — der Bot darf in diesem Kanal nicht schreiben'
+      : res.status === 404 ? ' — diesen Kanal gibt es nicht, Kanal-ID prüfen'
+      : '';
+    throw new Error(`Discord ${res.status} bei ${methode} ${pfad}${hinweis}: ` +
       (await res.text().catch(() => '')).slice(0, 300));
   }
   return res.status === 204 ? null : res.json();
@@ -354,7 +384,12 @@ export async function discordSende({ ziel, kanal, auchChef, ping, pingNutzer, ti
 // während globale Befehle bis zu eine Stunde brauchen.
 export async function registriereBefehle(befehle) {
   const app = appId();
-  if (!app) throw new Error('Anwendungs-ID nicht ermittelbar – UC_DISCORD_APP_ID setzen');
+  if (!app) {
+    throw new Error(
+      'Aus dem Token lässt sich keine Anwendungs-ID lesen. Das ist fast immer ein ' +
+      'falscher Wert in UC_DISCORD_TOKEN – etwa die Client-ID oder das Client-Secret ' +
+      'statt des Bot-Tokens. Prüfen mit: node --env-file=.env watcher.mjs --discord-pruefe');
+  }
   const liste = Object.entries(befehle).map(([name, b]) => ({
     name,
     description: b.beschreibung.slice(0, 100),

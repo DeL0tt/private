@@ -96,6 +96,7 @@ cd ~/private/uc-watcher/server
 | `node --env-file=.env watcher.mjs --notion` | Wiki-/Notion-Abgleich sofort, mit Titelliste |
 | `node --env-file=.env watcher.mjs --wiki-probe` | Wiki-API abklopfen (nur zum Erkunden) |
 | `node --env-file=.env watcher.mjs --discord-test` | Discord-Befehle registrieren und je eine Probemeldung schicken |
+| `node --env-file=.env watcher.mjs --discord-pruefe` | Prüft den Bot-Token, ohne ihn anzuzeigen |
 | `node --env-file=.env watcher.mjs --zuordnung` | Wer ist welchem Discord-Konto zugeordnet, und wen würde ein Online-Ping treffen |
 
 Diese Befehle laufen **zusätzlich** zum Dienst und stören ihn nicht.

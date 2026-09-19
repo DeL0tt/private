@@ -7,7 +7,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { discordAktiv, discordSende, discordStart, discordStop, empfaenger,
          regelText, THEMEN, themaName, ladeRegeln, speichereRegeln,
-         ladeZuordnung, speichereZuordnung, zuordnungEigen } from './discord.mjs';
+         ladeZuordnung, speichereZuordnung, zuordnungEigen, pruefeToken }
+  from './discord.mjs';
 
 /* ========================= KONFIGURATION ========================= */
 
@@ -1540,6 +1541,50 @@ if (args.includes('--zuordnung')) {
       (Object.keys(st.spieler || {}).join(', ') || '(noch niemand)'));
   }
   process.exit(0);
+}
+
+if (args.includes('--discord-pruefe')) {
+  const t = pruefeToken();
+  console.log('Prüfung von UC_DISCORD_TOKEN (der Token selbst wird nicht angezeigt)\n');
+
+  if (!t.gesetzt) {
+    console.log('❌ UC_DISCORD_TOKEN ist leer oder steht nicht in der .env.');
+    console.log('   Der Wert kommt aus dem Developer Portal → links "Bot" → "Reset Token".');
+    process.exit(1);
+  }
+
+  const zeile = (ok, text) => console.log(`${ok ? '✅' : '❌'} ${text}`);
+  zeile(!t.anfuehrungszeichen, t.anfuehrungszeichen
+    ? 'Der Wert kommt mit Anführungszeichen an – die gehören nicht dazu.'
+    : 'keine Anführungszeichen');
+  zeile(!t.randLeerzeichen, t.randLeerzeichen
+    ? 'Leerzeichen am Anfang oder Ende – entfernen.'
+    : 'keine Leerzeichen am Rand');
+  zeile(!t.leerzeichenInnen, t.leerzeichenInnen
+    ? 'Leerzeichen oder Zeilenumbruch mitten im Wert – beim Kopieren zerrissen.'
+    : 'keine Umbrüche im Wert');
+  zeile(t.teile === 3, `${t.teile} durch Punkte getrennte Teile (ein Bot-Token hat 3)`);
+  zeile(t.laenge >= 55 && t.laenge <= 100, `${t.laenge} Zeichen lang (üblich sind 60–75)`);
+
+  if (t.nurZiffern) {
+    console.log('\n❌ Der Wert besteht nur aus Ziffern. Das ist die Client-ID (die');
+    console.log('   öffentliche Anwendungs-ID), nicht der Bot-Token.');
+  }
+  if (t.anwendungsId) {
+    console.log(`\n✅ Der Token gehört zur Anwendung ${t.anwendungsId}.`);
+    console.log('   Form ist in Ordnung. Wird er trotzdem abgelehnt (401/4004), wurde er');
+    console.log('   inzwischen zurückgesetzt – dann im Developer Portal einen neuen holen.');
+    process.exit(0);
+  }
+
+  console.log('\n❌ Aus dem ersten Teil lässt sich keine Anwendungs-ID lesen.');
+  console.log('   Das ist kein Bot-Token. Häufigste Verwechslungen:');
+  console.log('   • Client-ID (nur Ziffern) – falsch');
+  console.log('   • Client-Secret (ein Block, ~32 Zeichen) – falsch');
+  console.log('   • die Einladungs-URL – falsch');
+  console.log('\n   Richtig: Developer Portal → deine Anwendung → links "Bot" →');
+  console.log('   "Reset Token" → der angezeigte Wert (3 Teile, durch Punkte getrennt).');
+  process.exit(1);
 }
 
 if (args.includes('--discord-test')) {
