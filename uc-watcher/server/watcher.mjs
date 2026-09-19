@@ -1948,6 +1948,91 @@ if (args.includes('--ausschuettung-start')) {
   process.exit(0);
 }
 
+if (args.includes('--events-probe')) {
+  const s0 = load(); ladeZugang(s0);
+  try { await erneuere(); } catch (e) { console.error('Kein Zugang:', e.message); process.exit(1); }
+
+  const sekunden = +(args[args.indexOf('--events-probe') + 1] || 60);
+  console.log(`Höre ${sekunden} s am Ereignisstrom mit …`);
+  console.log('(In der Zeit im Spiel oder im Dashboard etwas anfassen, damit');
+  console.log(' sich etwas tut – etwa die Zoohandlung öffnen.)\n');
+
+  // Der Strom nimmt den Token in der Adresse, weil ein EventSource im Browser
+  // keine Kopfzeilen setzen kann. Wir machen es genauso.
+  const res = await fetch(`${CFG.API}/api/auth/events?token=${encodeURIComponent(zugang.token)}`, {
+    headers: {
+      Accept: 'text/event-stream', Cookie: zugang.cookie || '',
+      'User-Agent': CFG.USER_AGENT, 'Origin': 'https://unicacity.eu',
+      'Referer': 'https://unicacity.eu/',
+    },
+  });
+  if (!res.ok) { console.error('Strom nicht erreichbar:', res.status); process.exit(1); }
+
+  const felder = (o, tiefe = 0) => {
+    if (Array.isArray(o)) return o.length ? `[${o.length}× ${felder(o[0], tiefe + 1)}]` : '[]';
+    if (o && typeof o === 'object') {
+      const k = Object.keys(o);
+      return tiefe > 2 ? `{${k.slice(0, 10).join(', ')}}` :
+        '{' + k.slice(0, 14).map(n => `${n}: ${felder(o[n], tiefe + 1)}`).join(', ') + '}';
+    }
+    return typeof o;
+  };
+
+  const gesehen = new Map();
+  let zooGefunden = null;
+  const ende = setTimeout(() => {
+    console.log('\n--- Zusammenfassung ---');
+    if (!gesehen.size) {
+      console.log('Nichts empfangen. Entweder schickt der Strom nur bei Änderungen');
+      console.log('etwas, oder die Betriebe laufen nicht darüber.');
+    }
+    for (const [art, anzahl] of gesehen) console.log(`${anzahl}× ${art}`);
+    if (zooGefunden) {
+      console.log(`\n✅ "${CFG.BETRIEB}" kommt im Strom vor, im Ereignis "${zooGefunden}".`);
+      console.log('   Schick mir diese Zeile, dann lese ich den Bestand von dort.');
+    }
+    process.exit(0);
+  }, sekunden * 1000);
+  ende.unref?.();
+
+  const leser = res.body.getReader();
+  const roh = new TextDecoder();
+  let puffer = '';
+  while (true) {
+    const { done, value } = await leser.read();
+    if (done) break;
+    puffer += roh.decode(value, { stream: true });
+
+    // Ein Ereignis endet mit einer Leerzeile.
+    let trenner;
+    while ((trenner = puffer.indexOf('\n\n')) !== -1) {
+      const block = puffer.slice(0, trenner);
+      puffer = puffer.slice(trenner + 2);
+
+      let art = 'message', daten = '';
+      for (const zeile of block.split('\n')) {
+        if (zeile.startsWith('event:')) art = zeile.slice(6).trim();
+        else if (zeile.startsWith('data:')) daten += zeile.slice(5).trim();
+      }
+      if (!daten) continue;
+
+      gesehen.set(art, (gesehen.get(art) || 0) + 1);
+      let inhalt; try { inhalt = JSON.parse(daten); } catch { inhalt = daten; }
+      console.log(`\n📨 ${art}`);
+      console.log('   ' + (typeof inhalt === 'string'
+        ? inhalt.slice(0, 300) : felder(inhalt).slice(0, 700)));
+
+      // Steckt die Zoohandlung darin?
+      if (daten.toLowerCase().includes(String(CFG.BETRIEB).toLowerCase())) {
+        zooGefunden ||= art;
+        console.log(`   ⭐ enthält "${CFG.BETRIEB}"`);
+      }
+    }
+  }
+  clearTimeout(ende);
+  process.exit(0);
+}
+
 if (args.includes('--betrieb-probe')) {
   const s0 = load(); ladeZugang(s0);
   try { await erneuere(); } catch (e) { console.error('Kein Zugang:', e.message); process.exit(1); }
