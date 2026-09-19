@@ -173,6 +173,7 @@ Nur für dich:
 | `/tagesbericht` | Onlinezeiten des ganzen Teams |
 | `/watcher` | Läuft er, Token-Ablauf, Erreichbarkeit |
 | `/melden` | Einstellen, wer welche Meldung sieht und ob gepingt wird |
+| `/zuordnen` | Discord-Konto einem UnicaCity-Namen zuordnen |
 
 Antworten sind **nur für den Fragenden sichtbar** – es entsteht kein
 Geplapper im Kanal, und `/kasse` zeigt niemandem sonst deine Zahlen. Bei
@@ -206,9 +207,14 @@ Zum Ändern kommen `ziel:` und/oder `ping:` dazu:
 | `ping:` | Wirkung |
 |---|---|
 | niemand | nur die Nachricht, keine Benachrichtigung |
+| **nur wer gerade ingame online ist** | **pingt gezielt die Leute, die gerade in UnicaCity spielen** |
 | @everyone | alle im Kanal werden angepingt |
-| @here | alle, die gerade online sind |
+| @here | alle, die im Discord gerade online sind |
 | eine Rolle | eine bestimmte Rolle (`rolle:` ausfüllen) |
+
+> `@here` und „ingame online" sind nicht dasselbe: `@here` meint, wer gerade
+> Discord offen hat, auch am Handy im Bus. „Ingame online" meint, wer wirklich
+> auf dem Server spielt und etwas tun kann.
 
 **Beispiele:**
 
@@ -233,6 +239,41 @@ Die Regeln liegen in `uc-watcher-regeln.json` neben dem Zustand und gelten
 sofort, auch nach einem Neustart. Löschst du die Datei, gilt wieder die
 Tabelle oben.
 
+### Nur anpingen, wer gerade spielt
+
+Der nützlichste Ping-Modus: Bei „Lager leer" oder einem Vorfall werden nur die
+Leute erwähnt, die in dem Moment tatsächlich in UnicaCity sind. Wer Feierabend
+hat, bekommt keine Benachrichtigung. Ist niemand online, geht die Meldung ohne
+Ping raus – sie steht dann einfach im Kanal.
+
+Dafür muss der Bot wissen, welches Discord-Konto zu welchem Spielernamen
+gehört. Das stellst du mit `/zuordnen` ein:
+
+```
+/zuordnen nutzer:@Delott name:LottiMi
+/zuordnen                                → zeigt alle Zuordnungen mit Status
+/zuordnen nutzer:@Delott                 → zeigt nur diese eine
+/zuordnen nutzer:@Delott entfernen:True  → löscht sie
+```
+
+Der Bot prüft dabei mit, ob er den Namen im Team überhaupt kennt, und sagt es
+dir, wenn nicht – meist ein Tippfehler. Groß- und Kleinschreibung ist egal.
+
+Dann den Ping setzen:
+
+```
+/melden thema:Lagerbestand niedrig  ziel:nur das Team  ping:nur wer gerade ingame online ist
+```
+
+Auf dem Server kannst du jederzeit nachsehen, wen es gerade träfe:
+
+```
+node --env-file=.env watcher.mjs --zuordnung
+```
+
+Das zeigt je Konto den Spielernamen, ob der Watcher ihn im Team gefunden hat,
+ob die Person gerade online ist und ob sie angepingt würde.
+
 ### Eigene Zeiten für Angestellte
 
 `/zeiten` zeigt einem Angestellten nur etwas, wenn sein Discord-Konto einem
@@ -243,6 +284,10 @@ UC_DISCORD_SPIELER=123456789012345678:LottiMi,987654321098765432:Maxine
 ```
 
 Ohne Zuordnung bekommt er die Team-Summe statt fremder Arbeitszeiten.
+
+Bequemer geht es mit `/zuordnen` im Discord – die Liste in der `.env` ist nur
+noch für Einträge da, die dauerhaft feststehen sollen. Was per `/zuordnen`
+gesetzt wird, hat Vorrang.
 
 ---
 

@@ -6,8 +6,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { discordAktiv, discordSende, discordStart, discordStop, empfaenger,
-         regelText, THEMEN, themaName, ladeRegeln, speichereRegeln }
-  from './discord.mjs';
+         regelText, THEMEN, themaName, ladeRegeln, speichereRegeln,
+         ladeZuordnung, speichereZuordnung, zuordnungEigen } from './discord.mjs';
 
 /* ========================= KONFIGURATION ========================= */
 
@@ -337,6 +337,23 @@ function onlineBericht(state, fensterMin = 180) {
 const PRIO = { min: 1, low: 2, default: 3, high: 4, urgent: 5 };
 
 /**
+ * Wer ist gerade in UnicaCity online und hat ein zugeordnetes Discord-Konto?
+ *
+ * Grundlage sind die Spielerdaten, die der Watcher ohnehin je Durchlauf
+ * fortschreibt. Namen werden ohne Rücksicht auf Groß- und Kleinschreibung
+ * verglichen, weil die Zuordnung von Hand eingetippt wird.
+ */
+function onlineDiscordIds(state) {
+  const online = new Set(Object.entries(state.spieler || {})
+    .filter(([, p]) => p.online)
+    .map(([name]) => name.toLowerCase()));
+  if (!online.size) return [];
+  return Object.entries(ladeZuordnung())
+    .filter(([, ucName]) => online.has(String(ucName).toLowerCase()))
+    .map(([discordId]) => discordId);
+}
+
+/**
  * Schickt eine Meldung raus: an ntfy (dein Handy) und, falls eingerichtet,
  * an Discord.
  *
@@ -354,6 +371,7 @@ async function push(thema, titel, text, state, prio = 'high', extra = {}) {
 
   const regel = extra.ziel ? { ziel: extra.ziel } : empfaenger(thema, ladeRegeln());
   await discordSende({ ...regel, titel, text, prio,
+                       pingNutzer: regel.ping === 'online' ? onlineDiscordIds(state) : undefined,
                        teamTitel: extra.teamTitel, teamText: extra.teamText });
 
   if (!CFG.NTFY_TOPIC) return log('  (kein UC_NTFY_TOPIC gesetzt – nur Discord)');
@@ -787,7 +805,12 @@ async function werteBuchungenAus(state, buchungen) {
       await push(`vorfall_${b.stamp}`, `🚨 ${sauber(b.category)}`,
         `${detail}\nBetrag: ${fmt(b.amount)}\nKassenstand danach: ${fmt(b.balance)}` +
         (bericht.length ? `\n\nOnline zu dem Zeitpunkt:\n${bericht.join('\n')}` : ''),
-        state, 'urgent');
+        state, 'urgent', {
+          // Falls diese Meldung in einen geteilten Kanal gestellt wird: der
+          // Vorfall und der Betrag dürfen dort stehen, der Kassenstand der
+          // Firma und die Namensliste nicht.
+          teamText: `${detail}\nBetrag: ${fmt(b.amount)}`,
+        });
       continue;
     }
 
@@ -798,7 +821,10 @@ async function werteBuchungenAus(state, buchungen) {
         `${detail}\nBetrag: ${fmt(b.amount)}\n` +
         `Kassenstand danach: ${fmt(b.balance)}\n` +
         (bericht.length ? `\nOnline zu dem Zeitpunkt:\n${bericht.join('\n')}\n` : '') +
-        '\nDiese Kategorie kennt der Watcher noch nicht.', state, 'default');
+        '\nDiese Kategorie kennt der Watcher noch nicht.', state, 'default', {
+          teamText: `${detail}\nBetrag: ${fmt(b.amount)}\n\n` +
+            'Diese Kategorie kennt der Watcher noch nicht.',
+        });
     }
   }
 
@@ -911,7 +937,14 @@ async function durchlauf() {
             (bericht.length
               ? `Online zum Zeitpunkt:\n${bericht.join('\n')}`
               : 'Niemand aus dem Team war online.'),
-            state, 'urgent');
+            state, 'urgent', {
+              // Wer anwesend war, ist ein Verdacht und gehört nicht in einen
+              // geteilten Kanal. Die Zahlen dürfen dort stehen.
+              teamText: `Lager: ${state.lager} → ${lager} (${verlust} Einheiten, ` +
+                `${prozent.toFixed(1)} %)\n` +
+                `Erklärbar wären höchstens ${Math.round(erklaerbar)} in ` +
+                `${Math.round(minuten)} Min.`,
+            });
         }
       }
     }
@@ -1054,14 +1087,6 @@ async function durchlauf() {
 
 /* ========================= DISCORD-BEFEHLE ========================= */
 
-// Ordnet Discord-Konten den Spielernamen in UnicaCity zu, damit /zeiten jedem
-// die eigene Zeit zeigen kann. Format: "123456789:LottiMi,987654321:Max"
-const SPIELER_ZU_DISCORD = new Map(
-  (process.env.UC_DISCORD_SPIELER || '').split(',')
-    .map(e => e.split(':').map(t => t.trim()))
-    .filter(([id, name]) => id && name)
-    .map(([id, name]) => [id, name]));
-
 const tabelle = (zeilen) => zeilen.length ? '```\n' + zeilen.join('\n') + '\n```' : '_keine Daten_';
 
 // Die Firma wird für mehrere Befehle gebraucht. Ein kurzer Puffer verhindert,
@@ -1147,7 +1172,7 @@ const BEFEHLE = {
 
       // Ohne Zuordnung kann niemandem seine eigene Zeit gezeigt werden. Dann
       // bleibt es bei der Summe – fremde Arbeitszeiten gehen keinen an.
-      const meinName = SPIELER_ZU_DISCORD.get(nutzer.id);
+      const meinName = ladeZuordnung()[nutzer.id];
       if (!meinName) {
         const gesamt = eintraege.reduce((n, [, p]) => n + (p.gesamtMs || 0), 0);
         return `**Team heute:** ${dauer(gesamt)} zusammen, ` +
@@ -1211,6 +1236,103 @@ const BEFEHLE = {
     },
   },
 
+  zuordnen: {
+    beschreibung: 'Ein Discord-Konto einem UnicaCity-Namen zuordnen',
+    nurChef: true,
+    optionen: [
+      { name: 'nutzer', description: 'Wen im Discord?', type: 6, required: false },
+      { name: 'name', description: 'Wie heißt die Person in UnicaCity?', type: 3, required: false },
+      { name: 'entfernen', description: 'Die Zuordnung dieser Person löschen', type: 5, required: false },
+    ],
+
+    async ausfuehren({ optionen }) {
+      const zuordnung = { ...zuordnungEigen() };
+      const ausEnv = ladeZuordnung();
+      const st = load();
+      const spieler = st.spieler || {};
+      const istOnline = (n) => Object.entries(spieler)
+        .find(([k]) => k.toLowerCase() === String(n).toLowerCase())?.[1]?.online;
+
+      // Ohne Angaben: zeigen, was zugeordnet ist.
+      if (!optionen.nutzer) {
+        const alle = Object.entries(ausEnv);
+        if (!alle.length) {
+          return '_Noch niemand zugeordnet._\n\n' +
+            'Zuordnen mit `/zuordnen nutzer:@Name name:UC-Name`. Danach kannst du ' +
+            'Meldungen so einstellen, dass nur angepingt wird, wer gerade spielt: ' +
+            '`/melden thema:… ping:nur wer gerade ingame online ist`';
+        }
+        const zeilen = alle.map(([id, name]) => {
+          const on = istOnline(name);
+          const woher = zuordnung[id] ? '' : ' _(aus der .env)_';
+          return `${on ? '🟢' : on === false ? '⚪' : '·'} <@${id}> → **${name}**${woher}`;
+        });
+        return `**Zuordnungen** (${alle.length})\n` + zeilen.join('\n') +
+          '\n\n🟢 spielt gerade · ⚪ offline · · dem Watcher noch nicht begegnet';
+      }
+
+      const id = String(optionen.nutzer);
+
+      if (optionen.entfernen) {
+        if (!zuordnung[id]) {
+          return ausEnv[id]
+            ? `<@${id}> steht in \`UC_DISCORD_SPIELER\` in der .env – das kann ich ` +
+              'hier nicht löschen. Entweder dort entfernen, oder mit ' +
+              '`/zuordnen` einen anderen Namen setzen, der sie überschreibt.'
+            : `Für <@${id}> war nichts eingetragen.`;
+        }
+        const weg = zuordnung[id];
+        delete zuordnung[id];
+        speichereZuordnung(zuordnung);
+        return `✅ Zuordnung von <@${id}> zu **${weg}** entfernt.`;
+      }
+
+      // Nur den Nutzer genannt: dessen Eintrag zeigen.
+      if (!optionen.name) {
+        return ausEnv[id]
+          ? `<@${id}> → **${ausEnv[id]}**${istOnline(ausEnv[id]) ? ' (spielt gerade)' : ''}`
+          : `Für <@${id}> ist nichts eingetragen.\n\n` +
+            '_Setzen mit `/zuordnen nutzer:… name:UC-Name`._';
+      }
+
+      const name = optionen.name.trim();
+      if (!name) return '❌ Der Name ist leer.';
+
+      // Denselben Namen zweimal zu vergeben wäre ein Tippfehler, kein Wunsch.
+      const schonVergeben = Object.entries(ausEnv)
+        .find(([anderer, n]) => anderer !== id && String(n).toLowerCase() === name.toLowerCase());
+      if (schonVergeben) {
+        return `❌ **${name}** ist schon <@${schonVergeben[0]}> zugeordnet. ` +
+          'Erst dort entfernen (`/zuordnen nutzer:… entfernen:True`), dann neu setzen.';
+      }
+
+      const vorher = zuordnung[id];
+      zuordnung[id] = name;
+      speichereZuordnung(zuordnung);
+
+      let t = vorher && vorher !== name
+        ? `✅ <@${id}> → **${name}** (vorher ${vorher})`
+        : `✅ <@${id}> → **${name}**`;
+
+      // Der Watcher kennt nur Namen, die er im Team schon gesehen hat. Ein
+      // unbekannter Name ist meist ein Tippfehler – aber nicht immer, bei einer
+      // Neueinstellung ist er einfach noch nicht aufgetaucht.
+      const bekannt = Object.keys(spieler).find(k => k.toLowerCase() === name.toLowerCase());
+      if (!bekannt) {
+        t += '\n\n⚠️ Diesen Namen hat der Watcher im Team noch nicht gesehen. ' +
+             'Prüfe die Schreibweise – oder ignoriere den Hinweis, wenn die Person ' +
+             'gerade erst eingestellt wurde.';
+        const aehnlich = Object.keys(spieler)
+          .filter(k => k.toLowerCase().startsWith(name.slice(0, 3).toLowerCase()))
+          .slice(0, 5);
+        if (aehnlich.length) t += `\nIm Team gibt es: ${aehnlich.join(', ')}`;
+      } else if (spieler[bekannt].online) {
+        t += '\n\nSpielt gerade – wird bei „nur wer online ist" also angepingt.';
+      }
+      return t + '\n\n_Gilt sofort, auch nach einem Neustart._';
+    },
+  },
+
   melden: {
     beschreibung: 'Einstellen, wer welche Meldung sieht und ob gepingt wird',
     nurChef: true,
@@ -1229,9 +1351,10 @@ const BEFEHLE = {
       { name: 'kanal', description: 'Kanal, wenn ziel = ein bestimmter Kanal', type: 7, required: false },
       { name: 'ping', description: 'Wer wird benachrichtigt?', type: 3, required: false,
         choices: [
-          { name: 'niemand',   value: 'keiner' },
-          { name: '@everyone', value: 'everyone' },
-          { name: '@here',     value: 'here' },
+          { name: 'niemand',                           value: 'keiner' },
+          { name: 'nur wer gerade ingame online ist',  value: 'online' },
+          { name: '@everyone',                         value: 'everyone' },
+          { name: '@here',                             value: 'here' },
           { name: 'eine Rolle (Feld rolle ausfüllen)', value: 'rolle' },
         ] },
       { name: 'rolle', description: 'Rolle, wenn ping = eine Rolle', type: 8, required: false },
@@ -1308,6 +1431,14 @@ const BEFEHLE = {
       if (regel.ziel === 'aus') {
         t += '\n\n⚠️ Diese Meldung bekommt ab jetzt **niemand** – auch du nicht.';
       }
+      if (regel.ping === 'online') {
+        const zu = Object.keys(ladeZuordnung()).length;
+        t += zu
+          ? `\n\nAngepingt werden nur zugeordnete Konten, die gerade spielen ` +
+            `(${zu} zugeordnet). Ist niemand online, kommt die Meldung ohne Ping.`
+          : '\n\n⚠️ Noch ist niemand zugeordnet – so pingt das nie jemanden. ' +
+            'Zuordnen mit `/zuordnen nutzer:@Name name:UC-Name`.';
+      }
       if (regel.ping === 'everyone') {
         t += '\n\nDamit @everyone wirklich klingelt, braucht der Bot im Kanal das ' +
              'Recht „Everyone erwähnen".';
@@ -1364,6 +1495,41 @@ if (args.includes('--ausschuettung-start')) {
   s.teamOnlineMs = 0; s.gemeldeteStunde = 0; s.faelligGemeldet = false;
   s.letzteAusschuettung = Date.now();
   save(s); console.log('Zähler neu gestartet.'); console.table(ausschuettungStand(s));
+  process.exit(0);
+}
+
+if (args.includes('--zuordnung')) {
+  const st = load();
+  const zu = ladeZuordnung();
+  const eigen = zuordnungEigen();
+  const wuerdenGepingt = onlineDiscordIds(st);
+
+  if (!Object.keys(zu).length) {
+    console.log('Keine Zuordnung eingetragen.');
+    console.log('Im Discord: /zuordnen nutzer:@Name name:UC-Name');
+    process.exit(0);
+  }
+  const zeilen = {};
+  for (const [id, name] of Object.entries(zu)) {
+    const treffer = Object.keys(st.spieler || {}).find(k => k.toLowerCase() === name.toLowerCase());
+    zeilen[id] = {
+      'UC-Name': name,
+      'im Team gefunden': treffer ? (treffer === name ? 'ja' : `ja, als "${treffer}"`) : 'NEIN',
+      Online: treffer ? (st.spieler[treffer].online ? 'ja' : 'nein') : '?',
+      'wird gepingt': wuerdenGepingt.includes(id) ? 'ja' : 'nein',
+      Quelle: eigen[id] ? '/zuordnen' : '.env',
+    };
+  }
+  console.table(zeilen);
+  console.log(`Bei "nur wer online ist" würden jetzt ${wuerdenGepingt.length} Leute gepingt.`);
+  const fehlend = Object.values(zu).filter(n =>
+    !Object.keys(st.spieler || {}).some(k => k.toLowerCase() === n.toLowerCase()));
+  if (fehlend.length) {
+    console.log(`\nNicht im Team gefunden: ${fehlend.join(', ')}`);
+    console.log('Entweder Tippfehler, oder die Person war noch nie online, seit der');
+    console.log('Watcher läuft. Im Team bekannt sind: ' +
+      (Object.keys(st.spieler || {}).join(', ') || '(noch niemand)'));
+  }
   process.exit(0);
 }
 

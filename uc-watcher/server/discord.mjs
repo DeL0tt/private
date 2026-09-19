@@ -21,7 +21,7 @@ import fs from 'node:fs';
 // Server geprüft werden kann, ohne echte Nachrichten zu verschicken.
 const API = process.env.UC_DISCORD_API || 'https://discord.com/api/v10';
 
-// Hier landen die über /melden gesetzten Regeln.
+// Hier landen die über /melden und /zuordnen gesetzten Einstellungen.
 const REGELN_DATEI = process.env.UC_DISCORD_REGELN || './uc-watcher-regeln.json';
 
 const CFG = {
@@ -52,32 +52,60 @@ function appId() {
 /* ========================= REGELSPEICHER ========================= */
 
 /**
- * Die über /melden gesetzten Regeln stehen in einer eigenen Datei, nicht im
+ * Was im Discord eingestellt wird, steht in einer eigenen Datei, nicht im
  * großen Zustand. Grund: durchlauf() lädt den Zustand am Anfang und schreibt
- * ihn am Ende zurück. Eine Regel, die in der Zwischenzeit gesetzt wird, wäre
- * mit der älteren Kopie wieder verschwunden. Eine eigene Datei kann das nicht
- * passieren.
+ * ihn am Ende zurück. Eine Einstellung, die in der Zwischenzeit gesetzt wird,
+ * wäre mit der älteren Kopie wieder verschwunden. Eine eigene Datei kann das
+ * nicht passieren.
+ *
+ * Aufbau: { regeln: { '<themenanfang>': {…} }, zuordnung: { '<discordId>': 'UC-Name' } }
  */
-let regelCache = { stand: -1, regeln: {} };
+let cache = { stand: -1, inhalt: null };
 
-export function ladeRegeln() {
+function lade() {
   try {
     const stand = fs.statSync(REGELN_DATEI).mtimeMs;
-    if (stand === regelCache.stand) return regelCache.regeln;
-    const regeln = JSON.parse(fs.readFileSync(REGELN_DATEI, 'utf8'));
-    regelCache = { stand, regeln };
-    return regeln;
+    if (stand === cache.stand && cache.inhalt) return cache.inhalt;
+    const rohdaten = JSON.parse(fs.readFileSync(REGELN_DATEI, 'utf8'));
+    // Ältere Dateien enthielten die Regeln ohne Umschlag, direkt als
+    // Themen-Zuordnung. Die werden weiter gelesen.
+    const inhalt = rohdaten.regeln || rohdaten.zuordnung
+      ? { regeln: rohdaten.regeln || {}, zuordnung: rohdaten.zuordnung || {} }
+      : { regeln: rohdaten, zuordnung: {} };
+    cache = { stand, inhalt };
+    return inhalt;
   } catch {
-    return {};                       // noch nie etwas eingestellt
+    return { regeln: {}, zuordnung: {} };   // noch nie etwas eingestellt
   }
 }
 
-export function speichereRegeln(regeln) {
+function speichere(inhalt) {
   const tmp = REGELN_DATEI + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(regeln, null, 2));
+  fs.writeFileSync(tmp, JSON.stringify(inhalt, null, 2));
   fs.renameSync(tmp, REGELN_DATEI);
-  regelCache = { stand: -1, regeln: {} };    // beim nächsten Lesen neu holen
+  cache = { stand: -1, inhalt: null };      // beim nächsten Lesen neu holen
 }
+
+export const ladeRegeln = () => lade().regeln;
+export const speichereRegeln = (regeln) => speichere({ ...lade(), regeln });
+
+/**
+ * Discord-Konto -> Name in UnicaCity. Was über /zuordnen gesetzt wurde, hat
+ * Vorrang vor der Liste aus UC_DISCORD_SPIELER, damit man eine falsche
+ * Zeile aus der .env im Discord überschreiben kann, ohne sie anzufassen.
+ */
+export function ladeZuordnung() {
+  const ausEnv = Object.fromEntries(
+    (process.env.UC_DISCORD_SPIELER || '').split(',')
+      .map(e => e.split(':').map(t => t.trim()))
+      .filter(([id, name]) => id && name));
+  return { ...ausEnv, ...lade().zuordnung };
+}
+
+export const speichereZuordnung = (zuordnung) => speichere({ ...lade(), zuordnung });
+
+/** Nur die im Discord gesetzten Einträge – für „aus der .env" vs. „von dir". */
+export const zuordnungEigen = () => lade().zuordnung;
 
 /* ========================= EMPFÄNGER ========================= */
 
@@ -172,6 +200,7 @@ export function regelText(regel) {
     aus: 'gar nicht',
   }[regel.ziel] || regel.ziel;
   const ping = !regel.ping || regel.ping === 'keiner' ? ''
+    : regel.ping === 'online' ? ' · pingt, wer gerade ingame online ist'
     : regel.ping === 'everyone' ? ' · pingt @everyone'
     : regel.ping === 'here' ? ' · pingt @here'
     : ` · pingt <@&${regel.ping}>`;
@@ -248,18 +277,31 @@ function embed(titel, text, prio, fuss) {
 // Ein Ping steht als Text über dem Embed – in Embeds selbst benachrichtigt
 // Discord niemanden. allowed_mentions muss es ausdrücklich erlauben, sonst
 // steht die Erwähnung nur da, ohne zu klingeln.
-function pingTeile(ping) {
+function pingTeile(ping, nutzer) {
   if (!ping || ping === 'keiner') return {};
+
+  // Nur die anpingen, die gerade in UnicaCity online sind. Wer nicht spielt,
+  // kann ohnehin nichts tun und soll nicht aus dem Feierabend geholt werden.
+  // Ist niemand online, geht die Meldung ohne Ping raus.
+  if (ping === 'online') {
+    const ids = (nutzer || []).map(String).slice(0, 100);   // Discord erlaubt 100
+    if (!ids.length) return {};
+    return {
+      content: ids.map(id => `<@${id}>`).join(' '),
+      allowed_mentions: { users: ids },
+    };
+  }
+
   if (ping === 'everyone') return { content: '@everyone', allowed_mentions: { parse: ['everyone'] } };
   if (ping === 'here')     return { content: '@here',     allowed_mentions: { parse: ['everyone'] } };
   return { content: `<@&${ping}>`, allowed_mentions: { roles: [String(ping)] } };
 }
 
-async function inKanal(kanal, titel, text, prio, fuss, ping) {
+async function inKanal(kanal, titel, text, prio, fuss, ping, pingNutzer) {
   if (!kanal) return;
   try {
     await rest(`/channels/${kanal}/messages`, 'POST',
-      { embeds: [embed(titel, text, prio, fuss)], ...pingTeile(ping) });
+      { embeds: [embed(titel, text, prio, fuss)], ...pingTeile(ping, pingNutzer) });
   } catch (e) { console.error('  Discord-Meldung fehlgeschlagen:', e.message); }
 }
 
@@ -270,7 +312,7 @@ async function inKanal(kanal, titel, text, prio, fuss, ping) {
  *       'team'  – nur in den Team-Kanal
  *       'beide' – an beide, das Team bekommt teamText/teamTitel, falls gesetzt
  */
-export async function discordSende({ ziel, kanal, ping, titel, text,
+export async function discordSende({ ziel, kanal, ping, pingNutzer, titel, text,
                                      prio = 'high', teamTitel, teamText }) {
   if (!discordAktiv() || ziel === 'aus') return;
 
@@ -280,15 +322,17 @@ export async function discordSende({ ziel, kanal, ping, titel, text,
     // @everyone gibt es in einer DM nicht.
     const eigenerKanal = !!CFG.CHEF_KANAL;
     await inKanal(await chefKanal(), titel, text, prio,
-                  'nur für den Firmeninhaber', eigenerKanal ? ping : undefined);
+                  'nur für den Firmeninhaber', eigenerKanal ? ping : undefined, pingNutzer);
   }
   if (ziel === 'team' || ziel === 'beide') {
-    await inKanal(CFG.TEAM_KANAL, teamTitel || titel, teamText || text, prio, undefined, ping);
+    await inKanal(CFG.TEAM_KANAL, teamTitel || titel, teamText || text, prio,
+                  undefined, ping, pingNutzer);
   }
   if (ziel === 'kanal') {
     // Ein frei gewählter Kanal bekommt die Team-Fassung: dort können Leute
     // mitlesen, die nicht der Inhaber sind.
-    await inKanal(kanal, teamTitel || titel, teamText || text, prio, undefined, ping);
+    await inKanal(kanal, teamTitel || titel, teamText || text, prio,
+                  undefined, ping, pingNutzer);
   }
 }
 

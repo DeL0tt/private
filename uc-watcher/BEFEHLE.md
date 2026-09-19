@@ -96,6 +96,7 @@ cd ~/private/uc-watcher/server
 | `node --env-file=.env watcher.mjs --notion` | Wiki-/Notion-Abgleich sofort, mit Titelliste |
 | `node --env-file=.env watcher.mjs --wiki-probe` | Wiki-API abklopfen (nur zum Erkunden) |
 | `node --env-file=.env watcher.mjs --discord-test` | Discord-Befehle registrieren und je eine Probemeldung schicken |
+| `node --env-file=.env watcher.mjs --zuordnung` | Wer ist welchem Discord-Konto zugeordnet, und wen würde ein Online-Ping treffen |
 
 Diese Befehle laufen **zusätzlich** zum Dienst und stören ihn nicht.
 
@@ -183,7 +184,8 @@ Vollständige Einrichtung: **DISCORD.md**. Im Alltag reichen diese:
 | `journalctl -u uc-watcher \| grep discord` | Was der Bot macht |
 
 Im Discord selbst – für alle: `/firma`, `/lager`, `/ausschuettung`, `/zeiten`,
-`/hilfe`. Nur für dich: `/kasse`, `/tagesbericht`, `/watcher`, `/melden`.
+`/hilfe`. Nur für dich: `/kasse`, `/tagesbericht`, `/watcher`, `/melden`,
+`/zuordnen`.
 
 `/melden` stellt um, wer welche Meldung sieht und ob dabei eine Rolle oder
 @everyone gepingt wird – ohne SSH, ohne Neustart. `/melden` ohne Angaben zeigt
