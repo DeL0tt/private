@@ -376,13 +376,24 @@ Dazu kommen zwei Einstellungen, wie **oft** eine Meldung kommt:
 |---|---|
 | `wiederholung:` | Wie lange Ruhe ist, bevor dieselbe Meldung wiederkommt – 15 Min. bis „erst am nächsten Tag". Ohne Angabe: eine Stunde. |
 | `takt:` | Nur beim **Zwischenstand der Ausschüttung**: stündlich, alle zwei, drei oder sechs Stunden – oder gar nicht, dann kommt nur noch die fällige Ausschüttung. |
+| `erinnerung:` | Nur beim **Vorfall im Unternehmen**: nachfassen, solange er offen ist – nach 2 bis 10 Minuten, oder gar nicht. |
 
 ```
 /melden thema:Ausschüttung: Zwischenstand  takt:alle drei Stunden
 /melden thema:Ausschüttung: Zwischenstand  takt:nur wenn die Ausschüttung fällig ist
 /melden thema:Lagerbestand niedrig  wiederholung:nach 3 Stunden
+/melden thema:Vorfall im Unternehmen  erinnerung:nach 3 Minuten
 /melden thema:Wiki-Änderungen  ziel:gar nicht (aus)
 ```
+
+**Zum Nachfassen bei Vorfällen:** Ein Vorfall hat eine Frist – bei einer
+Abwerbung etwa zehn Minuten. Läuft sie ab, ohne dass jemand reagiert, kostet
+das Geld. Die erste Meldung geht aber unter, wenn gerade niemand hinsieht.
+Deshalb kommt nach der eingestellten Zeit eine Erinnerung mit der
+**verbleibenden Frist** und der Angabe, wie lange er schon offen ist.
+Voreingestellt sind 5 Minuten, höchstens dreimal – danach ist Schluss, damit
+ein hängender Vorfall nicht endlos meldet. Ist der Vorfall weg, erledigt oder
+abgelaufen, wird nichts mehr geschickt.
 
 `ziel: gar nicht (aus)` schaltet eine Meldung **vollständig** ab – auch die
 Benachrichtigung aufs Handy über ntfy, nicht nur die im Discord.

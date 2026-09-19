@@ -264,11 +264,14 @@ export function regelText(regel) {
     : regel.takt === 0 ? ' · kein Zwischenstand'
     : regel.takt === 1 ? ' · stündlich'
     : ` · alle ${regel.takt} Std.`;
+  const nachfassen = regel.erinnerung === undefined ? ''
+    : regel.erinnerung === 0 ? ' · ohne Nachfassen'
+    : ` · fasst nach ${regel.erinnerung} Min. nach`;
   const ruhe = regel.wiederholung === undefined ? ''
     : regel.wiederholung >= 1440 ? ' · höchstens einmal am Tag'
     : regel.wiederholung >= 60 ? ` · frühestens nach ${regel.wiederholung / 60} Std. wieder`
     : ` · frühestens nach ${regel.wiederholung} Min. wieder`;
-  return wohin + ping + takt + ruhe;
+  return wohin + ping + takt + nachfassen + ruhe;
 }
 
 /**

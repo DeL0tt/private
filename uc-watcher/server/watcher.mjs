@@ -61,6 +61,13 @@ const CFG = {
   // Wie lange nach dem letzten Einkauf der Nachkauf noch als laufend gilt.
   NACHKAUF_FENSTER_MIN: +(process.env.UC_NACHKAUF_FENSTER_MIN || 90),
 
+  // Bleibt ein Vorfall offen, wird nach so vielen Minuten nachgefasst.
+  // 0 schaltet es ab; über /melden je Meldung einstellbar.
+  VORFALL_ERINNERUNG_MIN: +(process.env.UC_VORFALL_ERINNERUNG_MIN ?? 5),
+  // Wie oft höchstens nachgefasst wird, damit ein hängender Vorfall nicht
+  // endlos meldet.
+  VORFALL_ERINNERUNG_MAX: +(process.env.UC_VORFALL_ERINNERUNG_MAX || 3),
+
   // Gelesen wird der Bestand eines einzelnen Betriebs aus /api/panel/me –
   // also bereits der echte Wert. Der Abzug bleibt nur als Notnagel für den
   // Fall, dass jemand eine Gesamtsumme statt eines Betriebs auswertet.
@@ -131,6 +138,7 @@ const leer = () => ({
   auszahlungSumme: 0, auszahlungTag: null, auszahlungen: [],  // 35k-Topf je Spieltag
   betriebBestand: null,   // zuletzt gesehener Bestand der Zoohandlung
   letzterEinkauf: 0,      // belegt, dass der Nachkauf läuft
+  offenerVorfall: null,   // { schluessel, seit, zuletzt, runde } fürs Nachfassen
   lagerVerlauf: [],       // { t, lager } für den gemessenen Absatz
   lastPush: {},
 });
@@ -748,6 +756,46 @@ async function pruefeBetrieb(state) {
     state.lastPush.betrieb_knapp = 0;
     state.lastPush.betrieb_leer = 0;
   }
+}
+
+/**
+ * Fasst nach, solange ein Vorfall offen ist.
+ *
+ * Ein Vorfall hat eine Frist – bei einer Abwerbung etwa zehn Minuten. Die
+ * erste Meldung geht unter, wenn gerade niemand hinsieht; deshalb kommt nach
+ * einer einstellbaren Zeit eine zweite, mit der verbleibenden Frist.
+ *
+ * Jede Erinnerung bekommt ein eigenes Thema, sonst würde die Sperre gegen
+ * Wiederholungen sie verschlucken.
+ */
+async function erinnereAnVorfall(state, ereignis) {
+  const schluessel = 'event_' + JSON.stringify(ereignis).slice(0, 40);
+  const offen = state.offenerVorfall;
+
+  // Ein anderer Vorfall als zuletzt: von vorn zählen.
+  if (!offen || offen.schluessel !== schluessel) {
+    state.offenerVorfall = { schluessel, seit: Date.now(), zuletzt: Date.now(), runde: 0 };
+    return;
+  }
+
+  const regel = empfaenger(schluessel, ladeRegeln());
+  const abstand = regel.erinnerung ?? CFG.VORFALL_ERINNERUNG_MIN;
+  if (!abstand || offen.runde >= CFG.VORFALL_ERINNERUNG_MAX) return;
+  if (Date.now() - offen.zuletzt < abstand * MIN) return;
+
+  offen.runde++;
+  offen.zuletzt = Date.now();
+
+  const minuten = ereignis?.minutesLeft ?? ereignis?.minutes;
+  const frist = minuten !== null && minuten !== undefined
+    ? `\n⏳ Noch ${minuten} ${minuten === 1 ? 'Minute' : 'Minuten'} Zeit.`
+    : '';
+
+  await push(`${schluessel}_nachfass_${offen.runde}`,
+    '⏰ Vorfall ist immer noch offen',
+    ereignisText(ereignis) + frist +
+    `\n\nOffen seit ${dauer(Date.now() - offen.seit)}.`,
+    state, 'urgent');
 }
 
 async function pruefeAusschuettung(state) {
@@ -1432,6 +1480,12 @@ async function durchlauf() {
               `, Aufschlag ${Math.round((ex.surcharge || 0) * 100)} %`
             : ''),
       });
+
+    await erinnereAnVorfall(state, f.event);
+  } else if (state.offenerVorfall) {
+    // Der Vorfall ist weg – erledigt oder abgelaufen. Ruhe geben.
+    info(`Vorfall erledigt nach ${dauer(Date.now() - state.offenerVorfall.seit)}`);
+    state.offenerVorfall = null;
   }
 
   // --- Einkaufspreise: Sprung deutet auf einen Lieferengpass hin ---
@@ -1990,6 +2044,15 @@ const BEFEHLE = {
           { name: 'nach 12 Stunden',   value: '720' },
           { name: 'erst am nächsten Tag', value: '1440' },
         ] },
+      { name: 'erinnerung', description: 'Nur bei Vorfällen: nachfassen, solange er offen ist',
+        type: 3, required: false,
+        choices: [
+          { name: 'nicht nachfassen',      value: '0' },
+          { name: 'nach 2 Minuten',        value: '2' },
+          { name: 'nach 3 Minuten',        value: '3' },
+          { name: 'nach 5 Minuten',        value: '5' },
+          { name: 'nach 10 Minuten',       value: '10' },
+        ] },
       { name: 'takt', description: 'Nur beim Zwischenstand der Ausschüttung: wie oft?',
         type: 3, required: false,
         choices: [
@@ -2019,7 +2082,8 @@ const BEFEHLE = {
       const name = themaName(thema);
 
       // Nur ein Thema genannt: dessen Regel zeigen.
-      if (!optionen.ziel && !optionen.ping && !optionen.takt && !optionen.wiederholung) {
+      if (!optionen.ziel && !optionen.ping && !optionen.takt &&
+          !optionen.wiederholung && !optionen.erinnerung) {
         return `**${name}**\n${regelText(empfaenger(thema, regeln))}\n\n` +
           '_Zum Ändern zusätzlich `ziel:` oder `ping:` angeben._';
       }
@@ -2066,10 +2130,24 @@ const BEFEHLE = {
         regel.takt = Number(optionen.takt);
       }
 
+      if (optionen.erinnerung !== undefined) {
+        if (thema !== 'event_') {
+          return '❌ `erinnerung:` gibt es nur beim Vorfall im Unternehmen – ' +
+                 'nur der bleibt offen, bis jemand handelt.';
+        }
+        regel.erinnerung = Number(optionen.erinnerung);
+      }
+
       regeln[thema] = regel;
       speichereRegeln(regeln);
 
       let t = `✅ **${name}**\n${regelText(regel)}`;
+      if (regel.erinnerung !== undefined) {
+        t += regel.erinnerung === 0
+          ? '\n\nEs wird nicht mehr nachgefasst – nur die erste Meldung.'
+          : `\n\nBleibt der Vorfall offen, kommt nach ${regel.erinnerung} Minuten ` +
+            `eine Erinnerung, höchstens ${CFG.VORFALL_ERINNERUNG_MAX}-mal.`;
+      }
       if (regel.wiederholung !== undefined) {
         const w = regel.wiederholung;
         t += `\n\nDieselbe Meldung kommt frühestens ` +
