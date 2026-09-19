@@ -2050,6 +2050,88 @@ const BEFEHLE = {
     },
   },
 
+  testvorfall: {
+    beschreibung: 'Einen Vorfall vortäuschen, um Kanal und Ping zu prüfen',
+    nurChef: true,
+    optionen: [
+      { name: 'art', description: 'Welche Vorfallsart soll geprüft werden?',
+        type: 3, required: false, autocomplete: true },
+    ],
+
+    vorschlaege(feld, eingabe) {
+      return feld === 'art' ? BEFEHLE.melden.vorschlaege('vorfallart', eingabe) : [];
+    },
+
+    async ausfuehren({ optionen }) {
+      const art = String(optionen.art || 'ABWERBUNG').toUpperCase().replace(/[^A-Z0-9]+/g, '_');
+
+      // Ein echtes Ereignis nachbauen, damit Schlüssel, Regel und Ping genau
+      // so bestimmt werden wie im Ernstfall. Nur der Inhalt sagt, dass es
+      // eine Probe ist – niemand soll wegen einer Übung in Panik geraten.
+      const ereignis = {
+        type: art,
+        name: `Probe: ${art}`,
+        description: 'Das ist ein Testvorfall des Watchers. Es ist nichts passiert.',
+        minutesLeft: 10,
+      };
+
+      const state = load();
+      const schluessel = vorfallSchluessel(ereignis);
+      const regel = empfaenger(schluessel, ladeRegeln());
+
+      // Die Sperre gegen Wiederholungen darf eine Probe nicht verschlucken.
+      delete state.lastPush[schluessel];
+
+      const gepingt = regel.ping === 'online' ? onlineDiscordIds(state) : [];
+
+      await push(schluessel, '🧪 Testvorfall (keine echte Meldung)',
+        ereignisText(ereignis) +
+        '\n\nWenn du das siehst, kommen Vorfälle hier an.',
+        state, 'urgent');
+      // Bewusst nicht speichern: eine Probe soll den Zustand nicht verändern.
+
+      // Bericht, damit man nicht raten muss, was passiert ist.
+      let t = `✅ Testvorfall **${art}** verschickt.\n\n` +
+        `**Regel:** ${regelText(regel)}`;
+
+      if (regel.ziel === 'aus') {
+        t += '\n\n⚠️ Diese Art ist abgeschaltet – es wurde nichts verschickt.';
+        return t;
+      }
+
+      if (regel.ping === 'online') {
+        const zuordnung = ladeZuordnung();
+        const online = Object.entries(state.spieler || {})
+          .filter(([, p]) => p.online).map(([n]) => n);
+        t += `\n\n**Ping:** ${gepingt.length} Konto${gepingt.length === 1 ? '' : 'en'}`;
+        if (gepingt.length) {
+          t += ` – ${gepingt.map(id => `<@${id}>`).join(', ')}`;
+        } else if (!online.length) {
+          t += '\n⚠️ Gerade ist niemand aus der Firma ingame online – deshalb ' +
+               'wurde niemand gepingt. Das ist richtig so, sagt aber nichts ' +
+               'darüber, ob die Zuordnung stimmt.';
+        } else if (!Object.keys(zuordnung).length) {
+          t += '\n⚠️ Online sind: ' + online.join(', ') + ' – aber **niemand ist ' +
+               'zugeordnet**. Mit `/zuordnen nutzer:… name:…` nachholen, sonst ' +
+               'pingt diese Einstellung nie.';
+        } else {
+          t += '\n⚠️ Online sind: ' + online.join(', ') + ' – davon ist keiner ' +
+               'einem Discord-Konto zugeordnet. `/zuordnen` prüfen, die ' +
+               'Schreibweise der Namen muss passen.';
+        }
+      } else if (regel.ping && regel.ping !== 'keiner') {
+        t += '\n\n**Ping:** ' + (regel.ping === 'everyone' ? '@everyone'
+          : regel.ping === 'here' ? '@here' : `<@&${regel.ping}>`) +
+          '\nKam er nicht an, fehlt dem Bot im Kanal das Recht „Everyone erwähnen".';
+      } else {
+        t += '\n\n**Ping:** keiner – so ist es eingestellt.';
+      }
+
+      return t + '\n\n_Die Probe verändert nichts: keine Erinnerung, keine ' +
+        'gespeicherte Sperre, kein Eintrag in den Vorfallsarten._';
+    },
+  },
+
   melden: {
     beschreibung: 'Einstellen, wer welche Meldung sieht und ob gepingt wird',
     nurChef: true,

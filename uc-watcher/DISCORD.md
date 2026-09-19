@@ -313,6 +313,7 @@ Standardmäßig nur für dich – einzeln weitergebbar (siehe unten):
 | `/melden` | Einstellen, wer welche Meldung sieht und ob gepingt wird |
 | `/zuordnen` | Discord-Konto einem UnicaCity-Namen zuordnen |
 | `/rechte` | Wer darf welchen Befehl – **bleibt immer beim Inhaber** |
+| `/testvorfall` | Einen Vorfall vortäuschen, um Kanal und Ping zu prüfen |
 
 Antworten sind **nur für den Fragenden sichtbar** – es entsteht kein
 Geplapper im Kanal, und `/kasse` zeigt niemandem sonst deine Zahlen. Bei
@@ -321,6 +322,28 @@ denselben Befehl ohne.
 
 Versucht ein Angestellter `/kasse`, bekommt er nur den Hinweis, dass das dem
 Inhaber vorbehalten ist. Der Befehl wird dabei nicht ausgeführt.
+
+### Prüfen, ob Vorfälle ankommen: `/testvorfall`
+
+```
+/testvorfall art:ABWERBUNG
+```
+
+Verschickt einen als solchen gekennzeichneten Probe-Vorfall – über **denselben
+Weg** wie ein echter: gleiche Schlüsselbildung, gleiche Regel, gleicher Kanal,
+gleicher Ping. Danach berichtet der Bot, was passiert ist:
+
+- welche Regel gegriffen hat und in welchen Kanal es ging
+- **wie viele Konten gepingt wurden und welche**
+- und falls keins: warum nicht
+
+Der letzte Punkt ist der eigentliche Nutzen. Er unterscheidet drei Fälle, die
+sich sonst gleich anfühlen: gerade ist niemand ingame (dann ist Schweigen
+richtig), niemand ist zugeordnet (dann pingt diese Einstellung nie), oder die
+Namen in `/zuordnen` passen nicht zu denen im Spiel.
+
+Die Probe verändert nichts: keine Erinnerung, keine gespeicherte Sperre, kein
+Eintrag in den Vorfallsarten. Sie lässt sich also beliebig oft wiederholen.
 
 ### Rechte vergeben: `/rechte`
 

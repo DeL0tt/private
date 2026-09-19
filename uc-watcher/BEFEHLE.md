@@ -189,8 +189,11 @@ Vollständige Einrichtung: **DISCORD.md**. Im Alltag reichen diese:
 Im Discord selbst – für alle: `/firma`, `/lager`, `/ausschuettung`, `/zeiten`,
 `/gehalt`, `/betrieb`,
 `/hilfe`. Vorbehalten: `/kasse`, `/tagesbericht`, `/watcher`, `/melden`,
-`/zuordnen` – einzeln weitergebbar mit `/rechte` an eine Rolle oder eine
-Person. `/rechte` selbst bleibt immer beim Inhaber.
+`/zuordnen`, `/testvorfall` – einzeln weitergebbar mit `/rechte` an eine Rolle
+oder eine Person. `/rechte` selbst bleibt immer beim Inhaber.
+
+`/testvorfall` täuscht einen Vorfall vor und berichtet, wer dabei gepingt
+wurde – damit lässt sich die Zuordnung prüfen, ohne auf einen echten zu warten.
 
 `/melden` stellt um, wer welche Meldung sieht, ob dabei gepingt wird, wie oft
 sie sich wiederholt – und ob sie überhaupt kommt. Alles ohne SSH und ohne
