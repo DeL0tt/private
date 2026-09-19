@@ -280,6 +280,8 @@ const BETRIEB_PFADE = [
   '/api/businesses', '/api/business', '/api/business/list',
   '/api/panel/company/businesses', '/api/panel/betriebe',
   '/api/dashboard/businesses', '/api/panel/businesses/overview',
+  '/api/panel/shops', '/api/shops', '/api/panel/stores', '/api/panel/unternehmen',
+  '/api/panel/company/business', '/api/panel/company/shops',
 ];
 let betriebPfad = process.env.UC_BETRIEB_PFAD || '';
 
@@ -1961,15 +1963,57 @@ if (args.includes('--betrieb-probe')) {
   };
 
   console.log('Suche die Betriebsübersicht …\n');
+
+  // Absichtlich ohne api(): dort werden 401 und 403 zu "AUTH" zusammengefasst,
+  // und ein 404 sähe anders aus als ein 403. Genau dieser Unterschied sagt uns,
+  // ob der Pfad falsch ist oder nur die Rechte fehlen.
+  const roh = async (pfad) => {
+    const res = await fetch(CFG.API + pfad, {
+      headers: {
+        Authorization: 'Bearer ' + zugang.token,
+        Cookie: zugang.cookie || '',
+        'User-Agent': CFG.USER_AGENT,
+        'Accept': 'application/json',
+        'Origin': 'https://unicacity.eu',
+        'Referer': 'https://unicacity.eu/',
+      },
+    });
+    let koerper = null;
+    try { koerper = await res.json(); } catch { /* kein JSON */ }
+    return { status: res.status, koerper };
+  };
+
   let gefunden = null;
+  const statistik = {};
   for (const pfad of BETRIEB_PFADE) {
     try {
-      const d = await api(pfad);
-      console.log(`✅ ${pfad}`);
-      console.log('   ' + felder(d).slice(0, 900) + '\n');
-      gefunden ||= { pfad, daten: d };
+      const { status, koerper } = await roh(pfad);
+      statistik[status] = (statistik[status] || 0) + 1;
+      if (status === 200 && koerper) {
+        console.log(`✅ ${status} ${pfad}`);
+        console.log('   ' + felder(koerper).slice(0, 900) + '\n');
+        gefunden ||= { pfad, daten: koerper };
+      } else {
+        const grund = { 401: 'nicht angemeldet', 403: 'keine Rechte',
+                        404: 'gibt es nicht', 500: 'Serverfehler' }[status] || '';
+        console.log(`❌ ${status} ${pfad}${grund ? ' – ' + grund : ''}`);
+      }
     } catch (e) {
       console.log(`❌ ${pfad} — ${e.message}`);
+    }
+  }
+
+  // Was die Statuscodes über die API verraten
+  if (!gefunden) {
+    console.log('\nAntworten: ' + Object.entries(statistik)
+      .map(([k, v]) => `${v}× ${k}`).join(', '));
+    if (statistik[404]) {
+      console.log('Immerhin: ein 404 zeigt, dass unbekannte Pfade als solche');
+      console.log('gemeldet werden. Die Adresse ist also schlicht eine andere.');
+    } else if (statistik[401] || statistik[403]) {
+      console.log('Alle Pfade werden abgewiesen, keiner als "gibt es nicht".');
+      console.log('Die API antwortet unbekannten Pfaden also mit 401/403 – durch');
+      console.log('Raten kommen wir nicht weiter, die echte Adresse muss her.');
     }
   }
 
