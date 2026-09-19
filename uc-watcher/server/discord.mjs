@@ -474,6 +474,24 @@ async function aufschieben(interaktion, nurFuerDenFragenden) {
     { type: 5, ...(nurFuerDenFragenden ? { data: { flags: 64 } } : {}) });
 }
 
+/**
+ * Beantwortet die Vorschlagsliste, während jemand tippt. Discord erwartet die
+ * Antwort binnen drei Sekunden und nimmt höchstens 25 Einträge.
+ */
+export async function schlageVor(interaktion, befehle) {
+  const b = befehle[interaktion.data?.name];
+  const offen = (interaktion.data?.options || []).find(o => o.focused);
+  if (!b?.vorschlaege || !offen) return;
+
+  let choices = [];
+  try {
+    choices = (await b.vorschlaege(offen.name, String(offen.value || ''))) || [];
+  } catch (e) { log('Vorschläge fehlgeschlagen:', e.message); }
+
+  await rest(`/interactions/${interaktion.id}/${interaktion.token}/callback`, 'POST',
+    { type: 8, data: { choices: choices.slice(0, 25) } }).catch(e => log('Vorschlag:', e.message));
+}
+
 // Exportiert, damit die Rechteprüfung ohne echtes Gateway geprüft werden kann.
 export async function fuehreAus(interaktion, befehle) {
   const name = interaktion.data?.name;
@@ -570,6 +588,9 @@ export function verbinde(befehle) {
           log('Sitzung fortgesetzt');
         } else if (p.t === 'INTERACTION_CREATE' && p.d?.type === 2) {
           fuehreAus(p.d, befehle).catch(e => console.error('  Interaktion:', e.message));
+        } else if (p.t === 'INTERACTION_CREATE' && p.d?.type === 4) {
+          // Jemand tippt in einem Feld mit Vorschlagsliste.
+          schlageVor(p.d, befehle).catch(e => log('Vorschläge:', e.message));
         }
         break;
 

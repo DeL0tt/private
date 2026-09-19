@@ -140,6 +140,7 @@ const leer = () => ({
   betriebBestand: null,   // zuletzt gesehener Bestand der Zoohandlung
   letzterEinkauf: 0,      // belegt, dass der Nachkauf läuft
   offenerVorfall: null,   // { schluessel, seit, zuletzt, runde } fürs Nachfassen
+  vorfallArten: {},       // gesehene Arten, für die Auswahl in /melden
   lagerVerlauf: [],       // { t, lager } für den gemessenen Absatz
   lastPush: {},
 });
@@ -770,7 +771,7 @@ async function pruefeBetrieb(state) {
  * Wiederholungen sie verschlucken.
  */
 async function erinnereAnVorfall(state, ereignis) {
-  const schluessel = 'event_' + JSON.stringify(ereignis).slice(0, 40);
+  const schluessel = vorfallSchluessel(ereignis);
   const offen = state.offenerVorfall;
 
   // Ein anderer Vorfall als zuletzt: von vorn zählen.
@@ -845,6 +846,31 @@ async function pruefeAusschuettung(state) {
 // Felder, die das Spiel mitschickt, die aber niemand lesen will: technische
 // Kennungen und Flaggen. Der Rest wird benannt statt roh ausgegeben.
 const EREIGNIS_EGAL = ['type', 'interactive', 'id', 'eventid', 'key'];
+
+/**
+ * Themenschlüssel eines Vorfalls, mit der Art im Namen: 'event_ABWERBUNG_…'.
+ *
+ * So lässt sich über /melden je Art einstellen, was passieren soll – der
+ * Vergleich nach längstem Anfang lässt 'event_ABWERBUNG' die allgemeine Regel
+ * 'event_' schlagen. Der angehängte Teil unterscheidet zwei Vorfälle
+ * derselben Art voneinander, damit der zweite nicht als Wiederholung des
+ * ersten gilt.
+ */
+function vorfallArt(ev) {
+  const roh = sauber(ev?.type ?? ev?.name ?? ev?.title ?? '') || 'UNBEKANNT';
+  return roh.toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 30);
+}
+
+function vorfallSchluessel(ev) {
+  // Kurze Quersumme über das ganze Ereignis statt der ersten Zeichen: zwei
+  // Abwerbungen unterscheiden sich erst in der Beschreibung, und ein
+  // abgeschnittener Anfang hätte die zweite als Wiederholung der ersten
+  // gelten lassen – sie wäre nie gemeldet worden.
+  const roh = JSON.stringify(ev) || '';
+  let summe = 0;
+  for (let i = 0; i < roh.length; i++) summe = (summe * 31 + roh.charCodeAt(i)) >>> 0;
+  return `event_${vorfallArt(ev)}_${summe.toString(36)}`;
+}
 
 function ereignisText(ev) {
   if (!ev) return '';
@@ -1465,7 +1491,16 @@ async function durchlauf() {
   if (f.event) {
     const bericht = onlineBericht(state);
     const ex = f.express || {};
-    await push('event_' + JSON.stringify(f.event).slice(0, 40), '🚨 Vorfall im Unternehmen',
+    // Art und Anzahl mitschreiben, damit /melden sie zur Auswahl anbieten kann.
+    const art = vorfallArt(f.event);
+    state.vorfallArten = { ...(state.vorfallArten || {}),
+      [art]: {
+        anzahl: (state.vorfallArten?.[art]?.anzahl || 0) + 1,
+        zuletzt: Date.now(),
+        name: sauber(f.event?.name || f.event?.title || art),
+      } };
+
+    await push(vorfallSchluessel(f.event), '🚨 Vorfall im Unternehmen',
       ereignisText(f.event) +
       (ex.maxSlots
         ? `\n\nExpresslieferung: ${ex.freeSlots ?? '?'} von ${ex.maxSlots} Plätzen frei` +
@@ -2045,6 +2080,8 @@ const BEFEHLE = {
           { name: 'nach 12 Stunden',   value: '720' },
           { name: 'erst am nächsten Tag', value: '1440' },
         ] },
+      { name: 'vorfallart', description: 'Nur bei Vorfällen: nur für diese Art gelten (z. B. ABWERBUNG)',
+        type: 3, required: false, autocomplete: true },
       { name: 'erinnerung', description: 'Nur bei Vorfällen: nachfassen, solange er offen ist',
         type: 3, required: false,
         choices: [
@@ -2065,6 +2102,28 @@ const BEFEHLE = {
         ] },
     ],
 
+    // Was der Watcher bisher an Vorfallsarten gesehen hat, plus alles, wofür
+    // schon eine Regel besteht – damit man eine Einstellung wiederfindet,
+    // auch wenn die Art länger nicht vorkam.
+    vorschlaege(feld, eingabe) {
+      if (feld !== 'vorfallart') return [];
+      const gesehen = load().vorfallArten || {};
+      const ausRegeln = Object.keys(ladeRegeln())
+        .filter(k => k.startsWith('event_') && k !== 'event_')
+        .map(k => k.slice('event_'.length));
+
+      const arten = [...new Set([...Object.keys(gesehen), ...ausRegeln])]
+        .filter(a => a.toLowerCase().includes(String(eingabe).toLowerCase()))
+        .sort((a, b) => (gesehen[b]?.zuletzt || 0) - (gesehen[a]?.zuletzt || 0));
+
+      return arten.map(a => ({
+        name: gesehen[a]
+          ? `${a} (${gesehen[a].anzahl}× gesehen)`.slice(0, 100)
+          : `${a} (eingestellt)`,
+        value: a,
+      }));
+    },
+
     async ausfuehren({ optionen }) {
       const regeln = ladeRegeln();
 
@@ -2074,13 +2133,27 @@ const BEFEHLE = {
           const eigen = !!regeln[k];
           return `${eigen ? '✏️' : '·'} **${name}**\n   ${regelText(empfaenger(k, regeln))}`;
         });
+
+        // Regeln für einzelne Vorfallsarten stehen nicht in THEMEN – sie
+        // entstehen erst, wenn man eine anlegt.
+        for (const k of Object.keys(regeln).filter(x => x.startsWith('event_') && x !== 'event_')) {
+          zeilen.push(`✏️ **Vorfall: ${k.slice('event_'.length)}**\n   ${regelText(regeln[k])}`);
+        }
         return '**Wer sieht welche Meldung?**\n' + zeilen.join('\n') +
           '\n\n✏️ = von dir geändert · · = Voreinstellung' +
           '\n\nÄndern: `/melden thema:… ziel:… ping:…`';
       }
 
-      const thema = optionen.thema;
-      const name = themaName(thema);
+      // Mit einer Vorfallsart gilt die Regel nur für diese – sie schlägt die
+      // allgemeine, weil der längere Themenanfang gewinnt.
+      if (optionen.vorfallart && optionen.thema !== 'event_') {
+        return '❌ `vorfallart:` gibt es nur beim Vorfall im Unternehmen.';
+      }
+      const art = optionen.vorfallart
+        ? String(optionen.vorfallart).toUpperCase().replace(/[^A-Z0-9]+/g, '_')
+        : '';
+      const thema = art ? `event_${art}` : optionen.thema;
+      const name = art ? `Vorfall: ${art}` : themaName(optionen.thema);
 
       // Nur ein Thema genannt: dessen Regel zeigen.
       if (!optionen.ziel && !optionen.ping && !optionen.takt &&

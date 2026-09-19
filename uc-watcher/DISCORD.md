@@ -345,8 +345,10 @@ kennt.
 sich sonst selbst alles geben – das bleibt bei dir, auch wenn jemand in der
 Liste steht.
 
-Wer ein Recht hat, sieht den Befehl auch in `/hilfe`. Wer nicht, sieht nur
-einen Hinweis, wie viele Befehle ihm fehlen.
+`/hilfe` zeigt jedem **nur die Befehle, die er auch ausführen kann**. Wer kein
+Recht auf `/kasse` hat, sieht den Befehl dort gar nicht – nur die Anzahl der
+übrigen, ohne deren Namen, damit man weiß, dass man nachfragen kann. Der
+Inhaber sieht alles ohne Hinweis.
 
 Vergeben und Entziehen gilt sofort und übersteht Neustarts.
 
@@ -377,14 +379,23 @@ Dazu kommen zwei Einstellungen, wie **oft** eine Meldung kommt:
 | `wiederholung:` | Wie lange Ruhe ist, bevor dieselbe Meldung wiederkommt – 15 Min. bis „erst am nächsten Tag". Ohne Angabe: eine Stunde. |
 | `takt:` | Nur beim **Zwischenstand der Ausschüttung**: stündlich, alle zwei, drei oder sechs Stunden – oder gar nicht, dann kommt nur noch die fällige Ausschüttung. |
 | `erinnerung:` | Nur beim **Vorfall im Unternehmen**: nachfassen, solange er offen ist – nach 2 bis 10 Minuten, oder gar nicht. |
+| `vorfallart:` | Nur beim **Vorfall im Unternehmen**: die Einstellung gilt dann nur für diese Art, z. B. `ABWERBUNG`. |
 
 ```
 /melden thema:Ausschüttung: Zwischenstand  takt:alle drei Stunden
 /melden thema:Ausschüttung: Zwischenstand  takt:nur wenn die Ausschüttung fällig ist
 /melden thema:Lagerbestand niedrig  wiederholung:nach 3 Stunden
 /melden thema:Vorfall im Unternehmen  erinnerung:nach 3 Minuten
+/melden thema:Vorfall im Unternehmen  vorfallart:ABWERBUNG  erinnerung:nach 3 Minuten  ping:nur wer gerade ingame online ist
 /melden thema:Wiki-Änderungen  ziel:gar nicht (aus)
 ```
+
+**Einzelne Vorfallsarten:** Mit `vorfallart:` gilt eine Einstellung nur für
+diese eine Art – eine Abwerbung kostet Geld und darf ruhig zweimal stören,
+ein belangloser Vorfall nicht. Das Feld schlägt dir die Arten vor, die der
+Watcher bereits gesehen hat, samt Anzahl; du musst also nichts auswendig
+wissen. Eine Regel für eine Art schlägt die allgemeine, und `/melden` ohne
+Angaben listet beide untereinander auf.
 
 **Zum Nachfassen bei Vorfällen:** Ein Vorfall hat eine Frist – bei einer
 Abwerbung etwa zehn Minuten. Läuft sie ab, ohne dass jemand reagiert, kostet
