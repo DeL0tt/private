@@ -185,8 +185,9 @@ Vollständige Einrichtung: **DISCORD.md**. Im Alltag reichen diese:
 | `journalctl -u uc-watcher \| grep discord` | Was der Bot macht |
 
 Im Discord selbst – für alle: `/firma`, `/lager`, `/ausschuettung`, `/zeiten`,
-`/hilfe`. Nur für dich: `/kasse`, `/tagesbericht`, `/watcher`, `/melden`,
-`/zuordnen`.
+`/hilfe`. Vorbehalten: `/kasse`, `/tagesbericht`, `/watcher`, `/melden`,
+`/zuordnen` – einzeln weitergebbar mit `/rechte` an eine Rolle oder eine
+Person. `/rechte` selbst bleibt immer beim Inhaber.
 
 `/melden` stellt um, wer welche Meldung sieht und ob dabei eine Rolle oder
 @everyone gepingt wird – ohne SSH, ohne Neustart. `/melden` ohne Angaben zeigt

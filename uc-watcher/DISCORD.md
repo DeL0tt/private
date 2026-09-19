@@ -179,7 +179,7 @@ Jeder im Server kann benutzen:
 | `/zeiten` | Die eigene Onlinezeit heute |
 | `/hilfe` | Welche Befehle es gibt |
 
-Nur für dich:
+Standardmäßig nur für dich – einzeln weitergebbar (siehe unten):
 
 | Befehl | Zeigt |
 |---|---|
@@ -188,6 +188,7 @@ Nur für dich:
 | `/watcher` | Läuft er, Token-Ablauf, Erreichbarkeit |
 | `/melden` | Einstellen, wer welche Meldung sieht und ob gepingt wird |
 | `/zuordnen` | Discord-Konto einem UnicaCity-Namen zuordnen |
+| `/rechte` | Wer darf welchen Befehl – **bleibt immer beim Inhaber** |
 
 Antworten sind **nur für den Fragenden sichtbar** – es entsteht kein
 Geplapper im Kanal, und `/kasse` zeigt niemandem sonst deine Zahlen. Bei
@@ -196,6 +197,34 @@ denselben Befehl ohne.
 
 Versucht ein Angestellter `/kasse`, bekommt er nur den Hinweis, dass das dem
 Inhaber vorbehalten ist. Der Befehl wird dabei nicht ausgeführt.
+
+### Rechte vergeben: `/rechte`
+
+Die vorbehaltenen Befehle kannst du einzeln weitergeben – an eine **Rolle**
+(gilt für alle, die sie tragen) oder an eine **einzelne Person**.
+
+```
+/rechte befehl:/kasse         rolle:@Leitung
+/rechte befehl:/tagesbericht  nutzer:@Maxine
+/rechte                                        → zeigt, wer was darf
+/rechte befehl:/kasse  nutzer:@Maxine  entfernen:True
+```
+
+Der Bot sagt dir beim Vergeben, was damit wirklich sichtbar wird. Bei `/kasse`
+etwa: Kassenstand, Gewinn, die letzten Buchungen – **und die Beträge in
+`/firma` und `/ausschuettung`**, die sonst ausgeblendet sind. Bei
+`/tagesbericht` entsprechend die volle Namensliste in `/zeiten` statt nur der
+eigenen Zeit. Sonst würde man ein Recht vergeben, dessen Umfang man nicht
+kennt.
+
+`/rechte` selbst ist **nicht übertragbar**. Wer Rechte vergeben darf, könnte
+sich sonst selbst alles geben – das bleibt bei dir, auch wenn jemand in der
+Liste steht.
+
+Wer ein Recht hat, sieht den Befehl auch in `/hilfe`. Wer nicht, sieht nur
+einen Hinweis, wie viele Befehle ihm fehlen.
+
+Vergeben und Entziehen gilt sofort und übersteht Neustarts.
 
 ### Meldungen umstellen: `/melden`
 

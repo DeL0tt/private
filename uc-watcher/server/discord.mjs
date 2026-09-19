@@ -59,7 +59,11 @@ function appId() {
  * wäre mit der älteren Kopie wieder verschwunden. Eine eigene Datei kann das
  * nicht passieren.
  *
- * Aufbau: { regeln: { '<themenanfang>': {…} }, zuordnung: { '<discordId>': 'UC-Name' } }
+ * Aufbau: {
+ *   regeln:    { '<themenanfang>': {…} },
+ *   zuordnung: { '<discordId>': 'UC-Name' },
+ *   rechte:    { '<befehl>': { rollen: [...], nutzer: [...] } }
+ * }
  */
 let cache = { stand: -1, inhalt: null };
 
@@ -70,13 +74,14 @@ function lade() {
     const rohdaten = JSON.parse(fs.readFileSync(REGELN_DATEI, 'utf8'));
     // Ältere Dateien enthielten die Regeln ohne Umschlag, direkt als
     // Themen-Zuordnung. Die werden weiter gelesen.
-    const inhalt = rohdaten.regeln || rohdaten.zuordnung
-      ? { regeln: rohdaten.regeln || {}, zuordnung: rohdaten.zuordnung || {} }
-      : { regeln: rohdaten, zuordnung: {} };
+    const inhalt = rohdaten.regeln || rohdaten.zuordnung || rohdaten.rechte
+      ? { regeln: rohdaten.regeln || {}, zuordnung: rohdaten.zuordnung || {},
+          rechte: rohdaten.rechte || {} }
+      : { regeln: rohdaten, zuordnung: {}, rechte: {} };
     cache = { stand, inhalt };
     return inhalt;
   } catch {
-    return { regeln: {}, zuordnung: {} };   // noch nie etwas eingestellt
+    return { regeln: {}, zuordnung: {}, rechte: {} };   // noch nie etwas eingestellt
   }
 }
 
@@ -107,6 +112,22 @@ export const speichereZuordnung = (zuordnung) => speichere({ ...lade(), zuordnun
 
 /** Nur die im Discord gesetzten Einträge – für „aus der .env" vs. „von dir". */
 export const zuordnungEigen = () => lade().zuordnung;
+
+/**
+ * Wer darf welchen sonst dem Inhaber vorbehaltenen Befehl benutzen?
+ * Vergeben wird an Rollen (gilt für alle, die sie tragen) oder an einzelne
+ * Konten. Der Inhaber darf immer alles.
+ */
+export const ladeRechte = () => lade().rechte;
+export const speichereRechte = (rechte) => speichere({ ...lade(), rechte });
+
+export function darfNutzen(befehl, { istChef, nutzerId, rollen = [] }) {
+  if (istChef) return true;
+  const r = ladeRechte()[befehl];
+  if (!r) return false;
+  if ((r.nutzer || []).includes(String(nutzerId))) return true;
+  return (r.rollen || []).some(rolle => rollen.map(String).includes(String(rolle)));
+}
 
 /* ========================= EMPFÄNGER ========================= */
 
@@ -426,21 +447,31 @@ export async function fuehreAus(interaktion, befehle) {
   if (!b) return;
 
   const nutzer = interaktion.member?.user || interaktion.user || {};
+  const rollen = interaktion.member?.roles || [];
   const istChef = !!CFG.CHEF_ID && nutzer.id === CFG.CHEF_ID;
   const heimlich = b.heimlich !== false;              // Standard: nur der Fragende sieht es
 
+  // Ein vorbehaltener Befehl lässt sich per /rechte an Rollen oder einzelne
+  // Konten weitergeben – außer er ist ausdrücklich nicht übertragbar.
+  const darf = (welcher) => befehle[welcher]?.nichtUebertragbar
+    ? istChef
+    : darfNutzen(welcher, { istChef, nutzerId: nutzer.id, rollen });
+
   await aufschieben(interaktion, heimlich);
 
-  if (b.nurChef && !istChef) {
+  if (b.nurChef && !darf(name)) {
     await antworte(interaktion,
-      '🔒 Diesen Befehl kann nur der Firmeninhaber benutzen.', heimlich);
+      b.nichtUebertragbar
+        ? '🔒 Diesen Befehl kann nur der Firmeninhaber benutzen.'
+        : '🔒 Dafür fehlen dir die Rechte. Der Firmeninhaber kann sie mit ' +
+          '`/rechte` vergeben.', heimlich);
     return;
   }
 
   try {
     const optionen = {};
     for (const o of interaktion.data?.options || []) optionen[o.name] = o.value;
-    const ergebnis = await b.ausfuehren({ istChef, nutzer, optionen });
+    const ergebnis = await b.ausfuehren({ istChef, nutzer, rollen, optionen, darf });
     await antworte(interaktion, ergebnis, heimlich);
     log('Befehl', name, 'von', nutzer.username || nutzer.id);
   } catch (e) {

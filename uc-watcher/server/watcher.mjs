@@ -7,8 +7,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { discordAktiv, discordSende, discordStart, discordStop, empfaenger,
          regelText, THEMEN, themaName, ladeRegeln, speichereRegeln,
-         ladeZuordnung, speichereZuordnung, zuordnungEigen, pruefeToken }
-  from './discord.mjs';
+         ladeZuordnung, speichereZuordnung, zuordnungEigen, pruefeToken,
+         ladeRechte, speichereRechte } from './discord.mjs';
 
 /* ========================= KONFIGURATION ========================= */
 
@@ -1103,7 +1103,7 @@ async function firmaFrisch() {
 const BEFEHLE = {
   firma: {
     beschreibung: 'Zustand der Firma: Status, Lager, Personal, wer online ist',
-    async ausfuehren({ istChef }) {
+    async ausfuehren({ darf }) {
       const f = await firmaFrisch();
       const online = (f.members || []).filter(m => m.online);
       let t = `**${f.name}** · Level ${f.level} · ${sauber(f.status)}\n` +
@@ -1114,7 +1114,9 @@ const BEFEHLE = {
       if (f.wagesUnpaid) t += '\n⚠️ Die Löhne konnten nicht gezahlt werden.';
       if (f.rentStrikes > 0) t += `\n⚠️ Mietmahnungen: ${f.rentStrikes} von ${f.rentStrikesMax}`;
       // Beträge nur für den Inhaber.
-      if (istChef) t += `\n\nKasse: ${fmt(f.kasse?.balance)} · Gewinn: ${fmt(f.kasse?.profitSincePayout)}`;
+      // Wer /kasse benutzen darf, sieht die Beträge auch hier – sonst wäre
+      // die Zurückhaltung an dieser Stelle sinnlos.
+      if (darf('kasse')) t += `\n\nKasse: ${fmt(f.kasse?.balance)} · Gewinn: ${fmt(f.kasse?.profitSincePayout)}`;
       return t;
     },
   },
@@ -1138,7 +1140,7 @@ const BEFEHLE = {
 
   ausschuettung: {
     beschreibung: 'Wie weit ist die Team-Onlinezeit bis zur nächsten Ausschüttung',
-    async ausfuehren({ istChef }) {
+    async ausfuehren({ darf }) {
       const st = load();
       const ziel = CFG.AUSSCHUETTUNG_STD * 3_600_000;
       const anteil = Math.min(100, Math.round(st.teamOnlineMs / ziel * 100));
@@ -1148,8 +1150,8 @@ const BEFEHLE = {
         (st.teamOnlineMs >= ziel
           ? '✅ Ziel erreicht – die Ausschüttung kann gemacht werden.'
           : `Noch ${dauer(ziel - st.teamOnlineMs)}.`);
-      if (istChef && st.gewinn !== null) t += `\n\nGewinn bisher: ${fmt(st.gewinn)}`;
-      if (istChef && st.letzteAusschuettung) {
+      if (darf('kasse') && st.gewinn !== null) t += `\n\nGewinn bisher: ${fmt(st.gewinn)}`;
+      if (darf('kasse') && st.letzteAusschuettung) {
         t += `\nLetzte Ausschüttung: ${new Date(st.letzteAusschuettung).toLocaleString('de-DE')}`;
       }
       return t;
@@ -1158,12 +1160,12 @@ const BEFEHLE = {
 
   zeiten: {
     beschreibung: 'Onlinezeit heute – die eigene, für den Inhaber die des ganzen Teams',
-    async ausfuehren({ istChef, nutzer }) {
+    async ausfuehren({ darf, nutzer }) {
       const st = load();
       const eintraege = Object.entries(st.spieler || {});
       if (!eintraege.length) return '_Noch keine Zeiten erfasst._';
 
-      if (istChef) {
+      if (darf('tagesbericht')) {
         const zeilen = eintraege
           .sort((a, b) => (b[1].gesamtMs || 0) - (a[1].gesamtMs || 0))
           .map(([name, p]) =>
@@ -1334,6 +1336,90 @@ const BEFEHLE = {
     },
   },
 
+  rechte: {
+    beschreibung: 'Vergeben, wer die vorbehaltenen Befehle benutzen darf',
+    nurChef: true,
+    nichtUebertragbar: true,     // Rechte vergeben bleibt beim Inhaber
+    optionen: [
+      { name: 'befehl', description: 'Welcher Befehl?', type: 3, required: false,
+        choices: [
+          { name: '/kasse – Kassenstand, Gewinn, letzte Buchungen', value: 'kasse' },
+          { name: '/tagesbericht – Onlinezeiten des ganzen Teams',  value: 'tagesbericht' },
+          { name: '/watcher – läuft der Watcher, Technik',          value: 'watcher' },
+          { name: '/melden – Meldungen umstellen',                  value: 'melden' },
+          { name: '/zuordnen – Spieler zuordnen',                   value: 'zuordnen' },
+        ] },
+      { name: 'rolle', description: 'Recht an eine ganze Rolle geben', type: 8, required: false },
+      { name: 'nutzer', description: 'Recht an eine einzelne Person geben', type: 6, required: false },
+      { name: 'entfernen', description: 'Das Recht wieder wegnehmen', type: 5, required: false },
+    ],
+
+    async ausfuehren({ optionen }) {
+      const rechte = ladeRechte();
+
+      const zeigeAlles = () => {
+        const zeilen = ['kasse', 'tagesbericht', 'watcher', 'melden', 'zuordnen'].map(b => {
+          const r = rechte[b] || {};
+          const wer = [
+            ...(r.rollen || []).map(id => `<@&${id}>`),
+            ...(r.nutzer || []).map(id => `<@${id}>`),
+          ];
+          return `**/${b}** – ${wer.length ? wer.join(', ') : '_nur du_'}`;
+        });
+        return '**Wer darf welchen Befehl?**\n' + zeilen.join('\n') +
+          '\n\nDie übrigen Befehle (/firma, /lager, /ausschuettung, /zeiten, /hilfe) ' +
+          'kann ohnehin jeder benutzen.\n' +
+          'Vergeben: `/rechte befehl:… rolle:…` oder `nutzer:…`';
+      };
+
+      if (!optionen.befehl) return zeigeAlles();
+      if (!optionen.rolle && !optionen.nutzer) {
+        const r = rechte[optionen.befehl] || {};
+        const wer = [
+          ...(r.rollen || []).map(id => `<@&${id}>`),
+          ...(r.nutzer || []).map(id => `<@${id}>`),
+        ];
+        return `**/${optionen.befehl}** darf: ${wer.length ? wer.join(', ') : '_nur du_'}\n\n` +
+          '_Zum Ändern zusätzlich `rolle:` oder `nutzer:` angeben._';
+      }
+
+      const eintrag = rechte[optionen.befehl] || { rollen: [], nutzer: [] };
+      eintrag.rollen ||= []; eintrag.nutzer ||= [];
+      const art = optionen.rolle ? 'rollen' : 'nutzer';
+      const id = String(optionen.rolle || optionen.nutzer);
+      const anzeige = optionen.rolle ? `<@&${id}>` : `<@${id}>`;
+
+      if (optionen.entfernen) {
+        if (!eintrag[art].includes(id)) return `${anzeige} hatte dieses Recht gar nicht.`;
+        eintrag[art] = eintrag[art].filter(x => x !== id);
+        rechte[optionen.befehl] = eintrag;
+        speichereRechte(rechte);
+        return `✅ ${anzeige} darf **/${optionen.befehl}** nicht mehr benutzen.`;
+      }
+
+      if (eintrag[art].includes(id)) return `${anzeige} darf **/${optionen.befehl}** bereits.`;
+      eintrag[art].push(id);
+      rechte[optionen.befehl] = eintrag;
+      speichereRechte(rechte);
+
+      let t = `✅ ${anzeige} darf ab jetzt **/${optionen.befehl}** benutzen.`;
+      // Sagen, was damit wirklich sichtbar wird – ein Recht zu vergeben, ohne
+      // dessen Umfang zu kennen, ist die Art Fehler, die man später bereut.
+      const umfang = {
+        kasse: 'Kassenstand, Gewinn und die letzten Buchungen – und damit auch ' +
+               'die Beträge in /firma und /ausschuettung.',
+        tagesbericht: 'die Onlinezeiten aller Angestellten – und damit auch die ' +
+               'volle Liste in /zeiten statt nur der eigenen Zeit.',
+        watcher: 'den technischen Zustand: Laufzeit, Token-Ablauf, Erreichbarkeit.',
+        melden: 'das Umstellen aller Meldungen – auch das Abschalten und das ' +
+               'Verschieben in andere Kanäle.',
+        zuordnen: 'das Zuordnen von Discord-Konten zu Spielernamen.',
+      }[optionen.befehl];
+      if (umfang) t += `\n\nDamit sieht ${anzeige} ${umfang}`;
+      return t + '\n\n_Gilt sofort, auch nach einem Neustart._';
+    },
+  },
+
   melden: {
     beschreibung: 'Einstellen, wer welche Meldung sieht und ob gepingt wird',
     nurChef: true,
@@ -1459,12 +1545,14 @@ const BEFEHLE = {
 
   hilfe: {
     beschreibung: 'Welche Befehle es gibt',
-    async ausfuehren({ istChef }) {
-      const zeilen = Object.entries(BEFEHLE)
-        .filter(([, b]) => istChef || !b.nurChef)
-        .map(([name, b]) => `/${name} – ${b.beschreibung}`);
-      return '**Befehle des UC-Watchers**\n' + zeilen.join('\n') +
-        (istChef ? '' : '\n\n_Weitere Befehle sind dem Firmeninhaber vorbehalten._');
+    async ausfuehren({ istChef, darf }) {
+      const erlaubt = Object.entries(BEFEHLE).filter(([name, b]) => !b.nurChef || darf(name));
+      const gesperrt = Object.keys(BEFEHLE).length - erlaubt.length;
+      return '**Befehle des UC-Watchers**\n' +
+        erlaubt.map(([name, b]) => `/${name} – ${b.beschreibung}`).join('\n') +
+        (gesperrt && !istChef
+          ? `\n\n_${gesperrt} weitere sind dem Firmeninhaber vorbehalten._`
+          : '');
     },
   },
 };
