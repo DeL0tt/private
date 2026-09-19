@@ -62,8 +62,9 @@ const CFG = {
   NACHKAUF_FENSTER_MIN: +(process.env.UC_NACHKAUF_FENSTER_MIN || 90),
 
   // Bleibt ein Vorfall offen, wird nach so vielen Minuten nachgefasst.
-  // 0 schaltet es ab; über /melden je Meldung einstellbar.
-  VORFALL_ERINNERUNG_MIN: +(process.env.UC_VORFALL_ERINNERUNG_MIN ?? 5),
+  // Aus, weil längst nicht jeder Vorfall wichtig genug ist, um zweimal zu
+  // stören – wer nachgefasst haben will, schaltet es über /melden ein.
+  VORFALL_ERINNERUNG_MIN: +(process.env.UC_VORFALL_ERINNERUNG_MIN ?? 0),
   // Wie oft höchstens nachgefasst wird, damit ein hängender Vorfall nicht
   // endlos meldet.
   VORFALL_ERINNERUNG_MAX: +(process.env.UC_VORFALL_ERINNERUNG_MAX || 3),

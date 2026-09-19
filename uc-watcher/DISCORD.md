@@ -391,9 +391,10 @@ Abwerbung etwa zehn Minuten. Läuft sie ab, ohne dass jemand reagiert, kostet
 das Geld. Die erste Meldung geht aber unter, wenn gerade niemand hinsieht.
 Deshalb kommt nach der eingestellten Zeit eine Erinnerung mit der
 **verbleibenden Frist** und der Angabe, wie lange er schon offen ist.
-Voreingestellt sind 5 Minuten, höchstens dreimal – danach ist Schluss, damit
-ein hängender Vorfall nicht endlos meldet. Ist der Vorfall weg, erledigt oder
-abgelaufen, wird nichts mehr geschickt.
+**Voreingestellt ist aus**, denn nicht jeder Vorfall ist es wert, zweimal zu
+stören. Eingeschaltet wird höchstens dreimal nachgefasst – danach ist Schluss,
+damit ein hängender Vorfall nicht endlos meldet. Ist der Vorfall weg, erledigt
+oder abgelaufen, wird nichts mehr geschickt.
 
 `ziel: gar nicht (aus)` schaltet eine Meldung **vollständig** ab – auch die
 Benachrichtigung aufs Handy über ntfy, nicht nur die im Discord.
