@@ -106,7 +106,10 @@ cd ~/private/uc-watcher/server
 | `node --env-file=.env watcher.mjs --test` | **Der wichtigste.** Prüft Zugang und zeigt Firma, Lager, Personal, Kasse, Team |
 | `node --env-file=.env watcher.mjs --push-test` | Test-Benachrichtigung aufs Handy |
 | `node --env-file=.env watcher.mjs --zeiten` | Online-Zeiten aller Spieler, aktuelle Sitzung und Tagessumme |
-| `node --env-file=.env watcher.mjs --tagesbericht` | Tagesübersicht seit 04:00 |
+| `node --env-file=.env watcher.mjs --tagesbericht` | Tagesübersicht des laufenden Spieltags |
+| `node --env-file=.env watcher.mjs --tagesbericht 2026-09-19` | Derselbe Bericht für einen vergangenen Spieltag |
+| `node --env-file=.env watcher.mjs --woche` | Letzte 7 Spieltage je Spieler, mit Vergleich zur Woche davor (`--woche 30` für 30 Tage) |
+| `node --env-file=.env watcher.mjs --archiv` | Welche Spieltage im Archiv liegen |
 | `node --env-file=.env watcher.mjs --ausschuettung` | Stand des 12-Stunden-Zählers |
 | `node --env-file=.env watcher.mjs --ausschuettung-start` | Zähler **auf null** setzen – nach einer tatsächlichen Ausschüttung |
 | `node --env-file=.env watcher.mjs --notion` | Wiki-/Notion-Abgleich sofort, mit Titelliste |

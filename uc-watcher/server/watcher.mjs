@@ -9,7 +9,10 @@ import path from 'node:path';
 import { discordAktiv, discordSende, discordStart, discordStop, empfaenger,
          regelText, THEMEN, themaName, ladeRegeln, speichereRegeln,
          ladeZuordnung, speichereZuordnung, zuordnungEigen, pruefeToken,
-         ladeRechte, speichereRechte } from './discord.mjs';
+         ladeRechte, speichereRechte, kanaele } from './discord.mjs';
+import { merkeZeiten, merkeAusschuettung, merkeAuszahlung, speichereArchiv,
+         ladeArchiv, holeTag, holeTage, letzteTage, alleTage, tagMinus,
+         summiere, vergleich, anteile, archivDatei, archivAktiv } from './archiv.mjs';
 
 /* ========================= KONFIGURATION ========================= */
 
@@ -202,8 +205,10 @@ function save(s) {
 }
 
 // Spieltag läuft 04:00 → 04:00
-const spieltag = () => {
-  const d = new Date(Date.now() - CFG.TAGESWECHSEL_STD * 3_600_000);
+// Ohne Argument: der laufende Spieltag. Mit Zeitstempel: der Spieltag, zu dem
+// dieser Zeitpunkt gehört – eine Buchung um 02:00 zählt noch zum Vortag.
+const spieltag = (zeit = Date.now()) => {
+  const d = new Date(zeit - CFG.TAGESWECHSEL_STD * 3_600_000);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 };
 
@@ -214,6 +219,39 @@ function dauer(ms) {
 }
 
 const fmt = n => Number(n).toLocaleString('de-DE', { maximumFractionDigits: 2 }) + '$';
+
+// 'JJJJ-MM-TT' → '20.09.' bzw. '20.09.2026'
+const tagKurz = (tag) => tag ? `${tag.slice(8)}.${tag.slice(5, 7)}.` : '?';
+const tagLang = (tag) => tag ? `${tagKurz(tag)}${tag.slice(0, 4)}` : '?';
+
+/**
+ * Der Bericht eines Spieltags, gelesen aus dem Archiv.
+ *
+ * Die Zahlen kommen aus archiv.mjs, nicht aus dem Laufzeitzustand – deshalb
+ * funktioniert das auch für gestern oder für vorletzte Woche, und deshalb
+ * sehen der nächtliche Push und der Discord-Befehl garantiert dasselbe.
+ */
+function tagesText(tag) {
+  const e = holeTag(tag);
+  if (!e) return `Für den Spieltag ${tagLang(tag)} liegen keine Zahlen vor.`;
+
+  const zeilen = Object.entries(e.spieler)
+    .map(([name, p]) => ({ name, ms: p.ms || 0, rolle: p.rolle || '' }))
+    .sort((a, b) => b.ms - a.ms)
+    .map(x => x.ms >= MIN ? `• ${x.name} — ${dauer(x.ms)}` : `• ${x.name} — nicht online`);
+  const gesamt = Object.values(e.spieler).reduce((a, p) => a + (p.ms || 0), 0);
+
+  let t = `Spieltag ${tagLang(tag)} (04:00 bis 04:00)\n\n` +
+    (zeilen.length ? zeilen.join('\n') : 'Niemand war online.') +
+    `\n\nSumme aller Spieler: ${dauer(gesamt)}` +
+    `\nFirma gelaufen: ${dauer(e.firmaMs)}`;
+
+  if (e.ausschuettungen.length) {
+    const betrag = e.ausschuettungen.reduce((a, x) => a + (x.betrag || 0), 0);
+    t += `\nAusschüttungen: ${e.ausschuettungen.length} über ${fmt(betrag)}`;
+  }
+  return t;
+}
 
 // Deutsche Zahl mit Komma. Für Prozente und Speichergrößen, wo fmt() mit
 // seinem Dollarzeichen nicht passt.
@@ -556,25 +594,20 @@ async function tagesabschluss(state) {
 
   const vorbei = state.tag;
   state.tag = tag;
-  if (!CFG.TAGESBERICHT) return;
-
-  const zeilen = Object.entries(state.spieler)
-    .map(([name, p]) => ({ name, ms: p.gesamtMs || 0, rolle: p.rolle || '' }))
-    .sort((a, b) => b.ms - a.ms)
-    .map(e => e.ms >= MIN ? `• ${e.name} — ${dauer(e.ms)}` : `• ${e.name} — nicht online`);
-
-  const gesamt = Object.values(state.spieler).reduce((a, p) => a + (p.gesamtMs || 0), 0);
-  const [j, m, t] = vorbei.split('-');
 
   // Den Topf anstoßen, damit der Schlussstand des vergangenen Tages vorliegt,
   // falls seit Mitternacht keine Buchung mehr kam.
   auszahlungTopf(state);
 
-  await push(`tagesbericht_${vorbei}`, `📊 Onlinezeiten ${t}.${m}.`,
-    `Spieltag ${t}.${m}.${j} (04:00 bis 04:00)\n\n` +
-    (zeilen.length ? zeilen.join('\n') : 'Niemand war online.') +
-    `\n\nSumme aller Spieler: ${dauer(gesamt)}` +
-    `\nFirma gelaufen: ${dauer(state.firmaTagMs || 0)}` +
+  // Den abgeschlossenen Tag endgültig festhalten, bevor updateSpieler die
+  // Tageszähler zurücksetzt. Danach steht er nur noch im Archiv.
+  merkeZeiten(vorbei, state.spieler, state.firmaTagMs);
+  speichereArchiv();
+
+  if (!CFG.TAGESBERICHT) return;
+
+  await push(`tagesbericht_${vorbei}`, `📊 Onlinezeiten ${tagKurz(vorbei)}`,
+    tagesText(vorbei) +
     `\nTeam-Onlinezeit bis zur Ausschüttung: ${dauer(state.teamOnlineMs)} ` +
     `von ${CFG.AUSSCHUETTUNG_STD} Std.` +
     freibetragText(state),
@@ -722,6 +755,10 @@ function auszahlungTopf(state) {
     state.auszahlungen = [];
   }
   const genutzt = state.auszahlungSumme || 0;
+  // Der Eintrag gehört zum Spieltag, der Topf zum Kalendertag – beide
+  // mitgeben, sonst überschreibt der um Mitternacht frisch genullte Topf
+  // zwischen 00:00 und 04:00 den Schlussstand des laufenden Spieltags.
+  merkeAuszahlung(spieltag(), heute, genutzt, CFG.AUSZAHLUNG_LIMIT);
   return {
     tag: heute,
     genutzt,
@@ -902,14 +939,17 @@ async function pruefeBetrieb(state) {
     return;
   }
 
+  // Es ist wieder etwas da: die Sperre für „leer" lösen. Das gilt auch, wenn
+  // nur wenig nachgefüllt wurde – sonst bliebe das erneute Leerlaufen still,
+  // solange die Sperre der ersten Meldung noch läuft.
+  state.lastPush.betrieb_leer = 0;
+
   if (stand.bestand <= CFG.BETRIEB_SCHWELLE) {
     await push('betrieb_knapp', `⚠️ ${stand.name} wird knapp`,
       `Noch ${stand.bestand} von ${stand.max}.\nNachfüllen, bevor nichts mehr da ist.`,
       state, 'default');
   } else {
-    // Wieder aufgefüllt: die Sperre lösen, damit die nächste Warnung kommt.
     state.lastPush.betrieb_knapp = 0;
-    state.lastPush.betrieb_leer = 0;
   }
 }
 
@@ -1399,12 +1439,19 @@ function neueBuchungen(state, ledger) {
 
 async function werteBuchungenAus(state, buchungen) {
   for (const b of buchungen) {
+    // Vor der Verarbeitung vormerken, nicht danach: bricht die Meldung ab,
+    // wird diese Buchung beim nächsten Durchlauf sonst erneut gelesen – und
+    // eine Gehaltszahlung zählte zweimal gegen den Freibetrag. Lieber eine
+    // Meldung verlieren als eine Zahl verfälschen.
+    state.letzterLedgerStamp = Math.max(state.letzterLedgerStamp || 0, b.stamp);
+
     const kat = sauber(b.category).toLowerCase();
     const detail = sauber(b.detail);
 
     // Ausschüttung: Zähler exakt zurücksetzen
     if (kat.includes('ausschütt') || kat.includes('ausschuett')) {
       state.letzteAusschuettung = b.stamp;
+      merkeAusschuettung(spieltag(b.stamp), b.stamp, b.amount);
       state.teamOnlineMs = 0;
       state.gemeldeteStunde = 0;
       state.faelligGemeldet = false;
@@ -1462,7 +1509,6 @@ async function werteBuchungenAus(state, buchungen) {
     }
   }
 
-  if (buchungen.length) state.letzterLedgerStamp = buchungen[buchungen.length - 1].stamp;
 }
 
 /* ========================= PRÜFLAUF ========================= */
@@ -1516,6 +1562,11 @@ async function durchlauf() {
   const jemandOnline = members.some(m => m.online);
   const laeuft = jemandOnline && !f.paused;
   updateTeamzeit(state, laeuft);
+
+  // Den laufenden Spieltag ins Archiv schreiben. Der Zustand vergisst die
+  // Zeiten um 04:00 – das Archiv behält sie, und alle Auswertungen lesen
+  // von dort, nicht aus dem Zustand.
+  merkeZeiten(state.tag, state.spieler, state.firmaTagMs);
 
   // Kassenbuch früh holen: Der Lagercheck braucht es, um Großaufträge von
   // einem Einbruch zu unterscheiden.
@@ -1743,6 +1794,7 @@ async function durchlauf() {
 
   sichereZugang(state);
   save(state);
+  speichereArchiv();              // schreibt nur, wenn sich ein Tag geändert hat
   log('geprüft', { lager: state.lager, personal: state.personal, kasse: state.kasse,
                    gewinn: state.gewinn, laeuft, teamOnline: dauer(state.teamOnlineMs),
                    online: members.filter(m => m.online).map(m => m.name) });
@@ -1783,7 +1835,8 @@ const UEBERTRAGBAR = {
     umfang: 'Kassenstand, Gewinn und die letzten Buchungen – und damit auch ' +
             'die Beträge in /firma und /ausschuettung.' },
   tagesbericht: { kurz: 'Onlinezeiten des ganzen Teams',
-    umfang: 'die Onlinezeiten aller Angestellten – und damit auch die volle ' +
+    umfang: 'die Onlinezeiten aller Angestellten – auch vergangener Tage und ' +
+            'als Wochenübersicht mit /woche – und damit auch die volle ' +
             'Liste in /zeiten statt nur der eigenen Zeit.' },
   watcher: { kurz: 'läuft der Watcher, Technik',
     umfang: 'den technischen Zustand: Laufzeit, Token-Ablauf, Erreichbarkeit.' },
@@ -1973,6 +2026,12 @@ const BEFEHLE = {
     async ausfuehren() {
       const st = load();
       const topf = auszahlungTopf(st);
+      // Ohne Limit gäbe es nichts auszuschöpfen – dann keine Prozentrechnung,
+      // sonst stünde dort NaN.
+      if (!topf.limit) {
+        return `**Heute raus: ${fmt(topf.genutzt)}**\n\n` +
+          '_Es ist kein Tagesbudget eingestellt (`UC_AUSZAHLUNG_LIMIT`)._';
+      }
       const anteil = Math.round(topf.genutzt / topf.limit * 100);
       let t = `**Noch frei: ${fmt(topf.frei)}**\n` + balken(anteil) + '\n' +
         `${fmt(topf.genutzt)} von ${fmt(topf.limit)} sind heute raus (${anteil} %).`;
@@ -2007,19 +2066,135 @@ const BEFEHLE = {
   },
 
   tagesbericht: {
-    beschreibung: 'Onlinezeiten des Spieltags als Übersicht',
+    beschreibung: 'Onlinezeiten eines Spieltags als Übersicht',
     nurChef: !CFG.ZAHLEN_OFFEN,
     verbergen: !CFG.ZAHLEN_OFFEN && CFG.BEFEHLE_VERBERGEN,
     oeffentlich: CFG.ZAHLEN_OFFEN,
-    async ausfuehren() {
+    optionen: [
+      { name: 'tag', description: 'Welcher Spieltag? Leer = heute',
+        type: 3, required: false, autocomplete: true },
+    ],
+
+    // Vorgeschlagen wird, was auch wirklich im Archiv liegt – so kann man
+    // keinen Tag auswählen, für den es nichts zu zeigen gibt.
+    vorschlaege(feld, eingabe) {
+      if (feld !== 'tag') return [];
+      const e = String(eingabe || '').toLowerCase();
+      const heute = spieltag();
+      const namen = [
+        { name: `heute (${tagKurz(heute)})`, value: heute },
+        { name: `gestern (${tagKurz(tagMinus(heute, 1))})`, value: tagMinus(heute, 1) },
+        ...alleTage().reverse().slice(0, 23)
+          .map(t => ({ name: tagLang(t), value: t })),
+      ];
+      // Doppelte entfernen: heute und gestern stehen auch im Archiv.
+      const gesehen = new Set();
+      return namen.filter(x => !gesehen.has(x.value) && gesehen.add(x.value))
+        .filter(x => !e || x.name.toLowerCase().includes(e) || x.value.includes(e))
+        .slice(0, 25);
+    },
+
+    async ausfuehren({ optionen }) {
+      const heute = spieltag();
+      const tag = String(optionen.tag || heute).trim() || heute;
+
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(tag)) {
+        return `❌ \`${tag}\` ist kein Spieltag. Erwartet wird JJJJ-MM-TT, ` +
+               'oder du nimmst einen Vorschlag aus der Liste.';
+      }
+
+      // Der heutige Tag läuft noch: erst den aktuellen Stand nachtragen,
+      // damit die Antwort nicht eine Minute hinterherhinkt.
+      if (tag === heute) {
+        const st = load();
+        merkeZeiten(st.tag, st.spieler, st.firmaTagMs);
+      }
+
+      const e = holeTag(tag);
+      if (!e) {
+        const da = alleTage();
+        return `_Für den Spieltag ${tagLang(tag)} liegen keine Zahlen vor._` +
+          (da.length ? `\nVorhanden: ${tagLang(da[0])} bis ${tagLang(da[da.length - 1])}.`
+                     : '\nDas Archiv ist noch leer.');
+      }
+
+      const online = tag === heute ? load().spieler || {} : {};
+      const zeilen = Object.entries(e.spieler)
+        .sort((a, b) => (b[1].ms || 0) - (a[1].ms || 0))
+        .map(([name, p]) => `${online[name]?.online ? '🟢' : '⚪'} ${name.padEnd(18)} ` +
+          `${dauer(p.ms || 0).padStart(14)}  ${p.rolle || ''}`);
+      const gesamt = Object.values(e.spieler).reduce((n, p) => n + (p.ms || 0), 0);
+
+      let t = `**Spieltag ${tagLang(tag)}** (04:00 bis 04:00)` +
+        (tag === heute ? ' _– läuft noch_' : '') + '\n' + tabelle(zeilen) +
+        `\nSumme: ${dauer(gesamt)} · Firma gelaufen: ${dauer(e.firmaMs)}`;
+      if (e.ausschuettungen.length) {
+        const betrag = e.ausschuettungen.reduce((a, x) => a + (x.betrag || 0), 0);
+        t += `\nAusschüttungen: ${e.ausschuettungen.length} über ${fmt(betrag)}`;
+      }
+      return t;
+    },
+  },
+
+  woche: {
+    beschreibung: 'Onlinezeiten der letzten Tage, mit Vergleich zur Zeit davor',
+    nurChef: !CFG.ZAHLEN_OFFEN,
+    recht: 'tagesbericht',      // dieselben Zahlen, nur anders zusammengefasst
+    verbergen: !CFG.ZAHLEN_OFFEN && CFG.BEFEHLE_VERBERGEN,
+    oeffentlich: CFG.ZAHLEN_OFFEN,
+    optionen: [
+      { name: 'tage', description: 'Wie viele Spieltage? Standard 7',
+        type: 4, required: false, min_value: 2, max_value: 90 },
+    ],
+
+    async ausfuehren({ optionen }) {
+      const n = Math.min(90, Math.max(2, optionen.tage || 7));
+
+      // Den laufenden Tag mitnehmen, sonst fehlt heute in der Woche.
       const st = load();
-      const zeilen = Object.entries(st.spieler || {})
-        .sort((a, b) => (b[1].gesamtMs || 0) - (a[1].gesamtMs || 0))
-        .map(([name, p]) => `${p.online ? '🟢' : '⚪'} ${name.padEnd(18)} ` +
-          `${dauer(p.gesamtMs || 0).padStart(14)}  ${p.rolle || ''}`);
-      const gesamt = Object.values(st.spieler || {}).reduce((n, p) => n + (p.gesamtMs || 0), 0);
-      return `**Spieltag ${st.tag || '?'}** (04:00 bis 04:00)\n` + tabelle(zeilen) +
-        `\nSumme: ${dauer(gesamt)} · Firma gelaufen: ${dauer(st.firmaTagMs || 0)}`;
+      merkeZeiten(st.tag, st.spieler, st.firmaTagMs);
+
+      const v = vergleich(n);
+      if (!v.jetzt.tage) return '_Das Archiv ist noch leer – die Zahlen ' +
+        'sammeln sich ab jetzt an._';
+
+      // Ohne ältere Tage gibt es nichts zu vergleichen – dann wäre jeder
+      // Pfeil nur ein „neu", und das liest sich wie ein Anstieg.
+      const pfeil = (d) => !v.davor.tage ? ''
+        : Math.abs(d) < 5 * MIN ? '  ·' : d > 0 ? ' ▲' : ' ▼';
+      const zeilen = v.spieler.map(p =>
+        `${p.name.padEnd(18)} ${dauer(p.ms).padStart(14)} ` +
+        `${String(p.tage).padStart(2)} Tg ${dauer(p.schnitt).padStart(13)}/Tg` +
+        pfeil(p.diff));
+
+      let t = `**Letzte ${v.jetzt.tage} Spieltage** ` +
+        `(${tagKurz(v.jetzt.von)} bis ${tagKurz(v.jetzt.bis)})\n` + tabelle(zeilen) +
+        `\nSumme: ${dauer(v.jetzt.gesamtMs)} · ` +
+        `Firma gelaufen: ${dauer(v.jetzt.firmaMs)}`;
+
+      if (v.davor.tage) {
+        const rel = v.davor.gesamtMs
+          ? ` (${v.gesamtMs >= 0 ? '+' : ''}${Math.round(v.gesamtMs / v.davor.gesamtMs * 100)} %)`
+          : '';
+        t += `\n\n**Gegenüber den ${v.davor.tage} Tagen davor** ` +
+          `(${tagKurz(v.davor.von)} bis ${tagKurz(v.davor.bis)}): ` +
+          `${v.gesamtMs >= 0 ? '+' : '−'}${dauer(Math.abs(v.gesamtMs))}${rel}`;
+      } else {
+        t += '\n\n_Für einen Vergleich fehlen noch ältere Tage._';
+      }
+
+      if (v.jetzt.ausschuettungen) {
+        t += `\n\n**Ausschüttungen:** ${v.jetzt.ausschuettungen} über ` +
+          `${fmt(v.jetzt.betrag)}`;
+      }
+      // Die Anteile stehen bewusst dabei: danach ließe sich verteilen, wenn
+      // der Inhaber das will. Die Rechnung macht der Bot nicht von selbst.
+      const a = anteile(letzteTage(n));
+      if (a.length > 1 && v.jetzt.gesamtMs) {
+        t += '\n**Anteil an der Gesamtzeit:** ' +
+          a.slice(0, 8).map(p => `${p.name} ${zahl(p.prozent)} %`).join(' · ');
+      }
+      return t;
     },
   },
 
@@ -2404,9 +2579,20 @@ const BEFEHLE = {
         for (const k of Object.keys(regeln).filter(x => x.startsWith('event_') && x !== 'event_')) {
           zeilen.push(`✏️ **Vorfall: ${k.slice('event_'.length)}**\n   ${regelText(regeln[k])}`);
         }
-        return '**Wer sieht welche Meldung?**\n' + zeilen.join('\n') +
-          '\n\n✏️ = von dir geändert · · = Voreinstellung' +
-          '\n\nÄndern: `/melden thema:… ziel:… ping:…`';
+        let t = '**Wer sieht welche Meldung?**\n' + zeilen.join('\n') +
+          '\n\n✏️ = von dir geändert · · = Voreinstellung';
+        // Ein eigener Vorfall-Kanal ist der häufigste Stolperstein: der Kanal
+        // ist im Discord da, aber im Watcher nicht eingetragen – dann landen
+        // Vorfälle im allgemeinen Team-Kanal, ohne dass jemand einen Fehler
+        // sieht.
+        if (!kanaele().vorfall) {
+          t += '\n\n⚠️ Es ist **kein eigener Vorfall-Kanal** eingetragen. ' +
+               'Vorfälle gehen deshalb dorthin, wo die Regel oben hinzeigt. ' +
+               'Zum Ändern `UC_DISCORD_VORFALL_KANAL` in der `.env` setzen ' +
+               'und den Dienst neu starten – oder hier ' +
+               '`/melden thema:Vorfall im Unternehmen ziel:ein bestimmter Kanal kanal:#…`.';
+        }
+        return t + '\n\nÄndern: `/melden thema:… ziel:… ping:…`';
       }
 
       // Mit einer Vorfallsart gilt die Regel nur für diese – sie schlägt die
@@ -2539,7 +2725,8 @@ const BEFEHLE = {
   hilfe: {
     beschreibung: 'Welche Befehle es gibt',
     async ausfuehren({ istChef, darf }) {
-      const erlaubt = Object.entries(BEFEHLE).filter(([name, b]) => !b.nurChef || darf(name));
+      const erlaubt = Object.entries(BEFEHLE)
+        .filter(([name, b]) => !b.nurChef || darf(b.recht || name));
       const gesperrt = Object.keys(BEFEHLE).length - erlaubt.length;
       return '**Befehle des UC-Watchers**\n' +
         erlaubt.map(([name, b]) => `/${name} – ${b.beschreibung}`).join('\n') +
@@ -2569,13 +2756,49 @@ if (args.includes('--zeiten')) {
 
 if (args.includes('--tagesbericht')) {
   const s = load();
-  const zeilen = Object.entries(s.spieler)
-    .map(([name, p]) => ({ Name: name, Rolle: p.rolle || '',
-                           Heute: dauer(p.gesamtMs || 0),
-                           Status: p.online ? 'online' : 'offline' }))
-    .sort((a, b) => (b.Heute > a.Heute ? 1 : -1));
-  console.log('Spieltag seit 04:00 –', s.tag || 'unbekannt');
-  console.table(zeilen);
+  merkeZeiten(s.tag, s.spieler, s.firmaTagMs);       // den laufenden Tag nachtragen
+  const i = args.indexOf('--tagesbericht');
+  const tag = (args[i + 1] && !args[i + 1].startsWith('--')) ? args[i + 1] : spieltag();
+  console.log(tagesText(tag));
+  process.exit(0);
+}
+
+if (args.includes('--woche')) {
+  const s = load();
+  merkeZeiten(s.tag, s.spieler, s.firmaTagMs);
+  const i = args.indexOf('--woche');
+  const n = +args[i + 1] > 1 ? +args[i + 1] : 7;
+  const v = vergleich(n);
+  if (!v.jetzt.tage) { console.log('Das Archiv ist noch leer.'); process.exit(0); }
+  console.log(`Letzte ${v.jetzt.tage} Spieltage (${v.jetzt.von} bis ${v.jetzt.bis})`);
+  console.table(Object.fromEntries(v.spieler.map(p => [p.name, {
+    Rolle: p.rolle, Gesamt: dauer(p.ms), Tage: p.tage,
+    'Schnitt/Tag': dauer(p.schnitt),
+    ...(v.davor.tage
+      ? { Veraenderung: (p.diff >= 0 ? '+' : '-') + dauer(Math.abs(p.diff)) }
+      : {}),
+  }])));
+  console.log('Summe:', dauer(v.jetzt.gesamtMs),
+              '· Firma gelaufen:', dauer(v.jetzt.firmaMs),
+              v.davor.tage ? `· gegenüber davor: ${v.gesamtMs >= 0 ? '+' : '-'}${dauer(Math.abs(v.gesamtMs))}` : '');
+  process.exit(0);
+}
+
+if (args.includes('--archiv')) {
+  const s = load();
+  merkeZeiten(s.tag, s.spieler, s.firmaTagMs);
+  const tage = holeTage();
+  console.log('Archiv:', archivDatei(), archivAktiv() ? '' : '(abgeschaltet)');
+  console.log('Der laufende Spieltag ist eingerechnet, aber nicht geschrieben – ' +
+              'das macht nur der Dienst selbst.\n');
+  if (!tage.length) { console.log('Noch keine Spieltage erfasst.'); process.exit(0); }
+  console.table(Object.fromEntries(tage.map(t => [t.tag, {
+    Spieler: Object.keys(t.spieler).length,
+    Summe: dauer(Object.values(t.spieler).reduce((a, p) => a + (p.ms || 0), 0)),
+    'Firma gelaufen': dauer(t.firmaMs),
+    Ausschuettungen: t.ausschuettungen.length,
+    Freibetrag: t.auszahlung?.summe ? fmt(t.auszahlung.summe) : '-',
+  }])));
   process.exit(0);
 }
 

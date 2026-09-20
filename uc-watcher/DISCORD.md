@@ -318,7 +318,8 @@ Standardmäßig nur für dich – einzeln weitergebbar (siehe unten):
 | Befehl | Zeigt |
 |---|---|
 | `/kasse` | Kassenstand, Gewinn, letzte fünf Buchungen |
-| `/tagesbericht` | Onlinezeiten des ganzen Teams |
+| `/tagesbericht` | Onlinezeiten des ganzen Teams – mit `tag:` auch für vergangene Spieltage |
+| `/woche` | Letzte 7 Spieltage je Spieler, mit Vergleich zur Woche davor |
 | `/watcher` | Läuft er, Token-Ablauf, Erreichbarkeit |
 | `/melden` | Einstellen, wer welche Meldung sieht und ob gepingt wird |
 | `/zuordnen` | Discord-Konto einem UnicaCity-Namen zuordnen |
@@ -370,9 +371,10 @@ Die vorbehaltenen Befehle kannst du einzeln weitergeben – an eine **Rolle**
 Der Bot sagt dir beim Vergeben, was damit wirklich sichtbar wird. Bei `/kasse`
 etwa: Kassenstand, Gewinn, die letzten Buchungen – **und die Beträge in
 `/firma` und `/ausschuettung`**, die sonst ausgeblendet sind. Bei
-`/tagesbericht` entsprechend die volle Namensliste in `/zeiten` statt nur der
-eigenen Zeit. Sonst würde man ein Recht vergeben, dessen Umfang man nicht
-kennt.
+`/tagesbericht` sind es die Onlinezeiten aller Angestellten – dazu `/woche`,
+das dieselben Zahlen nur anders zusammenfasst, und die volle Namensliste in
+`/zeiten` statt nur der eigenen Zeit. Sonst würde man ein Recht vergeben,
+dessen Umfang man nicht kennt.
 
 `/rechte` selbst ist **nicht übertragbar**. Wer Rechte vergeben darf, könnte
 sich sonst selbst alles geben – das bleibt bei dir, auch wenn jemand in der

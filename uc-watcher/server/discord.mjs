@@ -48,6 +48,12 @@ const info = (...a) => console.log(new Date().toISOString(), 'discord:', ...a);
 
 export const discordAktiv = () => !!CFG.TOKEN;
 
+/** Welche Kanäle eingerichtet sind – für Hinweise in /melden und /watcher. */
+export const kanaele = () => ({
+  team: CFG.TEAM_KANAL, chef: CFG.CHEF_KANAL,
+  vorfall: CFG.VORFALL_KANAL, befehl: CFG.BEFEHL_KANAL,
+});
+
 // Die Anwendungs-ID steckt im Bot-Token: der erste Teil vor dem Punkt ist die
 // ID in base64. Damit muss man sie nicht zusätzlich in die .env schreiben.
 function appId() {
@@ -246,11 +252,30 @@ export const themaName = (schluessel) =>
  *
  * regeln: { '<themenanfang>': { ziel, kanal, ping } } – aus dem Zustand.
  */
+/**
+ * Gilt die Regel für den Schlüssel `k` auch für die Meldung `t`?
+ *
+ * Gesucht wird über den Anfang, weil viele Themen eine laufende Nummer
+ * anhängen ('vorfall_1758…'). Dabei fangen sich kurze Themen aber längere
+ * mit ein: 'lagerverlust_' beginnt mit 'lager', 'ausschuettung_std_' mit
+ * 'ausschuettung_'. Ohne diese Prüfung hätte eine Regel für den niedrigen
+ * Lagerbestand („ans Team") auch den Diebstahlverdacht samt Namensliste ins
+ * Team geschickt – eine Meldung, die ausdrücklich nur den Inhaber angeht.
+ *
+ * Deshalb: k gilt nicht, wenn die Meldung zu einem eigenen, genaueren Thema
+ * gehört, das selbst mit k beginnt. Vorfallsarten wie 'event_ABWERBUNG' sind
+ * kein solches Thema – dort ist genau das Durchgreifen von 'event_' gewollt.
+ */
+function regelPasst(k, t) {
+  if (!t.startsWith(k)) return false;
+  return !THEMEN.some(([m]) => m !== k && m.startsWith(k) && t.startsWith(m));
+}
+
 export function empfaenger(thema, regeln = {}) {
   const t = String(thema || '');
 
   const treffer = Object.keys(regeln || {})
-    .filter(k => t.startsWith(k))
+    .filter(k => regelPasst(k, t))
     .sort((a, b) => b.length - a.length)[0];
   if (treffer) return { ...regeln[treffer] };
 
@@ -263,8 +288,13 @@ export function empfaenger(thema, regeln = {}) {
 
 /** Beschreibt eine Regel in einem Satz, für die Anzeige in Discord. */
 export function regelText(regel) {
+  // Die Kanäle mit Namen nennen, nicht nur „ins Team". Sonst liest man
+  // „nur ins Team" und denkt an den Kanal, den man dafür angelegt hat –
+  // während die Meldung tatsächlich im allgemeinen Kanal landet.
+  const team = CFG.TEAM_KANAL ? `ins Team (<#${CFG.TEAM_KANAL}>)` : 'ins Team (Kanal fehlt!)';
+  const dich = CFG.CHEF_KANAL ? `an dich (<#${CFG.CHEF_KANAL}>)` : 'an dich (als DM)';
   const wohin = {
-    chef: 'nur an dich', team: 'nur ins Team', beide: 'an dich und ins Team',
+    chef: `nur ${dich}`, team: `nur ${team}`, beide: `${dich} und ${team}`,
     kanal: regel.kanal
       ? `in <#${regel.kanal}>${regel.auchChef ? ' und an dich' : ''}`
       : 'in einen Kanal (fehlt!)',
@@ -356,9 +386,18 @@ async function chefKanal() {
   if (CFG.CHEF_KANAL) return CFG.CHEF_KANAL;
   if (!CFG.CHEF_ID) return '';
   if (dmKanal) return dmKanal;
-  const k = await rest('/users/@me/channels', 'POST', { recipient_id: CFG.CHEF_ID });
-  dmKanal = k.id;
-  return dmKanal;
+  // Darf nicht werfen: ein Fehler hier würde sonst bis in den Durchlauf des
+  // Watchers durchschlagen und dessen restliche Prüfungen samt Speichern
+  // abbrechen. Ohne Kanal wird die Meldung still übersprungen – inKanal()
+  // behandelt den leeren Wert bereits.
+  try {
+    const k = await rest('/users/@me/channels', 'POST', { recipient_id: CFG.CHEF_ID });
+    dmKanal = k.id;
+    return dmKanal;
+  } catch (e) {
+    console.error('  Discord: DM-Kanal zum Inhaber nicht erreichbar:', e.message);
+    return '';
+  }
 }
 
 /* ========================= AUSGABE ========================= */
@@ -424,8 +463,19 @@ async function inKanal(kanal, titel, text, prio, fuss, ping, pingNutzer) {
  *       'team'  – nur in den Team-Kanal
  *       'beide' – an beide, das Team bekommt teamText/teamTitel, falls gesetzt
  */
-export async function discordSende({ ziel, kanal, auchChef, ping, pingNutzer, titel, text,
-                                     prio = 'high', teamTitel, teamText }) {
+export async function discordSende(auftrag) {
+  // Nichts aus dieser Funktion darf nach oben durchschlagen: sie wird mitten
+  // im Durchlauf des Watchers aufgerufen, und ein geworfener Fehler würde
+  // dort alle folgenden Prüfungen und das Speichern des Zustands verhindern.
+  try {
+    await sendeIntern(auftrag);
+  } catch (e) {
+    console.error('  Discord-Zustellung fehlgeschlagen:', e.message);
+  }
+}
+
+async function sendeIntern({ ziel, kanal, auchChef, ping, pingNutzer, titel, text,
+                            prio = 'high', teamTitel, teamText }) {
   if (!discordAktiv() || ziel === 'aus') return;
 
   if (ziel === 'chef' || ziel === 'beide' || (ziel === 'kanal' && auchChef)) {
@@ -564,7 +614,9 @@ export async function fuehreAus(interaktion, befehle) {
     }
   }
 
-  if (b.nurChef && !darf(name)) {
+  // b.recht lässt einen Befehl am Recht eines anderen hängen (etwa /woche am
+  // Recht für /tagesbericht – dieselben Zahlen, nur anders zusammengefasst).
+  if (b.nurChef && !darf(b.recht || name)) {
     await antworte(interaktion,
       b.nichtUebertragbar
         ? '🔒 Diesen Befehl kann nur der Firmeninhaber benutzen.'
