@@ -537,6 +537,12 @@ export async function fuehreAus(interaktion, befehle) {
     ? istChef
     : darfNutzen(welcher, { istChef, nutzerId: nutzer.id, rollen });
 
+  // Eine benannte Entscheidung statt derselben Bedingung in jedem Befehl:
+  // Beträge sind entweder für alle offen, oder nur für den, der /kasse darf –
+  // und dann nie in einer öffentlichen Antwort, sonst stünden sie für alle da.
+  const zeigtBetraege = () =>
+    process.env.UC_ZAHLEN_OFFEN !== '0' || (darf('kasse') && !oeffentlich);
+
   await aufschieben(interaktion, heimlich);
 
   // Bremse: pro Person und Befehl. Der Inhaber ist ausgenommen, damit eine
@@ -570,7 +576,8 @@ export async function fuehreAus(interaktion, befehle) {
   try {
     const optionen = {};
     for (const o of interaktion.data?.options || []) optionen[o.name] = o.value;
-    const ergebnis = await b.ausfuehren({ istChef, nutzer, rollen, optionen, darf, oeffentlich });
+    const ergebnis = await b.ausfuehren({ istChef, nutzer, rollen, optionen, darf,
+                                          oeffentlich, zeigtBetraege });
     await antworte(interaktion, ergebnis, heimlich);
     log('Befehl', name, 'von', nutzer.username || nutzer.id);
   } catch (e) {

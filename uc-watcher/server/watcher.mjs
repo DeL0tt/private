@@ -162,6 +162,7 @@ const leer = () => ({
   vorfallArten: {},       // gesehene Arten, für die Auswahl in /melden
   lagerVerlauf: [],       // { t, lager } für den gemessenen Absatz
   lastPush: {},
+  apiWegSeit: 0,          // seit wann UnicaCity nicht erreichbar ist
 });
 
 function load() {
@@ -169,6 +170,24 @@ function load() {
   catch { return leer(); }
 }
 let zuletztGespeichert = '';
+/**
+ * Alte Sperreinträge wegräumen.
+ *
+ * Viele Themen tragen eine laufende Nummer oder einen Zeitstempel
+ * ('vorfall_1726…', 'event_ABWERBUNG_a3f9'), damit ein zweiter Vorfall nicht
+ * als Wiederholung des ersten gilt. Jeder davon hinterlässt einen Eintrag in
+ * lastPush, der nie wieder gebraucht wird – ohne Aufräumen wächst die
+ * Zustandsdatei mit jedem Vorfall.
+ */
+const SPERRE_BEHALTEN_MS = 2 * 24 * 3_600_000;   // zwei Tage decken jede Wiederholung ab
+
+function raeumeSperren(state) {
+  const grenze = Date.now() - SPERRE_BEHALTEN_MS;
+  for (const [thema, zeit] of Object.entries(state.lastPush || {})) {
+    if (zeit < grenze) delete state.lastPush[thema];
+  }
+}
+
 function save(s) {
   // Ein Ausfall läuft jede Minute durch diese Funktion, ohne dass sich etwas
   // ändert. Dann muss auch nichts auf die Platte.
@@ -194,6 +213,35 @@ function dauer(ms) {
 }
 
 const fmt = n => Number(n).toLocaleString('de-DE', { maximumFractionDigits: 2 }) + '$';
+
+// Deutsche Zahl mit Komma. Für Prozente und Speichergrößen, wo fmt() mit
+// seinem Dollarzeichen nicht passt.
+const zahl = (n, k = 1) => Number(n).toFixed(k).replace('.', ',');
+
+/**
+ * Ein Balken sagt auf dem Handy mehr als eine Zahl. Kappt selbst auf 0–100 %,
+ * damit die Aufrufer das nicht jedes Mal bedenken müssen.
+ */
+/**
+ * Zeigt die Form einer API-Antwort statt ihres Inhalts – für die Sonden, die
+ * prüfen, ob ein Feld noch heißt wie erwartet.
+ */
+function umriss(o, tiefe = 0, maxTiefe = 2, breit = 14, schmal = 10) {
+  if (Array.isArray(o)) {
+    return o.length ? `[${o.length}× ${umriss(o[0], tiefe + 1, maxTiefe, breit, schmal)}]` : '[]';
+  }
+  if (o && typeof o === 'object') {
+    const k = Object.keys(o);
+    return tiefe > maxTiefe ? `{${k.slice(0, schmal).join(', ')}}` :
+      '{' + k.slice(0, breit).map(n => `${n}: ${umriss(o[n], tiefe + 1, maxTiefe, breit, schmal)}`).join(', ') + '}';
+  }
+  return typeof o;
+}
+
+const balken = (anteil, breite = 20) => {
+  const striche = Math.round(Math.min(100, Math.max(0, anteil)) / (100 / breite));
+  return '`' + '█'.repeat(striche) + '░'.repeat(breite - striche) + '`';
+};
 
 // Texte aus dem Spiel enthalten Minecraft-Farbcodes: "§7" und Hex-Farben der
 // Form "§x§F§F§E§1§A§8". Die müssen raus, bevor irgendetwas gelesen oder
@@ -317,12 +365,12 @@ const holeFirma  = () => api('/api/panel/company');
 
 // Mögliche Adressen der Betriebsübersicht. Welche es ist, zeigt
 // --betrieb-probe; die erste, die antwortet, wird gemerkt.
-// Aus dem Programmcode des Dashboards gelesen (--api-suche): mehr Panel-
-// Adressen gibt es nicht. Eine eigene für Betriebe existiert nicht, die Daten
-// stecken also in einer dieser Antworten.
-const BETRIEB_PFADE = [
-  '/api/panel/me', '/api/panel/company', '/api/panel/history', '/api/panel/referral',
-];
+// Die Betriebe stehen in /api/panel/me – belegt durch die Suche im
+// Programmcode des Dashboards, dort gibt es keine eigene Adresse dafür.
+// Die weiteren Panel-Adressen bleiben als Rückfallebene, falls sich das
+// ändert; /api/panel/company steht bewusst nicht dabei, die wird im selben
+// Durchlauf ohnehin schon geholt.
+const BETRIEB_PFADE = ['/api/panel/me', '/api/panel/history'];
 let betriebPfad = process.env.UC_BETRIEB_PFAD || '';
 
 async function holeBetriebe() {
@@ -584,6 +632,7 @@ async function push(thema, titel, text, state, prio = 'high', extra = {}) {
   if (now - (state.lastPush[thema] || 0) < ruhe) return log('Cooldown:', thema);
   state.lastPush[thema] = now;
 
+  raeumeSperren(state);
   info('PUSH:', titel);
   log(text);
   await discordSende({ ...regel, titel, text, prio, ...kurz,
@@ -797,7 +846,6 @@ function rechenlast() {
     // Anteil der gesamten Maschine
     anteilMaschine: laufzeitS ? (verbrauchtS / laufzeitS / kerne) * 100 : 0,
     rssMB: speicher.rss / 1024 / 1024,
-    heapMB: speicher.heapUsed / 1024 / 1024,
     ramGesamtMB: os.totalmem() / 1024 / 1024,
     ramFreiMB: os.freemem() / 1024 / 1024,
     last: [l1, l5, l15],
@@ -953,9 +1001,15 @@ const EREIGNIS_EGAL = ['type', 'interactive', 'id', 'eventid', 'key'];
  * derselben Art voneinander, damit der zweite nicht als Wiederholung des
  * ersten gilt.
  */
+// Eine Vorfallsart als Schlüssel schreiben. An mehreren Stellen gebraucht –
+// getrennte Fassungen wären irgendwann auseinandergelaufen, und dann hätte
+// eine Regel für ABWERBUNG die Meldung nicht mehr getroffen.
+const artSchluessel = (roh) =>
+  String(roh ?? '').toUpperCase().replace(/[^A-Z0-9]+/g, '_')
+    .replace(/^_|_$/g, '').slice(0, 30);
+
 function vorfallArt(ev) {
-  const roh = sauber(ev?.type ?? ev?.name ?? ev?.title ?? '') || 'UNBEKANNT';
-  return roh.toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 30);
+  return artSchluessel(sauber(ev?.type ?? ev?.name ?? ev?.title ?? '')) || 'UNBEKANNT';
 }
 
 function vorfallSchluessel(ev) {
@@ -967,6 +1021,18 @@ function vorfallSchluessel(ev) {
   let summe = 0;
   for (let i = 0; i < roh.length; i++) summe = (summe * 31 + roh.charCodeAt(i)) >>> 0;
   return `event_${vorfallArt(ev)}_${summe.toString(36)}`;
+}
+
+/**
+ * Der Hinweis auf die Expresslieferung hängt an mehreren Meldungen. Die
+ * Restzeit bis zur nächsten steht nur in der ausführlichen Fassung – im
+ * geteilten Kanal hilft sie niemandem.
+ */
+function expressText(ex, mitFrist = true) {
+  if (!ex?.maxSlots) return '';
+  return `\n\nExpresslieferung: ${ex.freeSlots ?? '?'} von ${ex.maxSlots} Plätzen frei` +
+    `, Aufschlag ${Math.round((ex.surcharge || 0) * 100)} %` +
+    (mitFrist && ex.cooldownLeftMs ? `, wieder möglich in ${dauer(ex.cooldownLeftMs)}` : '');
 }
 
 function ereignisText(ev) {
@@ -1598,20 +1664,11 @@ async function durchlauf() {
       } };
 
     await push(vorfallSchluessel(f.event), '🚨 Vorfall im Unternehmen',
-      ereignisText(f.event) +
-      (ex.maxSlots
-        ? `\n\nExpresslieferung: ${ex.freeSlots ?? '?'} von ${ex.maxSlots} Plätzen frei` +
-          `, Aufschlag ${Math.round((ex.surcharge || 0) * 100)} %` +
-          (ex.cooldownLeftMs ? `, wieder möglich in ${dauer(ex.cooldownLeftMs)}` : '')
-        : '') +
+      ereignisText(f.event) + expressText(ex) +
       (bericht.length ? `\n\nOnline zum Zeitpunkt:\n${bericht.join('\n')}` : ''),
       state, 'urgent', {
         // Wer online war, ist eine Frage für den Inhaber, nicht fürs Team.
-        teamText: ereignisText(f.event) +
-          (ex.maxSlots
-            ? `\n\nExpresslieferung: ${ex.freeSlots ?? '?'} von ${ex.maxSlots} Plätzen frei` +
-              `, Aufschlag ${Math.round((ex.surcharge || 0) * 100)} %`
-            : ''),
+        teamText: ereignisText(f.event) + expressText(ex, false),
       });
 
     await erinnereAnVorfall(state, f.event);
@@ -1636,20 +1693,11 @@ async function durchlauf() {
         .slice(0, 6);
       await push('preissprung', '📦 Lieferengpass – Einkauf teurer',
         `Einkaufspreise im Schnitt +${aenderung.toFixed(0)} %\n\n` +
-        teuerste.join('\n') +
-        (ex.maxSlots
-          ? `\n\nExpresslieferung: ${ex.freeSlots ?? '?'} von ${ex.maxSlots} Plätzen frei` +
-            `, Aufschlag ${Math.round((ex.surcharge || 0) * 100)} %` +
-            (ex.cooldownLeftMs ? `, wieder möglich in ${dauer(ex.cooldownLeftMs)}` : '')
-          : '') +
+        teuerste.join('\n') + expressText(ex) +
         (bericht.length ? `\n\nOnline zum Zeitpunkt:\n${bericht.join('\n')}` : ''),
         state, 'high', {
           teamText: `Einkaufspreise im Schnitt +${aenderung.toFixed(0)} %\n\n` +
-            teuerste.join('\n') +
-            (ex.maxSlots
-              ? `\n\nExpresslieferung: ${ex.freeSlots ?? '?'} von ${ex.maxSlots} Plätzen frei` +
-                `, Aufschlag ${Math.round((ex.surcharge || 0) * 100)} %`
-              : ''),
+            teuerste.join('\n') + expressText(ex, false),
         });
     }
     state.preise = preiseJetzt;
@@ -1698,38 +1746,57 @@ const tabelle = (zeilen) => zeilen.length ? '```\n' + zeilen.join('\n') + '\n```
 
 // Die Firma wird für mehrere Befehle gebraucht. Ein kurzer Puffer verhindert,
 // dass fünf Leute hintereinander fünf API-Abfragen auslösen.
-let firmaPuffer = { zeit: 0, daten: null };
-async function firmaFrisch() {
-  if (firmaPuffer.daten && Date.now() - firmaPuffer.zeit < 20_000) return firmaPuffer.daten;
-  const daten = await holeFirma();
-  firmaPuffer = { zeit: Date.now(), daten: daten.company };
-  return firmaPuffer.daten;
-}
+/**
+ * Kurzer Puffer für Abrufe, die mehrere Befehle auslösen können. Ohne ihn
+ * löst jeder Tastendruck im Discord eine eigene Abfrage bei UnicaCity aus.
+ */
+const PUFFER_MS = 20_000;
+const puffer = new Map();
 
-// Wie bei der Firma: kurz puffern, damit mehrere Leute hintereinander nicht
-// mehrere Abfragen auslösen.
-let ledgerPuffer = { zeit: 0, id: null, daten: null };
-async function ledgerFrisch(id) {
-  if (ledgerPuffer.daten && ledgerPuffer.id === id &&
-      Date.now() - ledgerPuffer.zeit < 20_000) return ledgerPuffer.daten;
-  const daten = await holeLedger(id);
-  ledgerPuffer = { zeit: Date.now(), id, daten };
+async function frisch(schluessel, hole) {
+  const alt = puffer.get(schluessel);
+  if (alt && Date.now() - alt.zeit < PUFFER_MS) return alt.daten;
+  const daten = await hole();
+  puffer.set(schluessel, { zeit: Date.now(), daten });
   return daten;
 }
 
-let betriebPuffer = { zeit: 0, daten: null };
-async function betriebeFrisch() {
-  if (betriebPuffer.daten && Date.now() - betriebPuffer.zeit < 20_000) return betriebPuffer.daten;
-  const daten = await holeBetriebe();
-  betriebPuffer = { zeit: Date.now(), daten };
-  return daten;
-}
+const firmaFrisch    = () => frisch('firma', async () => (await holeFirma()).company);
+const ledgerFrisch   = (id) => frisch(`ledger:${id}`, () => holeLedger(id));
+const betriebeFrisch = () => frisch('betriebe', holeBetriebe);
+
+/**
+ * Die Befehle, die sich per /rechte weitergeben lassen – mit dem Satz, der
+ * beim Vergeben erklärt, was damit wirklich sichtbar wird. Eine Liste statt
+ * dreier, die sonst auseinanderlaufen.
+ */
+const UEBERTRAGBAR = {
+  kasse: { kurz: 'Kassenstand, Gewinn, letzte Buchungen',
+    umfang: 'Kassenstand, Gewinn und die letzten Buchungen – und damit auch ' +
+            'die Beträge in /firma und /ausschuettung.' },
+  tagesbericht: { kurz: 'Onlinezeiten des ganzen Teams',
+    umfang: 'die Onlinezeiten aller Angestellten – und damit auch die volle ' +
+            'Liste in /zeiten statt nur der eigenen Zeit.' },
+  watcher: { kurz: 'läuft der Watcher, Technik',
+    umfang: 'den technischen Zustand: Laufzeit, Token-Ablauf, Erreichbarkeit.' },
+  melden: { kurz: 'Meldungen umstellen',
+    umfang: 'das Umstellen aller Meldungen – auch das Abschalten und das ' +
+            'Verschieben in andere Kanäle.' },
+  zuordnen: { kurz: 'Spieler zuordnen',
+    umfang: 'das Zuordnen von Discord-Konten zu Spielernamen.' },
+};
+
+/** Wer darf einen Befehl – als Text für die Anzeige. */
+const werDarf = (r) => [
+  ...(r?.rollen || []).map(id => `<@&${id}>`),
+  ...(r?.nutzer || []).map(id => `<@${id}>`),
+].join(', ');
 
 const BEFEHLE = {
   firma: {
     beschreibung: 'Zustand der Firma: Status, Lager, Personal, wer online ist',
     oeffentlich: true,
-    async ausfuehren({ darf, oeffentlich }) {
+    async ausfuehren({ zeigtBetraege }) {
       const f = await firmaFrisch();
       const online = (f.members || []).filter(m => m.online);
       let t = `**${f.name}** · Level ${f.level} · ${sauber(f.status)}\n` +
@@ -1742,10 +1809,7 @@ const BEFEHLE = {
       // Beträge nur für den Inhaber.
       // Wer /kasse benutzen darf, sieht die Beträge auch hier – sonst wäre
       // die Zurückhaltung an dieser Stelle sinnlos.
-      // Sind die Zahlen offen, dürfen sie überall stehen. Sonst nie im
-      // offenen Kanal – sonst stünden sie für alle da, nur weil der Falsche
-      // getippt hat.
-      if (CFG.ZAHLEN_OFFEN || (darf('kasse') && !oeffentlich)) {
+      if (zeigtBetraege()) {
         t += `\n\nKasse: ${fmt(f.kasse?.balance)} · Gewinn: ${fmt(f.kasse?.profitSincePayout)}`;
       }
       return t;
@@ -1760,10 +1824,7 @@ const BEFEHLE = {
       const st = load();
       const bestand = f.stock?.total ?? 0, kapazitaet = f.stock?.capacity ?? 0;
       const anteil = kapazitaet ? Math.round(bestand / kapazitaet * 100) : 0;
-      // Ein Balken sagt auf dem Handy mehr als eine Zahl.
-      const balken = '█'.repeat(Math.round(anteil / 5)) + '░'.repeat(20 - Math.round(anteil / 5));
-
-      let t = `**Lager:** ${bestand} / ${kapazitaet} (${anteil} %)\n` + '`' + balken + '`';
+      let t = `**Lager:** ${bestand} / ${kapazitaet} (${anteil} %)\n` + balken(anteil);
 
       // Läuft der Nachkauf, füllt sich das Lager selbst – dann sagt eine
       // Reichweite nichts aus und bleibt weg.
@@ -1812,17 +1873,16 @@ const BEFEHLE = {
   ausschuettung: {
     beschreibung: 'Wie weit ist die Team-Onlinezeit bis zur nächsten Ausschüttung',
     oeffentlich: true,
-    async ausfuehren({ darf, oeffentlich }) {
+    async ausfuehren({ zeigtBetraege }) {
       const st = load();
       const ziel = CFG.AUSSCHUETTUNG_STD * 3_600_000;
       const anteil = Math.min(100, Math.round(st.teamOnlineMs / ziel * 100));
-      const balken = '█'.repeat(Math.round(anteil / 5)) + '░'.repeat(20 - Math.round(anteil / 5));
       let t = `**Ausschüttung:** ${dauer(st.teamOnlineMs)} von ${CFG.AUSSCHUETTUNG_STD} Std. (${anteil} %)\n` +
-        '`' + balken + '`\n' +
+        balken(anteil) + '\n' +
         (st.teamOnlineMs >= ziel
           ? '✅ Ziel erreicht – die Ausschüttung kann gemacht werden.'
           : `Noch ${dauer(ziel - st.teamOnlineMs)}.`);
-      const zahlen = CFG.ZAHLEN_OFFEN || (darf('kasse') && !oeffentlich);
+      const zahlen = zeigtBetraege();
       if (zahlen && st.gewinn !== null) t += `\n\nGewinn bisher: ${fmt(st.gewinn)}`;
       if (zahlen && st.letzteAusschuettung) {
         t += `\nLetzte Ausschüttung: ${new Date(st.letzteAusschuettung).toLocaleString('de-DE')}`;
@@ -1888,9 +1948,7 @@ const BEFEHLE = {
                '`--betrieb-probe` zeigt, wie die Antwort aussieht.';
       }
 
-      const striche = Math.round(Math.min(100, st.anteil) / 5);
-      const balken = '█'.repeat(striche) + '░'.repeat(20 - striche);
-      let t = `**${st.name}: ${st.bestand} von ${st.max}**\n` + '`' + balken + '`';
+      let t = `**${st.name}: ${st.bestand} von ${st.max}**\n` + balken(st.anteil);
       if (!CFG.BETRIEB_ID && CFG.BETRIEB_ABZUG) {
         t += `\nGelesen ${st.angezeigt}, abzüglich ${CFG.BETRIEB_ABZUG}.`;
       }
@@ -1908,10 +1966,7 @@ const BEFEHLE = {
       const st = load();
       const topf = auszahlungTopf(st);
       const anteil = Math.round(topf.genutzt / topf.limit * 100);
-      const balken = '█'.repeat(Math.round(anteil / 5)) + '░'.repeat(20 - Math.round(anteil / 5));
-
-      let t = `**Noch frei: ${fmt(topf.frei)}**\n` +
-        '`' + balken + '`\n' +
+      let t = `**Noch frei: ${fmt(topf.frei)}**\n` + balken(anteil) + '\n' +
         `${fmt(topf.genutzt)} von ${fmt(topf.limit)} sind heute raus (${anteil} %).`;
 
       if (!topf.frei) t += '\n\n🔴 Das Tagesbudget ist aufgebraucht.';
@@ -1968,7 +2023,6 @@ const BEFEHLE = {
       const st = load();
       const r = rechenlast();
 
-      const zahl = (n, k = 1) => n.toFixed(k).replace('.', ',');
       const einschaetzung =
         r.anteilMaschine < 1 ? 'praktisch nichts'
         : r.anteilMaschine < 5 ? 'wenig'
@@ -2100,13 +2154,8 @@ const BEFEHLE = {
     nichtUebertragbar: true,     // Rechte vergeben bleibt beim Inhaber
     optionen: [
       { name: 'befehl', description: 'Welcher Befehl?', type: 3, required: false,
-        choices: [
-          { name: '/kasse – Kassenstand, Gewinn, letzte Buchungen', value: 'kasse' },
-          { name: '/tagesbericht – Onlinezeiten des ganzen Teams',  value: 'tagesbericht' },
-          { name: '/watcher – läuft der Watcher, Technik',          value: 'watcher' },
-          { name: '/melden – Meldungen umstellen',                  value: 'melden' },
-          { name: '/zuordnen – Spieler zuordnen',                   value: 'zuordnen' },
-        ] },
+        choices: Object.entries(UEBERTRAGBAR)
+          .map(([n, u]) => ({ name: `/${n} – ${u.kurz}`.slice(0, 100), value: n })) },
       { name: 'rolle', description: 'Recht an eine ganze Rolle geben', type: 8, required: false },
       { name: 'nutzer', description: 'Recht an eine einzelne Person geben', type: 6, required: false },
       { name: 'entfernen', description: 'Das Recht wieder wegnehmen', type: 5, required: false },
@@ -2116,14 +2165,8 @@ const BEFEHLE = {
       const rechte = ladeRechte();
 
       const zeigeAlles = () => {
-        const zeilen = ['kasse', 'tagesbericht', 'watcher', 'melden', 'zuordnen'].map(b => {
-          const r = rechte[b] || {};
-          const wer = [
-            ...(r.rollen || []).map(id => `<@&${id}>`),
-            ...(r.nutzer || []).map(id => `<@${id}>`),
-          ];
-          return `**/${b}** – ${wer.length ? wer.join(', ') : '_nur du_'}`;
-        });
+        const zeilen = Object.keys(UEBERTRAGBAR).map(b =>
+          `**/${b}** – ${werDarf(rechte[b]) || '_nur du_'}`);
         return '**Wer darf welchen Befehl?**\n' + zeilen.join('\n') +
           '\n\nDie übrigen Befehle (/firma, /lager, /ausschuettung, /zeiten, /hilfe) ' +
           'kann ohnehin jeder benutzen.\n' +
@@ -2132,12 +2175,7 @@ const BEFEHLE = {
 
       if (!optionen.befehl) return zeigeAlles();
       if (!optionen.rolle && !optionen.nutzer) {
-        const r = rechte[optionen.befehl] || {};
-        const wer = [
-          ...(r.rollen || []).map(id => `<@&${id}>`),
-          ...(r.nutzer || []).map(id => `<@${id}>`),
-        ];
-        return `**/${optionen.befehl}** darf: ${wer.length ? wer.join(', ') : '_nur du_'}\n\n` +
+        return `**/${optionen.befehl}** darf: ${werDarf(rechte[optionen.befehl]) || '_nur du_'}\n\n` +
           '_Zum Ändern zusätzlich `rolle:` oder `nutzer:` angeben._';
       }
 
@@ -2163,16 +2201,7 @@ const BEFEHLE = {
       let t = `✅ ${anzeige} darf ab jetzt **/${optionen.befehl}** benutzen.`;
       // Sagen, was damit wirklich sichtbar wird – ein Recht zu vergeben, ohne
       // dessen Umfang zu kennen, ist die Art Fehler, die man später bereut.
-      const umfang = {
-        kasse: 'Kassenstand, Gewinn und die letzten Buchungen – und damit auch ' +
-               'die Beträge in /firma und /ausschuettung.',
-        tagesbericht: 'die Onlinezeiten aller Angestellten – und damit auch die ' +
-               'volle Liste in /zeiten statt nur der eigenen Zeit.',
-        watcher: 'den technischen Zustand: Laufzeit, Token-Ablauf, Erreichbarkeit.',
-        melden: 'das Umstellen aller Meldungen – auch das Abschalten und das ' +
-               'Verschieben in andere Kanäle.',
-        zuordnen: 'das Zuordnen von Discord-Konten zu Spielernamen.',
-      }[optionen.befehl];
+      const umfang = UEBERTRAGBAR[optionen.befehl]?.umfang;
       if (umfang) t += `\n\nDamit sieht ${anzeige} ${umfang}`;
       return t + '\n\n_Gilt sofort, auch nach einem Neustart._';
     },
@@ -2192,7 +2221,7 @@ const BEFEHLE = {
     },
 
     async ausfuehren({ optionen }) {
-      const art = String(optionen.art || 'ABWERBUNG').toUpperCase().replace(/[^A-Z0-9]+/g, '_');
+      const art = artSchluessel(optionen.art || 'ABWERBUNG');
 
       // Ein echtes Ereignis nachbauen, damit Schlüssel, Regel und Ping genau
       // so bestimmt werden wie im Ernstfall. Nur der Inhalt sagt, dass es
@@ -2377,9 +2406,7 @@ const BEFEHLE = {
       if (optionen.vorfallart && optionen.thema !== 'event_') {
         return '❌ `vorfallart:` gibt es nur beim Vorfall im Unternehmen.';
       }
-      const art = optionen.vorfallart
-        ? String(optionen.vorfallart).toUpperCase().replace(/[^A-Z0-9]+/g, '_')
-        : '';
+      const art = optionen.vorfallart ? artSchluessel(optionen.vorfallart) : '';
       const thema = art ? `event_${art}` : optionen.thema;
       const name = art ? `Vorfall: ${art}` : themaName(optionen.thema);
 
@@ -2554,195 +2581,10 @@ if (args.includes('--ausschuettung-start')) {
   process.exit(0);
 }
 
-if (args.includes('--api-suche')) {
-  // Die Seite ist eine JavaScript-Anwendung; die API-Adressen stehen als
-  // Zeichenketten in ihrem Programmcode. Statt zu raten, lesen wir sie dort.
-  const seite = args[args.indexOf('--api-suche') + 1] ||
-                'https://unicacity.eu/dashboard/businesses';
-  const kopf = { 'User-Agent': CFG.USER_AGENT, 'Accept': '*/*' };
-
-  console.log('Lade', seite, '…');
-  const html = await (await fetch(seite, { headers: kopf })).text();
-
-  // Script-Dateien einsammeln, auch die vorgeladenen Module.
-  const quellen = new Set();
-  for (const m of html.matchAll(/<script[^>]+src=["']([^"']+)["']/gi)) quellen.add(m[1]);
-  for (const m of html.matchAll(/<link[^>]+rel=["'](?:modulepreload|preload)["'][^>]+href=["']([^"']+\.js)["']/gi)) {
-    quellen.add(m[1]);
-  }
-  for (const m of html.matchAll(/["']([^"']*\/assets\/[^"']+\.js)["']/gi)) quellen.add(m[1]);
-
-  if (!quellen.size) {
-    console.log('Keine JavaScript-Dateien in der Seite gefunden.');
-    process.exit(1);
-  }
-  console.log(`${quellen.size} Skriptdatei(en) gefunden.\n`);
-
-  const pfade = new Map();   // Pfad -> in welcher Datei
-  const warteschlange = [...quellen];
-  const erledigt = new Set();
-  const GRENZE = 200;        // Sicherheitsnetz gegen endloses Nachladen
-
-  // Die Ansicht für die Betriebe wird erst bei Bedarf nachgeladen. Ihre
-  // Adresse steht deshalb nicht in der Hauptdatei, sondern in einem eigenen
-  // Paket, auf das die Hauptdatei nur verweist. Also den Verweisen folgen.
-  while (warteschlange.length && erledigt.size < GRENZE) {
-    const roh = warteschlange.shift();
-    let url;
-    try { url = new URL(roh, seite).href; } catch { continue; }
-    if (erledigt.has(url)) continue;
-    erledigt.add(url);
-
-    let text;
-    try {
-      const res = await fetch(url, { headers: kopf });
-      if (!res.ok) continue;
-      text = await res.text();
-    } catch { continue; }
-
-    const datei = url.split('/').pop();
-    for (const m of text.matchAll(/["'`](\/api\/[^"'`\s]{2,80})["'`]/g)) {
-      if (!pfade.has(m[1])) pfade.set(m[1], datei);
-    }
-    // Weitere Pakete, auf die diese Datei verweist
-    for (const m of text.matchAll(/["'`]((?:\.{0,2}\/)?assets\/[A-Za-z0-9._-]+\.js)["'`]/g)) {
-      const naechste = new URL(m[1].replace(/^\.\//, ''), url).href;
-      if (!erledigt.has(naechste)) warteschlange.push(naechste);
-    }
-  }
-  console.log(`${erledigt.size} Datei(en) durchsucht.\n`);
-
-  if (!pfade.size) {
-    console.log('Keine /api/-Adressen im Programmcode gefunden.');
-    console.log('Vermutlich werden sie aus Teilen zusammengesetzt.');
-    process.exit(1);
-  }
-
-  const alle = [...pfade.keys()].sort();
-  const passend = alle.filter(p => /business|betrieb/i.test(p));
-
-  if (passend.length) {
-    console.log('🎯 Passt zu "Betrieb":');
-    for (const p of passend) console.log(`   ${p}   (aus ${pfade.get(p)})`);
-    console.log('');
-  }
-  console.log(`Alle gefundenen Adressen (${alle.length}):`);
-  for (const p of alle) console.log(`   ${p}`);
-
-  if (passend.length) {
-    console.log('\nDie passendste in die .env eintragen, z. B.:');
-    console.log(`   UC_BETRIEB_PFAD=${passend[0]}`);
-    console.log('Danach: node --env-file=.env watcher.mjs --betrieb-probe');
-  }
-  process.exit(0);
-}
-
-if (args.includes('--events-probe')) {
-  const s0 = load(); ladeZugang(s0);
-  try { await erneuere(); } catch (e) { console.error('Kein Zugang:', e.message); process.exit(1); }
-
-  const sekunden = +(args[args.indexOf('--events-probe') + 1] || 60);
-  console.log(`Höre ${sekunden} s am Ereignisstrom mit …`);
-  console.log('(In der Zeit im Spiel oder im Dashboard etwas anfassen, damit');
-  console.log(' sich etwas tut – etwa die Zoohandlung öffnen.)\n');
-
-  // Der Strom nimmt den Token in der Adresse, weil ein EventSource im Browser
-  // keine Kopfzeilen setzen kann. Wir machen es genauso – aber ein Fehler darf
-  // die Adresse dann nicht ausgeben, sonst stünde der Token im Log.
-  let res;
-  try {
-    res = await fetch(`${CFG.API}/api/auth/events?token=${encodeURIComponent(zugang.token)}`, {
-      headers: {
-        Accept: 'text/event-stream', Cookie: zugang.cookie || '',
-        'User-Agent': CFG.USER_AGENT, 'Origin': 'https://unicacity.eu',
-        'Referer': 'https://unicacity.eu/',
-      },
-    });
-  } catch (e) {
-    console.error('Strom nicht erreichbar:',
-      String(e.message).replace(/token=[^&\s]+/g, 'token=…'));
-    process.exit(1);
-  }
-  if (!res.ok) { console.error('Strom nicht erreichbar:', res.status); process.exit(1); }
-
-  const felder = (o, tiefe = 0) => {
-    if (Array.isArray(o)) return o.length ? `[${o.length}× ${felder(o[0], tiefe + 1)}]` : '[]';
-    if (o && typeof o === 'object') {
-      const k = Object.keys(o);
-      return tiefe > 2 ? `{${k.slice(0, 10).join(', ')}}` :
-        '{' + k.slice(0, 14).map(n => `${n}: ${felder(o[n], tiefe + 1)}`).join(', ') + '}';
-    }
-    return typeof o;
-  };
-
-  const gesehen = new Map();
-  let zooGefunden = null;
-  const ende = setTimeout(() => {
-    console.log('\n--- Zusammenfassung ---');
-    if (!gesehen.size) {
-      console.log('Nichts empfangen. Entweder schickt der Strom nur bei Änderungen');
-      console.log('etwas, oder die Betriebe laufen nicht darüber.');
-    }
-    for (const [art, anzahl] of gesehen) console.log(`${anzahl}× ${art}`);
-    if (zooGefunden) {
-      console.log(`\n✅ "${CFG.BETRIEB}" kommt im Strom vor, im Ereignis "${zooGefunden}".`);
-      console.log('   Schick mir diese Zeile, dann lese ich den Bestand von dort.');
-    }
-    process.exit(0);
-  }, sekunden * 1000);
-  ende.unref?.();
-
-  const leser = res.body.getReader();
-  const roh = new TextDecoder();
-  let puffer = '';
-  while (true) {
-    const { done, value } = await leser.read();
-    if (done) break;
-    puffer += roh.decode(value, { stream: true });
-
-    // Ein Ereignis endet mit einer Leerzeile.
-    let trenner;
-    while ((trenner = puffer.indexOf('\n\n')) !== -1) {
-      const block = puffer.slice(0, trenner);
-      puffer = puffer.slice(trenner + 2);
-
-      let art = 'message', daten = '';
-      for (const zeile of block.split('\n')) {
-        if (zeile.startsWith('event:')) art = zeile.slice(6).trim();
-        else if (zeile.startsWith('data:')) daten += zeile.slice(5).trim();
-      }
-      if (!daten) continue;
-
-      gesehen.set(art, (gesehen.get(art) || 0) + 1);
-      let inhalt; try { inhalt = JSON.parse(daten); } catch { inhalt = daten; }
-      console.log(`\n📨 ${art}`);
-      console.log('   ' + (typeof inhalt === 'string'
-        ? inhalt.slice(0, 300) : felder(inhalt).slice(0, 700)));
-
-      // Steckt die Zoohandlung darin?
-      if (daten.toLowerCase().includes(String(CFG.BETRIEB).toLowerCase())) {
-        zooGefunden ||= art;
-        console.log(`   ⭐ enthält "${CFG.BETRIEB}"`);
-      }
-    }
-  }
-  clearTimeout(ende);
-  process.exit(0);
-}
-
 if (args.includes('--betrieb-probe')) {
   const s0 = load(); ladeZugang(s0);
   try { await erneuere(); } catch (e) { console.error('Kein Zugang:', e.message); process.exit(1); }
 
-  const felder = (o, tiefe = 0) => {
-    if (Array.isArray(o)) return o.length ? `[${o.length}× ${felder(o[0], tiefe + 1)}]` : '[]';
-    if (o && typeof o === 'object') {
-      const k = Object.keys(o);
-      return tiefe > 2 ? `{${k.slice(0, 10).join(', ')}}` :
-        '{' + k.slice(0, 14).map(n => `${n}: ${felder(o[n], tiefe + 1)}`).join(', ') + '}';
-    }
-    return typeof o;
-  };
 
   console.log('Suche die Betriebsübersicht …\n');
 
@@ -2774,7 +2616,7 @@ if (args.includes('--betrieb-probe')) {
       statistik[status] = (statistik[status] || 0) + 1;
       if (status === 200 && koerper) {
         console.log(`✅ ${status} ${pfad}`);
-        console.log('   ' + felder(koerper).slice(0, 900) + '\n');
+        console.log('   ' + umriss(koerper).slice(0, 900) + '\n');
         gefunden ||= { pfad, daten: koerper };
         trefferListe.push([pfad, koerper]);
       } else {
@@ -2908,7 +2750,7 @@ if (args.includes('--betrieb-probe')) {
   } else if (st.bestand === null) {
     console.log(`\n⚠️ "${st.name}" gefunden, aber kein bekanntes Bestandsfeld.`);
     console.log('   Der Eintrag sieht so aus:');
-    console.log('   ' + felder(findeBetrieb(gefunden.daten, CFG.BETRIEB)).slice(0, 600));
+    console.log('   ' + umriss(findeBetrieb(gefunden.daten, CFG.BETRIEB)).slice(0, 600));
     console.log('\n   Schick mir diese Zeile, dann ergänze ich das Feld.');
   } else {
     console.log(`\n✅ ${st.name}: angezeigt ${st.angezeigt}, entnehmbar ${st.bestand} von ${st.max}`);
@@ -2943,7 +2785,6 @@ if (args.includes('--gehalt')) {
 
 if (args.includes('--last')) {
   const r = rechenlast();
-  const zahl = (n, k = 1) => n.toFixed(k).replace('.', ',');
   console.log(`Maschine:      ${r.kerne} ${r.kerne === 1 ? 'Kern' : 'Kerne'}, ` +
               `${zahl(r.ramGesamtMB / 1024, 1)} GB RAM, davon ${zahl(r.ramFreiMB, 0)} MB frei`);
   console.log(`Systemlast:    ${zahl(r.last[0], 2)} / ${zahl(r.last[1], 2)} / ${zahl(r.last[2], 2)}  (1/5/15 Min)`);
@@ -3219,21 +3060,12 @@ if (args.includes('--wiki-probe')) {
     '/api/wiki/article/arena-108', '/api/wiki/articles/arena-108',
   ];
 
-  const felder = (o, tiefe = 0) => {
-    if (Array.isArray(o)) return o.length ? `[${o.length}× ${felder(o[0], tiefe + 1)}]` : '[]';
-    if (o && typeof o === 'object') {
-      const k = Object.keys(o);
-      return tiefe > 1 ? `{${k.slice(0, 8).join(', ')}}` :
-        '{' + k.slice(0, 12).map(n => `${n}: ${felder(o[n], tiefe + 1)}`).join(', ') + '}';
-    }
-    return typeof o;
-  };
 
   for (const pfad of kandidaten) {
     try {
       const d = await api(pfad);
       console.log(`\n✅ ${pfad}`);
-      console.log('   ' + felder(d).slice(0, 600));
+      console.log('   ' + umriss(d, 0, 1, 12, 8).slice(0, 600));
     } catch (e) {
       console.log(`❌ ${pfad} — ${e.message}`);
     }
