@@ -142,7 +142,7 @@ In der Tabelle steht, wohin eine Meldung standardmäßig geht.
 |---|---|---|
 | Lagerbestand niedrig | ✅ | – |
 | Lieferengpass, Einkauf teurer | ✅ | – |
-| Firma pausiert, obwohl jemand online ist | ✅ | – |
+| Firma pausiert, obwohl jemand online ist | – | ✅ |
 | Vorfall im Unternehmen | → `#vorfälle`, ohne Namen | – |
 | Kassenvorfall | → `#vorfälle`, ohne Kassenstand | – |
 | Zwischenstand bis zur Ausschüttung | ✅ ohne Beträge | – |
@@ -155,10 +155,12 @@ In der Tabelle steht, wohin eine Meldung standardmäßig geht.
 | Zugang abgelaufen, Seite nicht erreichbar | – | ✅ |
 | Wiki- und Notion-Abgleich | – | ✅ |
 
-Wo „ohne Namen" oder „ohne Beträge" steht, ist die Fassung im geteilten Kanal
-gekürzt – dieselbe Information, ohne das, was dort niemanden angeht. Die
-ungekürzte bekommst du per ntfy, oder im Discord, wenn du bei der betreffenden
-Meldung „und ich" einstellst.
+**Voreingestellt sehen alle alles:** Kassenstände, Beträge und wer wann da
+war. Die Spalten „ohne Namen" und „ohne Beträge" oben beschreiben deshalb nur,
+was passiert, wenn du mit `UC_ZAHLEN_OFFEN=0` wieder zurückhältst – dann
+bekommen geteilte Kanäle die gekürzte Fassung, und `/kasse` und
+`/tagesbericht` sind wieder dem Inhaber vorbehalten (und per `/rechte`
+einzeln weitergebbar).
 
 Das ist nur die Voreinstellung. **Mit `/melden` stellst du jede Meldung
 einzeln um** – siehe unten. Die Tabelle gilt für alles, was du nicht selbst

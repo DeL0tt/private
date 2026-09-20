@@ -153,7 +153,6 @@ export function darfNutzen(befehl, { istChef, nutzerId, rollen = [] }) {
 const TEAM_THEMEN = [
   'lager',                   // Bestand niedrig – das Team kann nachfüllen
   'preissprung',             // Lieferengpass – betrifft den Einkauf
-  'pausiert_trotz_online',   // Firma steht – jemand muss sie anwerfen
   'ausschuettung_std_',      // Zwischenstand bis zur Ausschüttung
   'ausschuettung_faellig',   // Ziel erreicht
   'event_',                  // Vorfall im Unternehmen
@@ -176,9 +175,11 @@ const VORFALL_THEMEN = ['event_', 'vorfall_'];
 // Firma kostet laufend Geld – beides muss jemanden erreichen, der gerade
 // spielen ist. Gepingt wird nur, wer per /zuordnen bekannt ist; ohne
 // Zuordnung bleibt es still. Über /melden änderbar.
+// 'pausiert_trotz_online' steht hier bewusst nicht: die Meldung geht nur an
+// den Inhaber, und ein Ping in einem Kanal, den die Angepingten nicht sehen
+// können, erreicht niemanden.
 const PING_VOREINSTELLUNG = {
   'event_': 'online',
-  'pausiert_trotz_online': 'online',
   'betrieb_leer': 'online',        // leer heißt: jemand muss jetzt nachfüllen
 };
 

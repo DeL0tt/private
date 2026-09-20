@@ -61,6 +61,13 @@ const CFG = {
   // Wie lange nach dem letzten Einkauf der Nachkauf noch als laufend gilt.
   NACHKAUF_FENSTER_MIN: +(process.env.UC_NACHKAUF_FENSTER_MIN || 90),
 
+  // Dürfen alle Kassenstände, Beträge und Anwesenheitslisten sehen? Ja – im
+  // Betrieb verursacht das keine Probleme, und gekürzte Meldungen wären nur
+  // unvollständige. Mit UC_ZAHLEN_OFFEN=0 wird wieder zurückgehalten: dann
+  // bekommen geteilte Kanäle die gekürzte Fassung, und /kasse sowie
+  // /tagesbericht sind wieder dem Inhaber vorbehalten.
+  ZAHLEN_OFFEN: process.env.UC_ZAHLEN_OFFEN !== '0',
+
   // Bleibt ein Vorfall offen, wird nach so vielen Minuten nachgefasst.
   // Aus, weil längst nicht jeder Vorfall wichtig genug ist, um zweimal zu
   // stören – wer nachgefasst haben will, schaltet es über /melden ein.
@@ -142,7 +149,8 @@ const leer = () => ({
   preise: null,            // letzte Einkaufspreise je Ware
   letzterLagerTick: 0,
   letzterLedgerStamp: 0,  // bis hierhin wurde das Kassenbuch verarbeitet
-  auszahlungSumme: 0, auszahlungTag: null, auszahlungen: [],  // 35k-Topf je Spieltag
+  auszahlungSumme: 0, auszahlungTag: null, auszahlungen: [],  // Freibetrag je Tag
+  auszahlungGestern: null,  // Schlussstand des Vortags für den Tagesbericht
   betriebBestand: null,   // zuletzt gesehener Bestand der Zoohandlung
   letzterEinkauf: 0,      // belegt, dass der Nachkauf läuft
   offenerVorfall: null,   // { schluessel, seit, zuletzt, runde } fürs Nachfassen
@@ -498,12 +506,17 @@ async function tagesabschluss(state) {
   const gesamt = Object.values(state.spieler).reduce((a, p) => a + (p.gesamtMs || 0), 0);
   const [j, m, t] = vorbei.split('-');
 
+  // Den Topf anstoßen, damit der Schlussstand des vergangenen Tages vorliegt,
+  // falls seit Mitternacht keine Buchung mehr kam.
+  auszahlungTopf(state);
+
   await push(`tagesbericht_${vorbei}`, `📊 Onlinezeiten ${t}.${m}.`,
     `Spieltag ${t}.${m}.${j} (04:00 bis 04:00)\n\n` +
     (zeilen.length ? zeilen.join('\n') : 'Niemand war online.') +
     `\n\nSumme aller Spieler: ${dauer(gesamt)}` +
     `\nDavon Firma gelaufen: ${dauer(state.teamOnlineMs)} von ` +
-    `${CFG.AUSSCHUETTUNG_STD} Std. bis zur Ausschüttung`,
+    `${CFG.AUSSCHUETTUNG_STD} Std. bis zur Ausschüttung` +
+    freibetragText(state),
     state, 'low');
 }
 
@@ -551,6 +564,10 @@ function onlineDiscordIds(state) {
 async function push(thema, titel, text, state, prio = 'high', extra = {}) {
   const regel = extra.ziel ? { ziel: extra.ziel } : empfaenger(thema, ladeRegeln());
 
+  // Sind die Zahlen offen, bekommen geteilte Kanäle denselben Wortlaut wie
+  // der Inhaber – eine gekürzte Fassung wäre dann nur eine schlechtere.
+  const kurz = CFG.ZAHLEN_OFFEN ? {} : { teamTitel: extra.teamTitel, teamText: extra.teamText };
+
   // "Gar nicht" heißt gar nicht: auch kein ntfy aufs Handy. Sonst wäre die
   // Einstellung eine Halbwahrheit.
   if (regel.ziel === 'aus') return log('Abgeschaltet:', thema);
@@ -564,9 +581,8 @@ async function push(thema, titel, text, state, prio = 'high', extra = {}) {
 
   info('PUSH:', titel);
   log(text);
-  await discordSende({ ...regel, titel, text, prio,
-                       pingNutzer: regel.ping === 'online' ? onlineDiscordIds(state) : undefined,
-                       teamTitel: extra.teamTitel, teamText: extra.teamText });
+  await discordSende({ ...regel, titel, text, prio, ...kurz,
+                       pingNutzer: regel.ping === 'online' ? onlineDiscordIds(state) : undefined });
 
   if (!CFG.NTFY_TOPIC) return log('  (kein UC_NTFY_TOPIC gesetzt – nur Discord)');
 
@@ -602,9 +618,43 @@ function budgetTag(d = new Date()) {
  * Stand des Topfes für Auszahlungen und Gehälter. Setzt um Mitternacht
  * zurück (einstellbar über UC_AUSZAHLUNG_RESET_STD).
  */
+/**
+ * Wie der Freibetrag am vergangenen Tag genutzt wurde.
+ *
+ * Zwei Fragen beantwortet das: Wurde vergessen auszuzahlen – dann bleibt
+ * etwas übrig, und das Geld ist für den Tag verfallen. Oder wurde darüber
+ * hinaus gezahlt – dann steht da, wie viel.
+ */
+function freibetragText(state) {
+  const g = state.auszahlungGestern;
+  if (!g) return '';
+
+  const limit = g.limit || CFG.AUSZAHLUNG_LIMIT;
+  const rest = limit - g.genutzt;
+  let t = `\n\n**Freibetrag:** ${fmt(g.genutzt)} von ${fmt(limit)} genutzt`;
+
+  if (rest > 0) {
+    t += `\n💸 ${fmt(rest)} nicht ausgezahlt – für diesen Tag verfallen.`;
+  } else if (rest < 0) {
+    t += `\n⚠️ ${fmt(-rest)} über dem Freibetrag.`;
+  } else {
+    t += '\n✅ Genau ausgeschöpft.';
+  }
+  return t;
+}
+
 function auszahlungTopf(state) {
   const heute = budgetTag();
   if (state.auszahlungTag !== heute) {
+    // Der Topf setzt um Mitternacht zurück, der Tagesbericht kommt aber erst
+    // um 04:00. Ohne diesen Merker wäre die Zahl bis dahin verloren.
+    if (state.auszahlungTag) {
+      state.auszahlungGestern = {
+        tag: state.auszahlungTag,
+        genutzt: state.auszahlungSumme || 0,
+        limit: CFG.AUSZAHLUNG_LIMIT,
+      };
+    }
     state.auszahlungTag = heute;
     state.auszahlungSumme = 0;
     state.auszahlungen = [];
@@ -1642,9 +1692,10 @@ const BEFEHLE = {
       // Beträge nur für den Inhaber.
       // Wer /kasse benutzen darf, sieht die Beträge auch hier – sonst wäre
       // die Zurückhaltung an dieser Stelle sinnlos.
-      // Im offenen Kanal nie Beträge, auch wenn der Fragende sie dürfte –
-      // sonst stünden sie für alle da, nur weil der Falsche getippt hat.
-      if (darf('kasse') && !oeffentlich) {
+      // Sind die Zahlen offen, dürfen sie überall stehen. Sonst nie im
+      // offenen Kanal – sonst stünden sie für alle da, nur weil der Falsche
+      // getippt hat.
+      if (CFG.ZAHLEN_OFFEN || (darf('kasse') && !oeffentlich)) {
         t += `\n\nKasse: ${fmt(f.kasse?.balance)} · Gewinn: ${fmt(f.kasse?.profitSincePayout)}`;
       }
       return t;
@@ -1721,7 +1772,7 @@ const BEFEHLE = {
         (st.teamOnlineMs >= ziel
           ? '✅ Ziel erreicht – die Ausschüttung kann gemacht werden.'
           : `Noch ${dauer(ziel - st.teamOnlineMs)}.`);
-      const zahlen = darf('kasse') && !oeffentlich;
+      const zahlen = CFG.ZAHLEN_OFFEN || (darf('kasse') && !oeffentlich);
       if (zahlen && st.gewinn !== null) t += `\n\nGewinn bisher: ${fmt(st.gewinn)}`;
       if (zahlen && st.letzteAusschuettung) {
         t += `\nLetzte Ausschüttung: ${new Date(st.letzteAusschuettung).toLocaleString('de-DE')}`;
@@ -1747,9 +1798,9 @@ const BEFEHLE = {
       t += `\n\nTeam-Onlinezeit bis zur Ausschüttung: ${dauer(st.teamOnlineMs)} ` +
            `von ${CFG.AUSSCHUETTUNG_STD} Std.`;
 
-      // Die eigene Zeit nur in einer privaten Antwort – im offenen Kanal
-      // würde sie jeden angehen.
-      if (!oeffentlich) {
+      // Die eigene Zeit nur in einer privaten Antwort – es sei denn, die
+      // Zahlen sind ohnehin offen.
+      if (!oeffentlich || CFG.ZAHLEN_OFFEN) {
         const meinName = ladeZuordnung()[nutzer.id];
         if (meinName) {
           const p = st.spieler[Object.keys(st.spieler || {})
@@ -1823,8 +1874,9 @@ const BEFEHLE = {
   },
 
   kasse: {
-    beschreibung: 'Kassenstand, Gewinn und die letzten Buchungen (nur Inhaber)',
-    nurChef: true,
+    beschreibung: 'Kassenstand, Gewinn und die letzten Buchungen',
+    nurChef: !CFG.ZAHLEN_OFFEN,
+    oeffentlich: CFG.ZAHLEN_OFFEN,
     async ausfuehren() {
       const f = await firmaFrisch();
       let t = `**Kasse:** ${fmt(f.kasse?.balance)}\n` +
@@ -1841,8 +1893,9 @@ const BEFEHLE = {
   },
 
   tagesbericht: {
-    beschreibung: 'Onlinezeiten des Spieltags als Übersicht (nur Inhaber)',
-    nurChef: true,
+    beschreibung: 'Onlinezeiten des Spieltags als Übersicht',
+    nurChef: !CFG.ZAHLEN_OFFEN,
+    oeffentlich: CFG.ZAHLEN_OFFEN,
     async ausfuehren() {
       const st = load();
       const zeilen = Object.entries(st.spieler || {})
