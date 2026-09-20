@@ -452,10 +452,15 @@ export async function registriereBefehle(befehle) {
       'falscher Wert in UC_DISCORD_TOKEN – etwa die Client-ID oder das Client-Secret ' +
       'statt des Bot-Tokens. Prüfen mit: node --env-file=.env watcher.mjs --discord-pruefe');
   }
+  // default_member_permissions: '0' blendet einen Befehl für alle aus, die
+  // im Server keine Verwaltungsrechte haben – er taucht bei ihnen gar nicht
+  // erst in der Liste auf. Ohne das sieht jeder alle Befehle samt
+  // Beschreibung, auch wenn der Bot sie ihm verweigert.
   const liste = Object.entries(befehle).map(([name, b]) => ({
     name,
     description: b.beschreibung.slice(0, 100),
     type: 1,
+    ...(b.verbergen ? { default_member_permissions: '0' } : {}),
     ...(b.optionen ? { options: b.optionen } : {}),
   }));
   const pfad = CFG.GUILD

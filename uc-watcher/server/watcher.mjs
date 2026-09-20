@@ -62,6 +62,10 @@ const CFG = {
   // Wie lange nach dem letzten Einkauf der Nachkauf noch als laufend gilt.
   NACHKAUF_FENSTER_MIN: +(process.env.UC_NACHKAUF_FENSTER_MIN || 90),
 
+  // Verwaltungsbefehle vor den übrigen verbergen. Discord zeigt sonst jedem
+  // alle Befehle samt Beschreibung, auch wenn der Bot sie verweigert.
+  BEFEHLE_VERBERGEN: process.env.UC_DISCORD_BEFEHLE_VERBERGEN !== '0',
+
   // Dürfen alle Kassenstände, Beträge und Anwesenheitslisten sehen? Ja – im
   // Betrieb verursacht das keine Probleme, und gekürzte Meldungen wären nur
   // unvollständige. Mit UC_ZAHLEN_OFFEN=0 wird wieder zurückgehalten: dann
@@ -1913,6 +1917,7 @@ const BEFEHLE = {
   kasse: {
     beschreibung: 'Kassenstand, Gewinn und die letzten Buchungen',
     nurChef: !CFG.ZAHLEN_OFFEN,
+    verbergen: !CFG.ZAHLEN_OFFEN && CFG.BEFEHLE_VERBERGEN,
     oeffentlich: CFG.ZAHLEN_OFFEN,
     async ausfuehren() {
       const f = await firmaFrisch();
@@ -1932,6 +1937,7 @@ const BEFEHLE = {
   tagesbericht: {
     beschreibung: 'Onlinezeiten des Spieltags als Übersicht',
     nurChef: !CFG.ZAHLEN_OFFEN,
+    verbergen: !CFG.ZAHLEN_OFFEN && CFG.BEFEHLE_VERBERGEN,
     oeffentlich: CFG.ZAHLEN_OFFEN,
     async ausfuehren() {
       const st = load();
@@ -1947,6 +1953,7 @@ const BEFEHLE = {
 
   watcher: {
     beschreibung: 'Läuft der Watcher, und wie viel Rechenleistung belegt er',
+    verbergen: CFG.BEFEHLE_VERBERGEN,
     nurChef: true,
     async ausfuehren() {
       const st = load();
@@ -1981,6 +1988,7 @@ const BEFEHLE = {
 
   zuordnen: {
     beschreibung: 'Ein Discord-Konto einem UnicaCity-Namen zuordnen',
+    verbergen: CFG.BEFEHLE_VERBERGEN,
     nurChef: true,
     optionen: [
       { name: 'nutzer', description: 'Wen im Discord?', type: 6, required: false },
@@ -2078,6 +2086,7 @@ const BEFEHLE = {
 
   rechte: {
     beschreibung: 'Vergeben, wer die vorbehaltenen Befehle benutzen darf',
+    verbergen: CFG.BEFEHLE_VERBERGEN,
     nurChef: true,
     nichtUebertragbar: true,     // Rechte vergeben bleibt beim Inhaber
     optionen: [
@@ -2162,6 +2171,7 @@ const BEFEHLE = {
 
   testvorfall: {
     beschreibung: 'Einen Vorfall vortäuschen, um Kanal und Ping zu prüfen',
+    verbergen: CFG.BEFEHLE_VERBERGEN,
     nurChef: true,
     optionen: [
       { name: 'art', description: 'Welche Vorfallsart soll geprüft werden?',
@@ -2244,6 +2254,7 @@ const BEFEHLE = {
 
   melden: {
     beschreibung: 'Einstellen, wer welche Meldung sieht und ob gepingt wird',
+    verbergen: CFG.BEFEHLE_VERBERGEN,
     nurChef: true,
     optionen: [
       { name: 'thema', description: 'Welche Meldung?', type: 3, required: false,

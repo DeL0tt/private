@@ -378,7 +378,26 @@ kennt.
 sich sonst selbst alles geben – das bleibt bei dir, auch wenn jemand in der
 Liste steht.
 
-`/hilfe` zeigt jedem **nur die Befehle, die er auch ausführen kann**. Wer kein
+### Wer sieht welche Befehle überhaupt?
+
+Zwei verschiedene Dinge, die man leicht verwechselt:
+
+**Die Befehlsliste von Discord** – was erscheint, wenn jemand `/` tippt. Die
+füllt Discord selbst, nicht der Bot. Ohne Zutun stünden dort **alle** Befehle
+samt Beschreibung, auch die, die der Bot dann verweigern würde.
+
+Deshalb werden `/melden`, `/zuordnen`, `/rechte`, `/watcher` und
+`/testvorfall` bei der Registrierung als Verwaltungsbefehle gekennzeichnet:
+Wer im Server keine Verwaltungsrechte hat, sieht sie gar nicht erst. Mit
+`UC_DISCORD_BEFEHLE_VERBERGEN=0` lässt sich das abstellen.
+
+> **Wenn du einen dieser Befehle per `/rechte` weitergibst**, musst du ihn
+> zusätzlich in Discord sichtbar machen: Servereinstellungen → Integrationen →
+> der Bot → beim Befehl die Rolle oder Person freigeben. Sonst erlaubt ihn
+> zwar der Bot, aber Discord zeigt ihn der Person nicht an.
+
+**Die Antwort von `/hilfe`** – die kommt vom Bot und zeigt jedem nur die
+Befehle, die er auch ausführen kann. Wer kein
 Recht auf `/kasse` hat, sieht den Befehl dort gar nicht – nur die Anzahl der
 übrigen, ohne deren Namen, damit man weiß, dass man nachfragen kann. Der
 Inhaber sieht alles ohne Hinweis.
