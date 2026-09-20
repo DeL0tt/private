@@ -147,6 +147,7 @@ const leer = () => ({
   spieler: {},            // name -> { online, seit, sitzungMs, gesamtMs, zuletzt, tag }
   tag: null,                 // laufender Spieltag (wechselt um 04:00)
   teamOnlineMs: 0, gemeldeteStunde: 0, faelligGemeldet: false,
+  firmaTagMs: 0, firmaTag: null,   // Laufzeit im aktuellen Spieltag (unabhängig von der Ausschüttung)
   letzteAusschuettung: null, letzterTick: null,
   wiki: null,              // { id: {titel, kategorie, updatedAt, laenge} }
   wikiGeprueft: 0,
@@ -531,13 +532,19 @@ function updateSpieler(state, members) {
 
 // Wandzeit, in der die Firma tatsächlich lief: mindestens ein Spieler online
 // UND nicht pausiert. Mehrere gleichzeitig zählen trotzdem nur einmal.
+// teamOnlineMs zählt bis zur Ausschüttung und wird dort auf 0 gesetzt;
+// firmaTagMs zählt den Spieltag und wird um 04:00 zurückgesetzt. Getrennt,
+// weil der Tagesbericht sonst nach einer Ausschüttung weniger Laufzeit
+// meldet als Stunden vorher.
 function updateTeamzeit(state, laeuft) {
   const now = Date.now(), letzter = state.letzterTick;
   state.letzterTick = now;
+  const tag = spieltag();
+  if (state.firmaTag !== tag) { state.firmaTagMs = 0; state.firmaTag = tag; }
   if (!letzter) return;
   const luecke = now - letzter;
   if (luecke > CFG.LUECKE_MIN * MIN) return;      // Watcher lief nicht – nicht zählen
-  if (laeuft) state.teamOnlineMs += luecke;
+  if (laeuft) { state.teamOnlineMs += luecke; state.firmaTagMs += luecke; }
 }
 
 // Um 04:00 wechselt der Spieltag. Davor: Bericht über den abgelaufenen Tag,
@@ -567,8 +574,9 @@ async function tagesabschluss(state) {
     `Spieltag ${t}.${m}.${j} (04:00 bis 04:00)\n\n` +
     (zeilen.length ? zeilen.join('\n') : 'Niemand war online.') +
     `\n\nSumme aller Spieler: ${dauer(gesamt)}` +
-    `\nDavon Firma gelaufen: ${dauer(state.teamOnlineMs)} von ` +
-    `${CFG.AUSSCHUETTUNG_STD} Std. bis zur Ausschüttung` +
+    `\nFirma gelaufen: ${dauer(state.firmaTagMs || 0)}` +
+    `\nTeam-Onlinezeit bis zur Ausschüttung: ${dauer(state.teamOnlineMs)} ` +
+    `von ${CFG.AUSSCHUETTUNG_STD} Std.` +
     freibetragText(state),
     state, 'low');
 }
@@ -2011,7 +2019,7 @@ const BEFEHLE = {
           `${dauer(p.gesamtMs || 0).padStart(14)}  ${p.rolle || ''}`);
       const gesamt = Object.values(st.spieler || {}).reduce((n, p) => n + (p.gesamtMs || 0), 0);
       return `**Spieltag ${st.tag || '?'}** (04:00 bis 04:00)\n` + tabelle(zeilen) +
-        `\nSumme: ${dauer(gesamt)} · davon Firma gelaufen: ${dauer(st.teamOnlineMs)}`;
+        `\nSumme: ${dauer(gesamt)} · Firma gelaufen: ${dauer(st.firmaTagMs || 0)}`;
     },
   },
 
@@ -2576,6 +2584,7 @@ if (args.includes('--ausschuettung')) { console.table(ausschuettungStand(load())
 if (args.includes('--ausschuettung-start')) {
   const s = load();
   s.teamOnlineMs = 0; s.gemeldeteStunde = 0; s.faelligGemeldet = false;
+  s.firmaTagMs = 0; s.firmaTag = null;
   s.letzteAusschuettung = Date.now();
   save(s); console.log('Zähler neu gestartet.'); console.table(ausschuettungStand(s));
   process.exit(0);
@@ -2882,6 +2891,7 @@ if (args.includes('--einstellungen')) {
   console.log('\n═══ Laufender Zustand ═══');
   console.log('  Spieltag:             ' + (st.tag || '—'));
   console.log('  Team-Onlinezeit:      ' + dauer(st.teamOnlineMs || 0));
+  console.log('  Firma gelaufen heute: ' + dauer(st.firmaTagMs || 0));
   console.log('  Lager zuletzt:        ' + (st.lager ?? '—'));
   console.log('  Zoohandlung zuletzt:  ' + (st.betriebBestand ?? '— (noch nicht gelesen)'));
   console.log('  Gesehene Vorfallsarten: ' +
