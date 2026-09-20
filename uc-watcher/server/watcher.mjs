@@ -1708,6 +1708,15 @@ async function firmaFrisch() {
 
 // Wie bei der Firma: kurz puffern, damit mehrere Leute hintereinander nicht
 // mehrere Abfragen auslösen.
+let ledgerPuffer = { zeit: 0, id: null, daten: null };
+async function ledgerFrisch(id) {
+  if (ledgerPuffer.daten && ledgerPuffer.id === id &&
+      Date.now() - ledgerPuffer.zeit < 20_000) return ledgerPuffer.daten;
+  const daten = await holeLedger(id);
+  ledgerPuffer = { zeit: Date.now(), id, daten };
+  return daten;
+}
+
 let betriebPuffer = { zeit: 0, daten: null };
 async function betriebeFrisch() {
   if (betriebPuffer.daten && Date.now() - betriebPuffer.zeit < 20_000) return betriebPuffer.daten;
@@ -1924,7 +1933,7 @@ const BEFEHLE = {
       let t = `**Kasse:** ${fmt(f.kasse?.balance)}\n` +
         `Gewinn seit der letzten Ausschüttung: ${fmt(f.kasse?.profitSincePayout)}`;
       try {
-        const l = await holeLedger(f.id);
+        const l = await ledgerFrisch(f.id);
         const letzte = (l.entries || []).slice(-5).reverse()
           .map(b => `${new Date(b.stamp).toLocaleTimeString('de-DE').slice(0, 5)} ` +
                     `${sauber(b.category).padEnd(20).slice(0, 20)} ${fmt(b.amount).padStart(14)}`);
@@ -2638,14 +2647,22 @@ if (args.includes('--events-probe')) {
   console.log(' sich etwas tut – etwa die Zoohandlung öffnen.)\n');
 
   // Der Strom nimmt den Token in der Adresse, weil ein EventSource im Browser
-  // keine Kopfzeilen setzen kann. Wir machen es genauso.
-  const res = await fetch(`${CFG.API}/api/auth/events?token=${encodeURIComponent(zugang.token)}`, {
-    headers: {
-      Accept: 'text/event-stream', Cookie: zugang.cookie || '',
-      'User-Agent': CFG.USER_AGENT, 'Origin': 'https://unicacity.eu',
-      'Referer': 'https://unicacity.eu/',
-    },
-  });
+  // keine Kopfzeilen setzen kann. Wir machen es genauso – aber ein Fehler darf
+  // die Adresse dann nicht ausgeben, sonst stünde der Token im Log.
+  let res;
+  try {
+    res = await fetch(`${CFG.API}/api/auth/events?token=${encodeURIComponent(zugang.token)}`, {
+      headers: {
+        Accept: 'text/event-stream', Cookie: zugang.cookie || '',
+        'User-Agent': CFG.USER_AGENT, 'Origin': 'https://unicacity.eu',
+        'Referer': 'https://unicacity.eu/',
+      },
+    });
+  } catch (e) {
+    console.error('Strom nicht erreichbar:',
+      String(e.message).replace(/token=[^&\s]+/g, 'token=…'));
+    process.exit(1);
+  }
   if (!res.ok) { console.error('Strom nicht erreichbar:', res.status); process.exit(1); }
 
   const felder = (o, tiefe = 0) => {

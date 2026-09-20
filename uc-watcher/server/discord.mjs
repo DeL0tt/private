@@ -24,6 +24,12 @@ const API = process.env.UC_DISCORD_API || 'https://discord.com/api/v10';
 // Hier landen die über /melden und /zuordnen gesetzten Einstellungen.
 const REGELN_DATEI = process.env.UC_DISCORD_REGELN || './uc-watcher-regeln.json';
 
+// Mindestabstand zwischen zwei Befehlen derselben Person. Jeder Befehl löst
+// Abfragen bei UnicaCity mit dem Zugang des Inhabers aus; ohne Bremse könnte
+// eine Handvoll Leute den Zugang in die Begrenzung treiben.
+const BEFEHL_PAUSE_MS = +(process.env.UC_DISCORD_BEFEHL_PAUSE_S || 5) * 1000;
+const letzterBefehl = new Map();
+
 const CFG = {
   TOKEN:      process.env.UC_DISCORD_TOKEN || '',
   APP_ID:     process.env.UC_DISCORD_APP_ID || '',
@@ -90,7 +96,9 @@ function lade() {
 
 function speichere(inhalt) {
   const tmp = REGELN_DATEI + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(inhalt, null, 2));
+  // 0600 wie beim Zustand: die Datei bestimmt, wohin Meldungen gehen und wer
+  // welche Befehle darf – wer sie ändern kann, ändert die Berechtigungen.
+  fs.writeFileSync(tmp, JSON.stringify(inhalt, null, 2), { mode: 0o600 });
   fs.renameSync(tmp, REGELN_DATEI);
   cache = { stand: -1, inhalt: null };      // beim nächsten Lesen neu holen
 }
@@ -472,9 +480,12 @@ export async function registriereBefehle(befehle) {
 
 async function antworte(interaktion, inhalt, nurFuerDenFragenden) {
   const app = appId();
+  // Eine Befehlsantwort darf niemanden anpingen. In ihr stehen Namen aus
+  // UnicaCity und selbst eingetippte Zuordnungen – stünde dort "@everyone",
+  // würde eine harmlose Abfrage den halben Server aus dem Bett holen.
   const daten = typeof inhalt === 'string'
-    ? { content: kappen(inhalt, 1900) }
-    : { embeds: [inhalt] };
+    ? { content: kappen(inhalt, 1900), allowed_mentions: { parse: [] } }
+    : { embeds: [inhalt], allowed_mentions: { parse: [] } };
   if (nurFuerDenFragenden) daten.flags = 64;          // 64 = nur sichtbar für den Aufrufer
   await rest(`/webhooks/${app}/${interaktion.token}/messages/@original`, 'PATCH', daten);
 }
@@ -527,6 +538,25 @@ export async function fuehreAus(interaktion, befehle) {
     : darfNutzen(welcher, { istChef, nutzerId: nutzer.id, rollen });
 
   await aufschieben(interaktion, heimlich);
+
+  // Bremse: pro Person und Befehl. Der Inhaber ist ausgenommen, damit eine
+  // Fehlersuche nicht an der eigenen Bremse scheitert.
+  if (!istChef && BEFEHL_PAUSE_MS > 0) {
+    const schluessel = `${nutzer.id}:${name}`;
+    const zuletzt = letzterBefehl.get(schluessel) || 0;
+    const warten = BEFEHL_PAUSE_MS - (Date.now() - zuletzt);
+    if (warten > 0) {
+      await antworte(interaktion,
+        `⏳ Einen Moment – bitte ${Math.ceil(warten / 1000)} Sekunden warten.`, heimlich);
+      return;
+    }
+    letzterBefehl.set(schluessel, Date.now());
+    // Die Liste darf nicht unbegrenzt wachsen.
+    if (letzterBefehl.size > 500) {
+      const grenze = Date.now() - BEFEHL_PAUSE_MS;
+      for (const [k, t] of letzterBefehl) if (t < grenze) letzterBefehl.delete(k);
+    }
+  }
 
   if (b.nurChef && !darf(name)) {
     await antworte(interaktion,
