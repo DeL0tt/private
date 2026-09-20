@@ -59,7 +59,23 @@ sudo systemctl restart uc-watcher
 
 ---
 
-## 3. Logs lesen
+## 3. Rechenlast
+
+Im Discord zeigt `/watcher` alles auf einen Blick – Kerne, Anteil des Watchers,
+Speicher und Systemlast. Auf dem Server dasselbe mit `--last`, dazu:
+
+| Befehl | Zeigt |
+|---|---|
+| `systemctl status uc-watcher` | Speicher und verbrauchte Rechenzeit des Dienstes |
+| `systemd-cgtop -1 --order=cpu` | alle Dienste nach Last sortiert |
+| `htop` | Momentaufnahme aller Vorgänge (`q` beendet) |
+| `uptime` | Systemlast der letzten 1/5/15 Minuten |
+
+Zur Einordnung: Der Watcher fragt einmal je Minute ab und schläft dazwischen.
+Er sollte weit unter einem Prozent der Maschine belegen; der Rest der Laufzeit
+ist Warten, das keine Rechenleistung kostet.
+
+## 4. Logs lesen
 
 | Befehl | Zweck |
 |---|---|
@@ -77,7 +93,7 @@ Typische Zeilen und was sie bedeuten:
 
 ---
 
-## 4. Befehle von Hand (Diagnose)
+## 5. Befehle von Hand (Diagnose)
 
 Immer zuerst ins Verzeichnis wechseln:
 
@@ -97,6 +113,7 @@ cd ~/private/uc-watcher/server
 | `node --env-file=.env watcher.mjs --wiki-probe` | Wiki-API abklopfen (nur zum Erkunden) |
 | `node --env-file=.env watcher.mjs --discord-test` | Discord-Befehle registrieren und je eine Probemeldung schicken |
 | `node --env-file=.env watcher.mjs --discord-pruefe` | Prüft den Bot-Token, ohne ihn anzuzeigen |
+| `node --env-file=.env watcher.mjs --last` | Kerne, Systemlast, Speicher – und was der Watcher davon belegt |
 | `node --env-file=.env watcher.mjs --einstellungen` | **Alles Eingestellte auf einen Blick** – Kanäle, Regeln, Zuordnung, Rechte |
 | `node --env-file=.env watcher.mjs --betrieb-probe` | Adresse der Betriebsübersicht suchen und Bestand prüfen |
 | `node --env-file=.env watcher.mjs --gehalt` | Tagesbudget für Auszahlungen und Gehälter |
@@ -109,7 +126,7 @@ Diese Befehle laufen **zusätzlich** zum Dienst und stören ihn nicht.
 
 ---
 
-## 5. Einstellungen ändern
+## 6. Einstellungen ändern
 
 ```
 nano ~/private/uc-watcher/server/.env
@@ -143,7 +160,7 @@ Speichern mit `Strg+O`, `Enter`, schließen mit `Strg+X`. Danach **immer**
 
 ---
 
-## 6. Wenn etwas klemmt
+## 7. Wenn etwas klemmt
 
 **„Permission denied (publickey)"** beim Verbinden
 → Der Schlüssel heißt nicht `id_rsa`, also muss er mit `-i` benannt werden:
@@ -178,7 +195,7 @@ in der `.env` (fehlendes Gleichheitszeichen, Zeilenumbruch mitten im Cookie).
 
 ---
 
-## 7. Discord
+## 8. Discord
 
 Vollständige Einrichtung: **DISCORD.md**. Im Alltag reichen diese:
 
@@ -220,7 +237,7 @@ erst im Ernstfall, dass die Zustellung nicht stimmt.
 
 ---
 
-## 8. Notion
+## 9. Notion
 
 - Wiki-Spiegel: 17 Kategorien, 110 Artikel, je eine Unterseite
 - Backup vom Umbau: Seite „Wiki (Kopie vom 17.09.)"

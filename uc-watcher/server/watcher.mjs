@@ -4,6 +4,7 @@
 // Voraussetzung: Node.js >= 18. Keine externen Pakete.
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { discordAktiv, discordSende, discordStart, discordStop, empfaenger,
          regelText, THEMEN, themaName, ladeRegeln, speichereRegeln,
@@ -763,6 +764,42 @@ function absatzText(state, f) {
   if (a && a.proMinute === 0) return 'In der letzten Stunde ging nichts raus.';
   return `noch nicht gemessen (API meldet ${f.stock?.salesPerMinute ?? '?'}/Min, ` +
     'was schubweise verkauft wird und sich nicht hochrechnen lässt).';
+}
+
+/**
+ * Wie viel Rechenleistung der Watcher belegt.
+ *
+ * process.cpuUsage() zählt die verbrauchte Rechenzeit seit dem Start. Geteilt
+ * durch die Laufzeit ergibt das den Anteil eines Kerns; geteilt durch die Zahl
+ * der Kerne den Anteil der ganzen Maschine. Beide Zahlen sind Durchschnitte
+ * über die gesamte Laufzeit, keine Momentaufnahme – für die Frage "belastet
+ * das den Server?" ist der Durchschnitt aber die ehrlichere Angabe.
+ */
+function rechenlast() {
+  const kerne = os.cpus().length || 1;
+  const laufzeitS = process.uptime();
+  const cpu = process.cpuUsage();                       // Mikrosekunden
+  const verbrauchtS = (cpu.user + cpu.system) / 1e6;
+
+  const speicher = process.memoryUsage();
+  const [l1, l5, l15] = os.loadavg();
+
+  return {
+    kerne,
+    laufzeitS,
+    cpuSekunden: verbrauchtS,
+    // Anteil eines einzelnen Kerns, in Prozent
+    anteilKern: laufzeitS ? (verbrauchtS / laufzeitS) * 100 : 0,
+    // Anteil der gesamten Maschine
+    anteilMaschine: laufzeitS ? (verbrauchtS / laufzeitS / kerne) * 100 : 0,
+    rssMB: speicher.rss / 1024 / 1024,
+    heapMB: speicher.heapUsed / 1024 / 1024,
+    ramGesamtMB: os.totalmem() / 1024 / 1024,
+    ramFreiMB: os.freemem() / 1024 / 1024,
+    last: [l1, l5, l15],
+    // Systemlast je Kern: über 1 heißt, es warten Aufgaben
+    lastProKern: l1 / kerne,
+  };
 }
 
 function ausschuettungStand(state) {
@@ -1909,16 +1946,36 @@ const BEFEHLE = {
   },
 
   watcher: {
-    beschreibung: 'Läuft der Watcher, und wann war der letzte Abruf (nur Inhaber)',
+    beschreibung: 'Läuft der Watcher, und wie viel Rechenleistung belegt er',
     nurChef: true,
     async ausfuehren() {
       const st = load();
-      const seit = process.uptime();
-      return `**Watcher läuft** seit ${dauer(seit * 1000)}\n` +
+      const r = rechenlast();
+
+      const zahl = (n, k = 1) => n.toFixed(k).replace('.', ',');
+      const einschaetzung =
+        r.anteilMaschine < 1 ? 'praktisch nichts'
+        : r.anteilMaschine < 5 ? 'wenig'
+        : r.anteilMaschine < 25 ? 'spürbar'
+        : 'viel';
+
+      return `**Watcher läuft** seit ${dauer(r.laufzeitS * 1000)}\n` +
         `Intervall: ${CFG.INTERVALL_MS / 1000}s\n` +
         `Token gültig bis: ${zugang.exp ? new Date(zugang.exp).toLocaleTimeString('de-DE') : 'unbekannt'}\n` +
         `UnicaCity erreichbar: ${st.apiWegSeit ? `nein, seit ${dauer(Date.now() - st.apiWegSeit)}` : 'ja'}\n` +
-        `Wiki-Artikel bekannt: ${Object.keys(st.wiki || {}).length}`;
+        `Wiki-Artikel bekannt: ${Object.keys(st.wiki || {}).length}\n\n` +
+
+        `**Rechenlast** (${r.kerne} ${r.kerne === 1 ? 'Kern' : 'Kerne'})\n` +
+        `Der Watcher: ${zahl(r.anteilMaschine, 2)} % der Maschine ` +
+        `(${zahl(r.anteilKern, 1)} % eines Kerns) – ${einschaetzung}.\n` +
+        `Verbrauchte Rechenzeit: ${dauer(r.cpuSekunden * 1000)} in ${dauer(r.laufzeitS * 1000)}\n` +
+        `Arbeitsspeicher: ${zahl(r.rssMB, 0)} MB von ${zahl(r.ramGesamtMB / 1024, 1)} GB\n` +
+        `Systemlast: ${zahl(r.last[0], 2)} / ${zahl(r.last[1], 2)} / ${zahl(r.last[2], 2)} ` +
+        `(1/5/15 Min)` +
+        (r.lastProKern > 1
+          ? `\n⚠️ Über ${zahl(r.lastProKern, 1)} Aufgaben je Kern – der Server ist ausgelastet, ` +
+            'aber nicht unbedingt durch den Watcher.'
+          : '');
     },
   },
 
@@ -2853,6 +2910,27 @@ if (args.includes('--gehalt')) {
   } else console.log('\n  Heute wurde noch nichts entnommen.');
   console.log('\nGezählt werden Buchungen der Kategorien: ' + AUSZAHLUNG_KATEGORIEN.join(', '));
   console.log('Anpassbar über UC_AUSZAHLUNG_KATEGORIEN und UC_AUSZAHLUNG_LIMIT.');
+  process.exit(0);
+}
+
+if (args.includes('--last')) {
+  const r = rechenlast();
+  const zahl = (n, k = 1) => n.toFixed(k).replace('.', ',');
+  console.log(`Maschine:      ${r.kerne} ${r.kerne === 1 ? 'Kern' : 'Kerne'}, ` +
+              `${zahl(r.ramGesamtMB / 1024, 1)} GB RAM, davon ${zahl(r.ramFreiMB, 0)} MB frei`);
+  console.log(`Systemlast:    ${zahl(r.last[0], 2)} / ${zahl(r.last[1], 2)} / ${zahl(r.last[2], 2)}  (1/5/15 Min)`);
+  console.log(`               ${zahl(r.lastProKern, 2)} Aufgaben je Kern` +
+              (r.lastProKern > 1 ? '  ← ausgelastet' : ''));
+  console.log('');
+  console.log('Dieser Vorgang (nur die von Hand gestartete Abfrage, nicht der Dienst):');
+  console.log(`  Laufzeit:    ${dauer(r.laufzeitS * 1000)}`);
+  console.log(`  Rechenzeit:  ${zahl(r.cpuSekunden, 2)} s`);
+  console.log(`  Speicher:    ${zahl(r.rssMB, 0)} MB`);
+  console.log('');
+  console.log('Für den laufenden Dienst – da zählt die Zeit seit dem Start:');
+  console.log('  systemctl status uc-watcher        (Memory und CPU stehen dort)');
+  console.log('  systemd-cgtop -1 --order=cpu       (alle Dienste nach Last sortiert)');
+  console.log('  Im Discord: /watcher               (dieselben Zahlen, aber vom Dienst)');
   process.exit(0);
 }
 
