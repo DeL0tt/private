@@ -132,6 +132,34 @@ const AUSZAHLUNG_KATEGORIEN =
   (process.env.UC_AUSZAHLUNG_KATEGORIEN || 'auszahlung,gehalt')
     .split(',').map(w => w.trim().toLowerCase()).filter(Boolean);
 
+// Was trotz passender Kategorie NICHT gegen den Freibetrag zählt.
+//
+// Eine Ausschüttung wird an die Mitglieder verteilt, und je nachdem, wie das
+// Spiel das verbucht, steht dann eine Zeile mit der Kategorie „Auszahlung" im
+// Kassenbuch – mit der Ausschüttung nur im Text. Ebenso sind Löhne die Kosten
+// der NPCs, kein Geld, das sich jemand auszahlt. Geprüft wird deshalb auch der
+// Buchungstext, nicht nur die Kategorie.
+const AUSZAHLUNG_AUSNAHMEN =
+  (process.env.UC_AUSZAHLUNG_AUSNAHMEN ||
+   'ausschütt,ausschuett,löhne,loehne,lohn,npc')
+    .split(',').map(w => w.trim().toLowerCase()).filter(Boolean);
+
+/**
+ * Zählt diese Buchung gegen den Freibetrag von 35.000$?
+ * Gibt den Grund mit zurück, damit /gehalt und der Tagesbericht belegen
+ * können, was gezählt wurde – und was nicht.
+ */
+function zaehltGegenFreibetrag(kategorie, detail) {
+  const kat = String(kategorie || '').toLowerCase();
+  const txt = `${kat} ${String(detail || '').toLowerCase()}`;
+  if (!AUSZAHLUNG_KATEGORIEN.some(w => kat.includes(w))) {
+    return { zaehlt: false, grund: 'andere Kategorie' };
+  }
+  const ausnahme = AUSZAHLUNG_AUSNAHMEN.find(w => txt.includes(w));
+  if (ausnahme) return { zaehlt: false, grund: `Ausnahme „${ausnahme}"` };
+  return { zaehlt: true, grund: '' };
+}
+
 // Bekannte, harmlose Kategorien – alles andere landet im Log.
 const NORMALE_KATEGORIEN = [
   'verkauf', 'einkauf', 'löhne', 'loehne', 'nebenkosten', 'talent',
@@ -720,13 +748,37 @@ function budgetTag(d = new Date()) {
  * etwas übrig, und das Geld ist für den Tag verfallen. Oder wurde darüber
  * hinaus gezahlt – dann steht da, wie viel.
  */
+/**
+ * Die Buchungen, die gegen den Freibetrag gezählt haben – und die, die es
+ * trotz passender Kategorie nicht getan haben, mit Grund.
+ */
+function freibetragListe(buchungen = []) {
+  if (!buchungen.length) return '';
+  const zeile = (b) => `${new Date(b.stamp).toLocaleTimeString('de-DE').slice(0, 5)} ` +
+    `${String(b.kategorie).padEnd(16).slice(0, 16)} ${fmt(b.betrag).padStart(12)}` +
+    (b.gezaehlt === false ? `  (${b.grund})` : '');
+  const gezaehlt = buchungen.filter(b => b.gezaehlt !== false);
+  const uebergangen = buchungen.filter(b => b.gezaehlt === false);
+
+  let t = '';
+  if (gezaehlt.length) t += '\n**Gezählt**\n' + tabelle(gezaehlt.map(zeile));
+  if (uebergangen.length) {
+    t += '\n**Nicht gezählt**\n' + tabelle(uebergangen.map(zeile));
+  }
+  return t;
+}
+
 function freibetragText(state) {
   const g = state.auszahlungGestern;
   if (!g) return '';
 
   const limit = g.limit || CFG.AUSZAHLUNG_LIMIT;
   const rest = limit - g.genutzt;
-  let t = `\n\n**Freibetrag:** ${fmt(g.genutzt)} von ${fmt(limit)} genutzt`;
+  // Den Tag dazusagen. Der Freibetrag läuft von 0 bis 24 Uhr, der Spieltag
+  // von 04:00 bis 04:00 – ohne das Datum liest man die Zahl als die des
+  // Spieltags und vergleicht Äpfel mit Birnen.
+  const wann = g.tag ? ` (${tagKurz(g.tag)} 0–24 Uhr)` : '';
+  let t = `\n\n**Freibetrag${wann}:** ${fmt(g.genutzt)} von ${fmt(limit)} genutzt`;
 
   if (rest > 0) {
     t += `\n💸 ${fmt(rest)} nicht ausgezahlt – für diesen Tag verfallen.`;
@@ -748,6 +800,10 @@ function auszahlungTopf(state) {
         tag: state.auszahlungTag,
         genutzt: state.auszahlungSumme || 0,
         limit: CFG.AUSZAHLUNG_LIMIT,
+        // Die Buchungen mitnehmen. Ohne sie steht im Tagesbericht um 04:00
+        // eine Summe, die niemand mehr nachprüfen kann – die Liste war um
+        // 00:00 längst geleert.
+        buchungen: state.auszahlungen || [],
       };
     }
     state.auszahlungTag = heute;
@@ -1487,13 +1543,20 @@ async function werteBuchungenAus(state, buchungen) {
     // Gehälter und Auszahlungen zehren am 35k-Topf – mitzählen, solange die
     // Buchung vorbeikommt. Das Kassenbuch liefert nur die letzten Einträge,
     // deshalb wird summiert statt später nachgerechnet.
-    if (AUSZAHLUNG_KATEGORIEN.some(w => kat.includes(w))) {
+    const wertung = zaehltGegenFreibetrag(kat, detail);
+    if (wertung.grund !== 'andere Kategorie') {
       auszahlungTopf(state);                    // setzt bei Tageswechsel zurück
-      state.auszahlungSumme = (state.auszahlungSumme || 0) + Math.abs(b.amount);
+      if (wertung.zaehlt) {
+        state.auszahlungSumme = (state.auszahlungSumme || 0) + Math.abs(b.amount);
+      }
+      // Auch das Nichtgezählte festhalten: sonst lässt sich eine Summe, die
+      // nicht zu den eigenen Auszahlungen passt, nicht nachprüfen.
       state.auszahlungen = [...(state.auszahlungen || []),
-        { stamp: b.stamp, kategorie: sauber(b.category), detail, betrag: Math.abs(b.amount) }
-      ].slice(-20);
-      log('Auszahlung gezählt:', sauber(b.category), fmt(Math.abs(b.amount)));
+        { stamp: b.stamp, kategorie: sauber(b.category), detail,
+          betrag: Math.abs(b.amount), gezaehlt: wertung.zaehlt, grund: wertung.grund }
+      ].slice(-40);
+      log(wertung.zaehlt ? 'Auszahlung gezählt:' : `Nicht gezählt (${wertung.grund}):`,
+          sauber(b.category), fmt(Math.abs(b.amount)));
       continue;
     }
 
@@ -2023,7 +2086,11 @@ const BEFEHLE = {
   gehalt: {
     beschreibung: 'Wie viel vom Tagesbudget für Auszahlungen und Gehälter noch frei ist',
     oeffentlich: true,
-    async ausfuehren() {
+    optionen: [
+      { name: 'aufschluesselung', description: 'Welche Buchungen wurden gezählt?',
+        type: 5, required: false },
+    ],
+    async ausfuehren({ optionen, darf, oeffentlich }) {
       const st = load();
       const topf = auszahlungTopf(st);
       // Ohne Limit gäbe es nichts auszuschöpfen – dann keine Prozentrechnung,
@@ -2039,8 +2106,22 @@ const BEFEHLE = {
       if (!topf.frei) t += '\n\n🔴 Das Tagesbudget ist aufgebraucht.';
       else if (anteil >= 80) t += '\n\n⚠️ Es wird knapp.';
 
-      // Bewusst nur die Summe: wer wann wie viel gezogen hat, ist für die
-      // Frage "wie viel geht noch" ohne Belang und macht die Antwort lang.
+      // Von Haus aus nur die Summe: wer wann wie viel gezogen hat, ist für die
+      // Frage „wie viel geht noch" ohne Belang und macht die Antwort lang.
+      // Auf Wunsch die Aufschlüsselung – damit prüfbar ist, was gezählt wurde,
+      // wenn die Summe nicht zu den eigenen Auszahlungen passt.
+      if (optionen.aufschluesselung) {
+        if (oeffentlich || !darf('kasse')) {
+          // Einzelne Buchungen sind mehr als eine Summe: die gehören nicht
+          // in einen Kanal, in dem alle mitlesen.
+          t += '\n\n_Die Aufschlüsselung gibt es nur privat und nur für den, ' +
+               'der auch `/kasse` darf._';
+        } else if (!topf.buchungen.length) {
+          t += '\n\n_Heute wurde noch keine Auszahlung verbucht._';
+        } else {
+          t += '\n' + freibetragListe(topf.buchungen);
+        }
+      }
       return t + `\n\n_Setzt sich täglich um ${String(CFG.AUSZAHLUNG_RESET_STD).padStart(2, '0')}:00 Uhr zurück._`;
     },
   },
@@ -2781,6 +2862,37 @@ if (args.includes('--woche')) {
   console.log('Summe:', dauer(v.jetzt.gesamtMs),
               '· Firma gelaufen:', dauer(v.jetzt.firmaMs),
               v.davor.tage ? `· gegenüber davor: ${v.gesamtMs >= 0 ? '+' : '-'}${dauer(Math.abs(v.gesamtMs))}` : '');
+  process.exit(0);
+}
+
+if (args.includes('--freibetrag')) {
+  const s = load();
+  const topf = auszahlungTopf(s);
+  console.log(`Freibetrag ${topf.tag} (0-24 Uhr)`);
+  console.log(`  Gezählt:  ${fmt(topf.genutzt)} von ${fmt(topf.limit)}`);
+  console.log(`  Frei:     ${fmt(topf.frei)}\n`);
+  if (!topf.buchungen.length) {
+    console.log('Heute wurde noch keine passende Buchung gesehen.');
+  } else {
+    console.table(Object.fromEntries(topf.buchungen.map((b, i) => [i + 1, {
+      Zeit: new Date(b.stamp).toLocaleString('de-DE'),
+      Kategorie: b.kategorie,
+      Betrag: fmt(b.betrag),
+      Gezaehlt: b.gezaehlt === false ? 'nein' : 'ja',
+      Grund: b.grund || '',
+      Text: String(b.detail || '').slice(0, 40),
+    }])));
+  }
+  const g = s.auszahlungGestern;
+  if (g) {
+    console.log(`\nVortag ${g.tag}: ${fmt(g.genutzt)} von ${fmt(g.limit)} genutzt` +
+                ` (${(g.buchungen || []).length} Buchungen vermerkt)`);
+  }
+  console.log('\nGezählt wird eine Buchung, deren Kategorie eines dieser Wörter ' +
+              'enthält:\n  ' + AUSZAHLUNG_KATEGORIEN.join(', ') +
+              '\nÜbergangen wird sie, wenn Kategorie oder Text eines dieser ' +
+              'Wörter enthält:\n  ' + AUSZAHLUNG_AUSNAHMEN.join(', ') +
+              '\nAnpassen mit UC_AUSZAHLUNG_KATEGORIEN bzw. UC_AUSZAHLUNG_AUSNAHMEN.');
   process.exit(0);
 }
 

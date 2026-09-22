@@ -110,6 +110,7 @@ cd ~/private/uc-watcher/server
 | `node --env-file=.env watcher.mjs --tagesbericht 2026-09-19` | Derselbe Bericht für einen vergangenen Spieltag |
 | `node --env-file=.env watcher.mjs --woche` | Letzte 7 Spieltage je Spieler, mit Vergleich zur Woche davor (`--woche 30` für 30 Tage) |
 | `node --env-file=.env watcher.mjs --archiv` | Welche Spieltage im Archiv liegen |
+| `node --env-file=.env watcher.mjs --freibetrag` | Welche Buchungen gegen die 35.000$ gezählt haben – und welche nicht, mit Grund |
 | `node --env-file=.env watcher.mjs --ausschuettung` | Stand des 12-Stunden-Zählers |
 | `node --env-file=.env watcher.mjs --ausschuettung-start` | Zähler **auf null** setzen – nach einer tatsächlichen Ausschüttung |
 | `node --env-file=.env watcher.mjs --notion` | Wiki-/Notion-Abgleich sofort, mit Titelliste |

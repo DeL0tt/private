@@ -186,7 +186,7 @@ Jeder im Server kann benutzen:
 | `/lager` | Bestand mit Balken und **gemessener** Reichweite |
 | `/ausschuettung` | Fortschritt bis zur nächsten Ausschüttung |
 | `/zeiten` | Wer gerade online ist, plus die eigene Zeit heute |
-| `/gehalt` | Wie viel vom Tagesbudget (35.000$) noch frei ist |
+| `/gehalt` | Wie viel vom Tagesbudget (35.000$) noch frei ist (mit `aufschluesselung:` auch, welche Buchungen gezählt haben) |
 | `/betrieb` | Bestand der Zoohandlung – was wirklich entnehmbar ist |
 | `/hilfe` | Welche Befehle es gibt |
 
@@ -290,28 +290,53 @@ UC_BETRIEB_SCHWELLE=40
 ### Das Tagesbudget: `/gehalt`
 
 Gehälter und Auszahlungen zehren an einem gemeinsamen Topf von 35.000$ je Tag.
-`/gehalt` zeigt, wie viel davon noch frei ist, und listet auf, was heute schon
-entnommen wurde.
+`/gehalt` zeigt, wie viel davon noch frei ist.
 
 Der Topf setzt sich **um Mitternacht** zurück. Das ist bewusst etwas anderes
 als der Spieltag des Watchers, der um 04:00 wechselt – Onlinezeiten und
-Tagesbericht richten sich nach dem, das Budget nicht. Falls das Spiel es
-anders handhabt: `UC_AUSZAHLUNG_RESET_STD`.
+Tagesbericht richten sich nach dem, das Budget nicht. Deshalb nennt der
+Tagesbericht beim Freibetrag ausdrücklich das Datum und „0–24 Uhr": die Zahl
+gehört zum Kalendertag, nicht zum Spieltag des Berichts.
 
-Gezählt werden Buchungen der Kategorien `auszahlung` und `gehalt`. **Löhne
-zählen bewusst nicht** – das sind die NPC-Kosten der Firma, kein Geld, das
-sich jemand auszahlt.
+Gezählt wird eine Buchung, deren **Kategorie** `auszahlung` oder `gehalt`
+enthält. Sie wird übergangen, wenn **Kategorie oder Buchungstext** eines der
+Ausnahmewörter enthält. Voreingestellt sind:
 
-Passt die Rechnung nicht zum Spiel, lässt sich beides ändern:
+- `ausschütt`, `ausschuett` – eine Ausschüttung wird an die Mitglieder
+  verteilt und kann als „Auszahlung" im Kassenbuch stehen, mit der
+  Ausschüttung nur im Text. Sie ist ein eigenes Verfahren und zehrt nicht am
+  Freibetrag.
+- `löhne`, `loehne`, `lohn`, `npc` – die Kosten der NPCs, kein Geld, das sich
+  jemand auszahlt.
+
+### Wenn die Summe nicht stimmt
+
+Passt die Zahl nicht zu deinen eigenen Auszahlungen, lass sie dir aufschlüsseln
+– dann steht da, welche Buchung gezählt hat und welche nicht:
+
+```
+/gehalt aufschluesselung:true
+```
+
+Das kommt immer privat und nur für den, der auch `/kasse` darf – einzelne
+Buchungen sind mehr als eine Summe. Auf dem Server dasselbe, zusätzlich mit
+den geltenden Wortlisten:
+
+```bash
+node --env-file=.env watcher.mjs --freibetrag
+```
+
+Steht in der Liste etwas, das nicht zählen soll, nimm das kennzeichnende Wort
+in die Ausnahmen auf:
 
 ```ini
 UC_AUSZAHLUNG_LIMIT=35000
 UC_AUSZAHLUNG_KATEGORIEN=auszahlung,gehalt
+UC_AUSZAHLUNG_AUSNAHMEN=ausschütt,ausschuett,löhne,loehne,lohn,npc
 ```
 
-`node --env-file=.env watcher.mjs --gehalt` zeigt dasselbe auf dem Server,
-samt der gezählten Buchungen – damit lässt sich prüfen, ob eine Kategorie
-fehlt.
+Die Ausnahmeliste **ersetzt** die Vorgabe vollständig – wer sie setzt, muss
+die Ausschüttung selbst wieder mit aufführen.
 
 Standardmäßig nur für dich – einzeln weitergebbar (siehe unten):
 
