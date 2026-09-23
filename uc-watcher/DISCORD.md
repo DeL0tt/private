@@ -457,7 +457,7 @@ Dazu kommen zwei Einstellungen, wie **oft** eine Meldung kommt:
 |---|---|
 | `wiederholung:` | Wie lange Ruhe ist, bevor dieselbe Meldung wiederkommt – 15 Min. bis „erst am nächsten Tag". Ohne Angabe: eine Stunde. |
 | `takt:` | Nur beim **Zwischenstand der Ausschüttung**: stündlich, alle zwei, drei oder sechs Stunden – oder gar nicht, dann kommt nur noch die fällige Ausschüttung. |
-| `erinnerung:` | Nur beim **Vorfall im Unternehmen**: nachfassen, solange er offen ist – nach 2 bis 10 Minuten, oder gar nicht. Ist es an, trägt die Meldung den Knopf „Ich kümmere mich" (siehe unten). |
+| `erinnerung:` | Nur beim **Vorfall im Unternehmen**: nachfassen, solange er offen ist – nach 2 bis 10 Minuten, oder gar nicht. Der Knopf „Ich kümmere mich" (siehe unten) beendet das Nachfassen; er hängt aber unabhängig davon an jeder Vorfallsmeldung. |
 | `vorfallart:` | Nur beim **Vorfall im Unternehmen**: die Einstellung gilt dann nur für diese Art, z. B. `ABWERBUNG`. |
 
 ```
@@ -489,27 +489,31 @@ oder abgelaufen, wird nichts mehr geschickt.
 
 ### Der Knopf „Ich kümmere mich"
 
-Ist das Nachfassen eingeschaltet, hängt unter jeder Vorfallsmeldung ein grüner
-Knopf. Ein Druck darauf beendet die Erinnerungen für **diesen** Vorfall –
-im Discord und aufs Handy.
+Unter jeder Vorfallsmeldung hängt ein grüner Knopf. Er tut zwei Dinge:
+
+1. **Er sagt dem Team, dass jemand dran ist.** Das gilt immer, auch ohne
+   eingestellte Erinnerung – sonst fahren zwei Leute zum selben Vorfall,
+   während ein dritter nichts tut, weil er jemanden dort vermutet.
+2. **Er beendet die Erinnerungen** für diesen Vorfall, im Discord und aufs
+   Handy – falls welche eingestellt sind.
 
 - **Jeder darf drücken.** Wer den Vorfall löst, ist der, der gerade spielt; er
   muss keinen Befehl kennen und kein Recht haben.
 - **Der Knopf verschwindet danach für alle**, und in der Fußnote der Meldung
-  steht, wer übernommen hat. Sonst drücken fünf Leute nacheinander, ohne
+  steht „✅ übernommen von …". Sonst drücken fünf Leute nacheinander, ohne
   voneinander zu wissen.
 - **Die Meldung selbst bleibt stehen.** Nur die Erinnerungen hören auf.
 - Drückt jemand ein zweites Mal – etwa im anderen Kanal –, sagt der Bot, wer es
   schon übernommen hatte. Nichts wird überschrieben.
-- **Ohne eingestelltes Nachfassen erscheint kein Knopf.** Er hätte nichts
-  abzuschalten. Wer ihn haben will, braucht also eine Erinnerung.
+- Die Rückmeldung sagt nur, was zutrifft: ohne eingestellte Erinnerung
+  verspricht sie keine Abschaltung.
 
 Der Klick landet in `uc-watcher-regeln.json`, nicht im Zustand des Watchers –
 sonst wäre er nach der nächsten Minute wieder weg. Nach zwölf Stunden wird der
 Eintrag aufgeräumt.
 
-Ob der Knopf ankommt, zeigt `/testvorfall`: die Probemeldung trägt ihn, und die
-Antwort sagt, ob er hängt oder warum nicht.
+`/testvorfall` schickt den Knopf mit und sagt in der Antwort, was ein Druck
+bei dieser Vorfallsart bewirken würde.
 
 `ziel: gar nicht (aus)` schaltet eine Meldung **vollständig** ab – auch die
 Benachrichtigung aufs Handy über ntfy, nicht nur die im Discord.

@@ -1069,15 +1069,18 @@ async function erinnereAnVorfall(state, ereignis) {
 const KNOPF_ERLEDIGT = 'erledigt:';
 
 /**
- * Der Knopf erscheint nur, wo er etwas bewirkt: wenn für diesen Vorfall
- * überhaupt nachgefasst wird. Ist das Nachfassen aus – die Voreinstellung –
- * wäre er ein Knopf ohne Wirkung.
+ * Der Knopf hängt an jeder Vorfallsmeldung, auch ohne eingestellte Erinnerung.
+ *
+ * Er hat zwei Zwecke, und der zweite gilt immer: er beendet das Nachfassen,
+ * wenn eines eingestellt ist – und er sagt dem Team, dass sich schon jemand
+ * kümmert. Das ist auch ohne Erinnerung etwas wert: sonst fahren zwei Leute
+ * zum selben Vorfall, während ein dritter nichts tut, weil er annimmt, es sei
+ * jemand dran.
+ *
+ * Weg ist er nur, wenn ihn schon jemand gedrückt hat.
  */
 function erledigtKnopf(schluessel) {
-  const regel = empfaenger(schluessel, ladeRegeln());
-  const abstand = regel.erinnerung ?? CFG.VORFALL_ERINNERUNG_MIN;
-  if (!abstand) return undefined;
-  if (istErledigt(schluessel)) return undefined;     // schon übernommen
+  if (istErledigt(schluessel)) return undefined;
   return { id: KNOPF_ERLEDIGT + schluessel, text: 'Ich kümmere mich', emoji: '✅' };
 }
 
@@ -1095,20 +1098,27 @@ async function knopfGedrueckt(id, nutzer) {
   const name = nutzer.anzeigename || nutzer.username || 'jemand';
   const { neu, eintrag } = merkeErledigt(schluessel, nutzer.id, name);
 
+  // Ob überhaupt nachgefasst wurde, entscheidet, was der Druck bewirkt hat.
+  // Ohne Erinnerung ist er ein Zeichen fürs Team, keine Abschaltung – dann
+  // soll die Rückmeldung nichts anderes behaupten.
+  const regel = empfaenger(schluessel, ladeRegeln());
+  const nachgefasst = !!(regel.erinnerung ?? CFG.VORFALL_ERINNERUNG_MIN);
+
   if (!neu) {
-    const wann = eintrag?.zeit
-      ? ` (vor ${dauer(Date.now() - eintrag.zeit)})`
-      : '';
+    const wann = eintrag?.zeit ? ` (vor ${dauer(Date.now() - eintrag.zeit)})` : '';
     return {
-      text: `Das hatte **${eintrag?.name || 'jemand'}** schon übernommen${wann} – ` +
-            'es kommt so oder so keine Erinnerung mehr.',
+      text: `Das hatte **${eintrag?.name || 'jemand'}** schon übernommen${wann}.`,
       fussnote: `übernommen von ${eintrag?.name || 'jemand'}`,
     };
   }
 
   return {
-    text: '✅ Notiert – für diesen Vorfall kommt keine Erinnerung mehr, auch ' +
-          'nicht aufs Handy. Die Meldung selbst bleibt stehen.',
+    text: nachgefasst
+      ? '✅ Notiert – im Kanal steht jetzt, dass du dich kümmerst, und für ' +
+        'diesen Vorfall kommt keine Erinnerung mehr, auch nicht aufs Handy. ' +
+        'Die Meldung selbst bleibt stehen.'
+      : '✅ Notiert – im Kanal steht jetzt, dass du dich kümmerst. ' +
+        'Erinnerungen waren für diese Art ohnehin aus.',
     fussnote: `✅ übernommen von ${name}`,
   };
 }
@@ -2617,10 +2627,12 @@ const BEFEHLE = {
       }
 
       t += knopf
-        ? '\n\n**Knopf:** „Ich kümmere mich" hängt an der Meldung – ein Druck ' +
-          'beendet die Erinnerungen für diesen Vorfall.'
-        : '\n\n**Knopf:** keiner, weil für diese Art nicht nachgefasst wird. ' +
-          'Mit `/melden thema:Vorfall im Unternehmen erinnerung:…` einschalten.';
+        ? '\n\n**Knopf:** „Ich kümmere mich" hängt an der Meldung. Ein Druck ' +
+          'zeigt dem Team, dass jemand dran ist' +
+          ((regel.erinnerung ?? CFG.VORFALL_ERINNERUNG_MIN)
+            ? ' – und beendet die Erinnerungen für diesen Vorfall.'
+            : '. Erinnerungen sind für diese Art aus, es gibt also nichts zu beenden.')
+        : '\n\n**Knopf:** keiner – dieser Vorfall ist schon übernommen.';
 
       return t + '\n\n_Die Probe verändert nichts: keine Erinnerung, keine ' +
         'gespeicherte Sperre, kein Eintrag in den Vorfallsarten._';
