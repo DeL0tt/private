@@ -9,7 +9,8 @@ import path from 'node:path';
 import { discordAktiv, discordSende, discordStart, discordStop, empfaenger,
          regelText, THEMEN, themaName, ladeRegeln, speichereRegeln,
          ladeZuordnung, speichereZuordnung, zuordnungEigen, pruefeToken,
-         ladeRechte, speichereRechte, kanaele } from './discord.mjs';
+         ladeRechte, speichereRechte, kanaele,
+         istErledigt, merkeErledigt } from './discord.mjs';
 import { merkeZeiten, merkeAusschuettung, merkeAuszahlung, speichereArchiv,
          ladeArchiv, holeTag, holeTage, letzteTage, alleTage, tagMinus,
          summiere, vergleich, anteile, archivDatei, archivAktiv } from './archiv.mjs';
@@ -704,7 +705,7 @@ async function push(thema, titel, text, state, prio = 'high', extra = {}) {
   raeumeSperren(state);
   info('PUSH:', titel);
   log(text);
-  await discordSende({ ...regel, titel, text, prio, ...kurz,
+  await discordSende({ ...regel, titel, text, prio, ...kurz, knopf: extra.knopf,
                        pingNutzer: regel.ping === 'online' ? onlineDiscordIds(state) : undefined });
 
   if (!CFG.NTFY_TOPIC) return log('  (kein UC_NTFY_TOPIC gesetzt – nur Discord)');
@@ -1029,6 +1030,17 @@ async function erinnereAnVorfall(state, ereignis) {
     return;
   }
 
+  // Hat jemand den Knopf gedrückt, ist die Sache erledigt – dann kein
+  // Nachfassen mehr, weder im Discord noch aufs Handy.
+  const erledigt = istErledigt(schluessel);
+  if (erledigt) {
+    if (!offen.erledigtGemerkt) {
+      offen.erledigtGemerkt = true;
+      info(`Vorfall von ${erledigt.name || erledigt.wer} übernommen – keine Erinnerung`);
+    }
+    return;
+  }
+
   const regel = empfaenger(schluessel, ladeRegeln());
   const abstand = regel.erinnerung ?? CFG.VORFALL_ERINNERUNG_MIN;
   if (!abstand || offen.runde >= CFG.VORFALL_ERINNERUNG_MAX) return;
@@ -1046,7 +1058,59 @@ async function erinnereAnVorfall(state, ereignis) {
     '⏰ Vorfall ist immer noch offen',
     ereignisText(ereignis) + frist +
     `\n\nOffen seit ${dauer(Date.now() - offen.seit)}.`,
-    state, 'urgent');
+    state, 'urgent', { knopf: erledigtKnopf(schluessel) });
+}
+
+/* ========================= ERLEDIGT-KNOPF ========================= */
+
+// Vorsilbe, an der der Knopfdruck wiedererkannt wird. Der Rest der Kennung
+// ist der Vorfallschlüssel – Discord schickt beim Druck nur diese Zeichenkette
+// zurück, mehr Zusammenhang gibt es nicht.
+const KNOPF_ERLEDIGT = 'erledigt:';
+
+/**
+ * Der Knopf erscheint nur, wo er etwas bewirkt: wenn für diesen Vorfall
+ * überhaupt nachgefasst wird. Ist das Nachfassen aus – die Voreinstellung –
+ * wäre er ein Knopf ohne Wirkung.
+ */
+function erledigtKnopf(schluessel) {
+  const regel = empfaenger(schluessel, ladeRegeln());
+  const abstand = regel.erinnerung ?? CFG.VORFALL_ERINNERUNG_MIN;
+  if (!abstand) return undefined;
+  if (istErledigt(schluessel)) return undefined;     // schon übernommen
+  return { id: KNOPF_ERLEDIGT + schluessel, text: 'Ich kümmere mich', emoji: '✅' };
+}
+
+/**
+ * Was passiert, wenn jemand den Knopf drückt.
+ *
+ * Jeder darf das: den Vorfall löst, wer gerade spielt, und wer ihn erledigt,
+ * muss dafür keinen Befehl kennen und kein Recht haben. Der Name wandert in
+ * die Fußnote der Meldung, damit im Kanal steht, wer sich kümmert – sonst
+ * drücken fünf Leute nacheinander, ohne voneinander zu wissen.
+ */
+async function knopfGedrueckt(id, nutzer) {
+  if (!id.startsWith(KNOPF_ERLEDIGT)) return null;
+  const schluessel = id.slice(KNOPF_ERLEDIGT.length);
+  const name = nutzer.anzeigename || nutzer.username || 'jemand';
+  const { neu, eintrag } = merkeErledigt(schluessel, nutzer.id, name);
+
+  if (!neu) {
+    const wann = eintrag?.zeit
+      ? ` (vor ${dauer(Date.now() - eintrag.zeit)})`
+      : '';
+    return {
+      text: `Das hatte **${eintrag?.name || 'jemand'}** schon übernommen${wann} – ` +
+            'es kommt so oder so keine Erinnerung mehr.',
+      fussnote: `übernommen von ${eintrag?.name || 'jemand'}`,
+    };
+  }
+
+  return {
+    text: '✅ Notiert – für diesen Vorfall kommt keine Erinnerung mehr, auch ' +
+          'nicht aufs Handy. Die Meldung selbst bleibt stehen.',
+    fussnote: `✅ übernommen von ${name}`,
+  };
 }
 
 async function pruefeAusschuettung(state) {
@@ -1785,12 +1849,14 @@ async function durchlauf() {
         name: sauber(f.event?.name || f.event?.title || art),
       } };
 
-    await push(vorfallSchluessel(f.event), '🚨 Vorfall im Unternehmen',
+    const vSchluessel = vorfallSchluessel(f.event);
+    await push(vSchluessel, '🚨 Vorfall im Unternehmen',
       ereignisText(f.event) + expressText(ex) +
       (bericht.length ? `\n\nOnline zum Zeitpunkt:\n${bericht.join('\n')}` : ''),
       state, 'urgent', {
         // Wer online war, ist eine Frage für den Inhaber, nicht fürs Team.
         teamText: ereignisText(f.event) + expressText(ex, false),
+        knopf: erledigtKnopf(vSchluessel),
       });
 
     await erinnereAnVorfall(state, f.event);
@@ -2506,10 +2572,11 @@ const BEFEHLE = {
 
       const gepingt = regel.ping === 'online' ? onlineDiscordIds(state) : [];
 
+      const knopf = erledigtKnopf(schluessel);
       await push(schluessel, '🧪 Testvorfall (keine echte Meldung)',
         ereignisText(ereignis) +
         '\n\nWenn du das siehst, kommen Vorfälle hier an.',
-        state, 'urgent');
+        state, 'urgent', { knopf });
       // Bewusst nicht speichern: eine Probe soll den Zustand nicht verändern.
 
       // Bericht, damit man nicht raten muss, was passiert ist.
@@ -2548,6 +2615,12 @@ const BEFEHLE = {
       } else {
         t += '\n\n**Ping:** keiner – so ist es eingestellt.';
       }
+
+      t += knopf
+        ? '\n\n**Knopf:** „Ich kümmere mich" hängt an der Meldung – ein Druck ' +
+          'beendet die Erinnerungen für diesen Vorfall.'
+        : '\n\n**Knopf:** keiner, weil für diese Art nicht nachgefasst wird. ' +
+          'Mit `/melden thema:Vorfall im Unternehmen erinnerung:…` einschalten.';
 
       return t + '\n\n_Die Probe verändert nichts: keine Erinnerung, keine ' +
         'gespeicherte Sperre, kein Eintrag in den Vorfallsarten._';
@@ -3453,7 +3526,8 @@ info(`UC-Watcher läuft – Intervall ${CFG.INTERVALL_MS / 1000}s, Zustand: ${CF
 if (discordAktiv()) {
   // Schlägt die Anmeldung fehl, läuft der Watcher trotzdem weiter – die
   // Überwachung ist wichtiger als der Bot.
-  discordStart(BEFEHLE).catch(e => console.error('Discord-Start fehlgeschlagen:', e.message));
+  discordStart(BEFEHLE, { knopf: knopfGedrueckt })
+    .catch(e => console.error('Discord-Start fehlgeschlagen:', e.message));
 } else {
   info('Discord nicht eingerichtet (UC_DISCORD_TOKEN fehlt) – Meldungen gehen nur an ntfy.');
 }

@@ -77,8 +77,13 @@ function appId() {
  * Aufbau: {
  *   regeln:    { '<themenanfang>': {…} },
  *   zuordnung: { '<discordId>': 'UC-Name' },
- *   rechte:    { '<befehl>': { rollen: [...], nutzer: [...] } }
+ *   rechte:    { '<befehl>': { rollen: [...], nutzer: [...] } },
+ *   erledigt:  { '<vorfallschlüssel>': { wer, name, zeit } }
  * }
+ *
+ * Auch das Erledigt-Zeichen gehört hierher, nicht in den Zustand: es entsteht
+ * durch einen Knopfdruck, also mitten in einem Durchlauf, und wäre mit der
+ * älteren Zustandskopie wieder weg.
  */
 let cache = { stand: -1, inhalt: null };
 
@@ -91,12 +96,12 @@ function lade() {
     // Themen-Zuordnung. Die werden weiter gelesen.
     const inhalt = rohdaten.regeln || rohdaten.zuordnung || rohdaten.rechte
       ? { regeln: rohdaten.regeln || {}, zuordnung: rohdaten.zuordnung || {},
-          rechte: rohdaten.rechte || {} }
-      : { regeln: rohdaten, zuordnung: {}, rechte: {} };
+          rechte: rohdaten.rechte || {}, erledigt: rohdaten.erledigt || {} }
+      : { regeln: rohdaten, zuordnung: {}, rechte: {}, erledigt: {} };
     cache = { stand, inhalt };
     return inhalt;
   } catch {
-    return { regeln: {}, zuordnung: {}, rechte: {} };   // noch nie etwas eingestellt
+    return { regeln: {}, zuordnung: {}, rechte: {}, erledigt: {} };  // noch nie etwas eingestellt
   }
 }
 
@@ -137,6 +142,38 @@ export const zuordnungEigen = () => lade().zuordnung;
  */
 export const ladeRechte = () => lade().rechte;
 export const speichereRechte = (rechte) => speichere({ ...lade(), rechte });
+
+/* ========================= ERLEDIGTE VORFÄLLE ========================= */
+
+// Wie lange ein Erledigt-Zeichen aufgehoben wird. Länger als jede Frist eines
+// Vorfalls; danach kann der Eintrag weg, sonst wächst die Datei endlos.
+const ERLEDIGT_BEHALTEN_MS = 12 * 3_600_000;
+
+export const ladeErledigt = () => lade().erledigt || {};
+
+/** Ist dieser Vorfall als erledigt gekennzeichnet? Gibt den Eintrag zurück. */
+export function istErledigt(schluessel) {
+  const e = ladeErledigt()[schluessel];
+  if (!e) return null;
+  return Date.now() - (e.zeit || 0) > ERLEDIGT_BEHALTEN_MS ? null : e;
+}
+
+/**
+ * Einen Vorfall als erledigt kennzeichnen. Gibt zurück, ob das neu war –
+ * damit ein zweiter Knopfdruck etwas anderes antworten kann als der erste.
+ */
+export function merkeErledigt(schluessel, wer, name) {
+  const erledigt = { ...ladeErledigt() };
+  const schonDa = !!erledigt[schluessel];
+  if (!schonDa) erledigt[schluessel] = { wer, name, zeit: Date.now() };
+
+  const grenze = Date.now() - ERLEDIGT_BEHALTEN_MS;
+  for (const [k, v] of Object.entries(erledigt)) {
+    if ((v.zeit || 0) < grenze) delete erledigt[k];
+  }
+  speichere({ ...lade(), erledigt });
+  return { neu: !schonDa, eintrag: erledigt[schluessel] };
+}
 
 export function darfNutzen(befehl, { istChef, nutzerId, rollen = [] }) {
   if (istChef) return true;
@@ -448,11 +485,38 @@ function pingTeile(ping, nutzer) {
   return { content: `<@&${ping}>`, allowed_mentions: { roles: [String(ping)] } };
 }
 
-async function inKanal(kanal, titel, text, prio, fuss, ping, pingNutzer) {
+/**
+ * Ein Knopf unter der Nachricht. Gedacht für „erledigt, keine Erinnerung
+ * mehr": ein Druck erreicht jeden, der die Nachricht sieht, ohne dass jemand
+ * einen Befehl kennen muss.
+ *
+ * custom_id trägt die Kennung mit, denn Discord schickt beim Druck nur sie
+ * zurück – höchstens 100 Zeichen.
+ */
+const KNOPF_ID_MAX = 100;
+
+function knopfTeile(knopf) {
+  if (!knopf?.id) return {};
+  return {
+    components: [{
+      type: 1,                                   // Reihe
+      components: [{
+        type: 2,                                 // Knopf
+        style: knopf.stil || 3,                  // 3 = grün
+        label: String(knopf.text || 'Erledigt').slice(0, 80),
+        custom_id: String(knopf.id).slice(0, KNOPF_ID_MAX),
+        ...(knopf.emoji ? { emoji: { name: knopf.emoji } } : {}),
+      }],
+    }],
+  };
+}
+
+async function inKanal(kanal, titel, text, prio, fuss, ping, pingNutzer, knopf) {
   if (!kanal) return;
   try {
     await rest(`/channels/${kanal}/messages`, 'POST',
-      { embeds: [embed(titel, text, prio, fuss)], ...pingTeile(ping, pingNutzer) });
+      { embeds: [embed(titel, text, prio, fuss)], ...pingTeile(ping, pingNutzer),
+        ...knopfTeile(knopf) });
   } catch (e) { console.error('  Discord-Meldung fehlgeschlagen:', e.message); }
 }
 
@@ -475,7 +539,7 @@ export async function discordSende(auftrag) {
 }
 
 async function sendeIntern({ ziel, kanal, auchChef, ping, pingNutzer, titel, text,
-                            prio = 'high', teamTitel, teamText }) {
+                            prio = 'high', teamTitel, teamText, knopf }) {
   if (!discordAktiv() || ziel === 'aus') return;
 
   if (ziel === 'chef' || ziel === 'beide' || (ziel === 'kanal' && auchChef)) {
@@ -484,17 +548,18 @@ async function sendeIntern({ ziel, kanal, auchChef, ping, pingNutzer, titel, tex
     // @everyone gibt es in einer DM nicht.
     const eigenerKanal = !!CFG.CHEF_KANAL;
     await inKanal(await chefKanal(), titel, text, prio,
-                  'nur für den Firmeninhaber', eigenerKanal ? ping : undefined, pingNutzer);
+                  'nur für den Firmeninhaber', eigenerKanal ? ping : undefined, pingNutzer,
+                  knopf);   // der Knopf geht auch in einer DM
   }
   if (ziel === 'team' || ziel === 'beide') {
     await inKanal(CFG.TEAM_KANAL, teamTitel || titel, teamText || text, prio,
-                  undefined, ping, pingNutzer);
+                  undefined, ping, pingNutzer, knopf);
   }
   if (ziel === 'kanal') {
     // Ein frei gewählter Kanal bekommt die Team-Fassung: dort können Leute
     // mitlesen, die nicht der Inhaber sind.
     await inKanal(kanal, teamTitel || titel, teamText || text, prio,
-                  undefined, ping, pingNutzer);
+                  undefined, ping, pingNutzer, knopf);
   }
 }
 
@@ -564,6 +629,69 @@ export async function schlageVor(interaktion, befehle) {
 
   await rest(`/interactions/${interaktion.id}/${interaktion.token}/callback`, 'POST',
     { type: 8, data: { choices: choices.slice(0, 25) } }).catch(e => log('Vorschlag:', e.message));
+}
+
+/**
+ * Jemand hat einen Knopf gedrückt.
+ *
+ * `handler(id, nutzer)` entscheidet, was das bedeutet, und gibt
+ * { text, oeffentlich?, fussnote? } zurück:
+ *   text       – Antwort an den, der gedrückt hat
+ *   fussnote   – wird an die ursprüngliche Nachricht gehängt, für alle sichtbar
+ *   knopfWeg   – true entfernt den Knopf, damit niemand zweimal drückt
+ *
+ * Die ursprüngliche Nachricht wird mit Antworttyp 7 bearbeitet: so verschwindet
+ * der Knopf für jeden, und im Kanal steht, wer sich gekümmert hat. Ohne das
+ * würden fünf Leute nacheinander drücken, ohne voneinander zu wissen.
+ */
+export async function behandleKnopf(interaktion, handler) {
+  const id = interaktion.data?.custom_id;
+  if (!id || typeof handler !== 'function') return;
+
+  const nutzer = interaktion.member?.user || interaktion.user || {};
+  const name = interaktion.member?.nick || nutzer.global_name || nutzer.username || 'jemand';
+
+  let ergebnis;
+  try {
+    ergebnis = await handler(id, { ...nutzer, anzeigename: name });
+  } catch (e) {
+    console.error('  Knopf', id, 'fehlgeschlagen:', e.message);
+    ergebnis = { text: '❌ Das hat nicht funktioniert: ' + e.message };
+  }
+  if (!ergebnis) return;
+
+  // Die alte Nachricht mitschicken, sonst ersetzt Typ 7 sie durch nichts.
+  const alt = interaktion.message || {};
+  const embeds = (alt.embeds || []).map(e => ({ ...e }));
+  if (ergebnis.fussnote && embeds[0]) {
+    const bisher = embeds[0].footer?.text ? embeds[0].footer.text + ' · ' : '';
+    embeds[0].footer = { text: (bisher + ergebnis.fussnote).slice(0, 2048) };
+  }
+
+  try {
+    await rest(`/interactions/${interaktion.id}/${interaktion.token}/callback`, 'POST', {
+      type: 7,                                   // Nachricht bearbeiten
+      data: {
+        ...(embeds.length ? { embeds } : {}),
+        ...(alt.content !== undefined ? { content: alt.content } : {}),
+        // Ein entfernter Knopf ist die einzige verlässliche Anzeige, dass es
+        // schon jemand gemacht hat.
+        components: ergebnis.knopfWeg === false ? (alt.components || []) : [],
+        allowed_mentions: { parse: [] },
+      },
+    });
+  } catch (e) {
+    console.error('  Knopf: Nachricht nicht bearbeitbar:', e.message);
+  }
+
+  // Die eigentliche Rückmeldung nur für den, der gedrückt hat.
+  if (ergebnis.text) {
+    try {
+      await rest(`/webhooks/${appId()}/${interaktion.token}`, 'POST',
+        { content: kappen(ergebnis.text, 1900), flags: 64, allowed_mentions: { parse: [] } });
+    } catch (e) { log('Knopf-Rückmeldung:', e.message); }
+  }
+  log('Knopf', id, 'von', nutzer.username || nutzer.id);
 }
 
 // Exportiert, damit die Rechteprüfung ohne echtes Gateway geprüft werden kann.
@@ -650,7 +778,7 @@ export function discordStop() {
   try { ws?.close(1000); } catch { /* egal */ }
 }
 
-export function verbinde(befehle) {
+export function verbinde(befehle, knopfHandler) {
   if (!discordAktiv() || aufgeben) return;
 
   const url = (fortsetzUrl || 'wss://gateway.discord.gg') + '/?v=10&encoding=json';
@@ -690,6 +818,9 @@ export function verbinde(befehle) {
           log('Sitzung fortgesetzt');
         } else if (p.t === 'INTERACTION_CREATE' && p.d?.type === 2) {
           fuehreAus(p.d, befehle).catch(e => console.error('  Interaktion:', e.message));
+        } else if (p.t === 'INTERACTION_CREATE' && p.d?.type === 3) {
+          // Jemand hat einen Knopf unter einer Meldung gedrückt.
+          behandleKnopf(p.d, knopfHandler).catch(e => console.error('  Knopf:', e.message));
         } else if (p.t === 'INTERACTION_CREATE' && p.d?.type === 4) {
           // Jemand tippt in einem Feld mit Vorschlagsliste.
           schlageVor(p.d, befehle).catch(e => log('Vorschläge:', e.message));
@@ -727,7 +858,7 @@ export function verbinde(befehle) {
 
     const wartezeit = Math.min(1000 * 2 ** versuche++, 60_000);
     info(`Gateway getrennt (${ev.code}) – neuer Versuch in ${Math.round(wartezeit / 1000)}s`);
-    setTimeout(() => verbinde(befehle), wartezeit);
+    setTimeout(() => verbinde(befehle, knopfHandler), wartezeit);
   });
 }
 
@@ -737,7 +868,7 @@ export function verbinde(befehle) {
  * ohneGateway: nur registrieren und senden, keine Dauerverbindung. Das braucht
  * der Probelauf über --discord-test, der sich gleich wieder beendet.
  */
-export async function discordStart(befehle, { ohneGateway = false } = {}) {
+export async function discordStart(befehle, { ohneGateway = false, knopf } = {}) {
   if (!discordAktiv()) return false;
   if (!CFG.CHEF_ID && !CFG.CHEF_KANAL) {
     console.warn('discord: weder UC_DISCORD_CHEF_ID noch UC_DISCORD_CHEF_KANAL gesetzt – ' +
@@ -748,6 +879,6 @@ export async function discordStart(befehle, { ohneGateway = false } = {}) {
   } catch (e) {
     console.error('discord: Befehle konnten nicht registriert werden:', e.message);
   }
-  if (!ohneGateway) verbinde(befehle);
+  if (!ohneGateway) verbinde(befehle, knopf);
   return true;
 }
