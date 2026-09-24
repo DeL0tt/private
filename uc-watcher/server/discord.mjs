@@ -48,7 +48,10 @@ const info = (...a) => console.log(new Date().toISOString(), 'discord:', ...a);
 
 export const discordAktiv = () => !!CFG.TOKEN;
 
-/** Welche Kanäle eingerichtet sind – für Hinweise in /melden und /watcher. */
+/** Ist das der Firmeninhaber? Für Knöpfe, die nur er bedienen darf. */
+export const istInhaber = (id) => !!CFG.CHEF_ID && String(id) === CFG.CHEF_ID;
+
+/** Welche Kanäle eingerichtet sind – für Hinweise in der Schaltzentrale. */
 export const kanaele = () => ({
   team: CFG.TEAM_KANAL, chef: CFG.CHEF_KANAL,
   vorfall: CFG.VORFALL_KANAL, befehl: CFG.BEFEHL_KANAL,
@@ -489,20 +492,75 @@ function pingTeile(ping, nutzer) {
  */
 const KNOPF_ID_MAX = 100;
 
+const kuerze = (t, n) => String(t ?? '').slice(0, n);
+
+/**
+ * Baut die Reihen unter einer Nachricht aus einer knappen Beschreibung.
+ *
+ * Eine Reihe ist entweder ein Auswahlmenü oder bis zu fünf Knöpfe; Discord
+ * erlaubt fünf Reihen. Beschrieben wird das als Liste von Listen:
+ *
+ *   [[{ knopf: 'Aus', id: 'x', stil: 4 }, { knopf: 'An', id: 'y' }],
+ *    [{ auswahl: 'Thema wählen', id: 'z', optionen: [{ name, value, beschreibung? }] }],
+ *    [{ kanalwahl: 'Kanal wählen', id: 'k' }]]
+ *
+ * Stile: 1 blau, 2 grau, 3 grün, 4 rot.
+ */
+export function reihen(spec = []) {
+  const zeilen = (spec || []).filter(Boolean).slice(0, 5).map(reihe => {
+    const teile = (Array.isArray(reihe) ? reihe : [reihe]).filter(Boolean);
+    const erstes = teile[0] || {};
+
+    if (erstes.auswahl !== undefined) {
+      return { type: 1, components: [{
+        type: 3,                                   // Auswahlmenü mit Texten
+        custom_id: kuerze(erstes.id, KNOPF_ID_MAX),
+        placeholder: kuerze(erstes.auswahl, 150),
+        options: (erstes.optionen || []).slice(0, 25).map(o => ({
+          label: kuerze(o.name, 100),
+          value: kuerze(o.value, 100),
+          ...(o.beschreibung ? { description: kuerze(o.beschreibung, 100) } : {}),
+          ...(o.emoji ? { emoji: { name: o.emoji } } : {}),
+          ...(o.gewaehlt ? { default: true } : {}),
+        })),
+      }] };
+    }
+
+    if (erstes.kanalwahl !== undefined) {
+      return { type: 1, components: [{
+        type: 8,                                   // Auswahlmenü für Kanäle
+        custom_id: kuerze(erstes.id, KNOPF_ID_MAX),
+        placeholder: kuerze(erstes.kanalwahl, 150),
+        channel_types: [0, 5],                     // Text und Ankündigungen
+      }] };
+    }
+
+    return { type: 1, components: teile.slice(0, 5).map(k => ({
+      type: 2,
+      style: k.stil || 2,
+      label: kuerze(k.knopf, 80),
+      custom_id: kuerze(k.id, KNOPF_ID_MAX),
+      ...(k.emoji ? { emoji: { name: k.emoji } } : {}),
+      ...(k.gesperrt ? { disabled: true } : {}),
+    })) };
+  });
+  return zeilen.filter(z => z.components.length);
+}
+
+/**
+ * Ein Knopf unter der Nachricht. Gedacht für „erledigt, keine Erinnerung
+ * mehr": ein Druck erreicht jeden, der die Nachricht sieht, ohne dass jemand
+ * einen Befehl kennen muss.
+ *
+ * custom_id trägt die Kennung mit, denn Discord schickt beim Druck nur sie
+ * zurück – höchstens 100 Zeichen.
+ */
 function knopfTeile(knopf) {
   if (!knopf?.id) return {};
-  return {
-    components: [{
-      type: 1,                                   // Reihe
-      components: [{
-        type: 2,                                 // Knopf
-        style: knopf.stil || 3,                  // 3 = grün
-        label: String(knopf.text || 'Erledigt').slice(0, 80),
-        custom_id: String(knopf.id).slice(0, KNOPF_ID_MAX),
-        ...(knopf.emoji ? { emoji: { name: knopf.emoji } } : {}),
-      }],
-    }],
-  };
+  return { components: reihen([[{
+    knopf: knopf.text || 'Erledigt', id: knopf.id, stil: knopf.stil || 3,
+    emoji: knopf.emoji,
+  }]]) };
 }
 
 async function inKanal(kanal, titel, text, prio, fuss, ping, pingNutzer, knopf) {
@@ -637,6 +695,23 @@ export async function schlageVor(interaktion, befehle) {
  * der Knopf für jeden, und im Kanal steht, wer sich gekümmert hat. Ohne das
  * würden fünf Leute nacheinander drücken, ohne voneinander zu wissen.
  */
+/**
+ * Jemand hat einen Knopf gedrückt, etwas aus einem Menü gewählt oder ein
+ * Eingabefenster abgeschickt.
+ *
+ * `handler(id, nutzer, werte)` entscheidet, was das bedeutet. `werte` sind die
+ * gewählten Einträge eines Menüs oder die Eingaben eines Fensters. Zurück
+ * kommt eines von:
+ *
+ *   { text, fussnote?, knopfWeg? }  – Rückmeldung nur an den Drückenden; die
+ *                                     Nachricht behält ihren Inhalt, der Knopf
+ *                                     verschwindet (knopfWeg: false lässt ihn)
+ *   { tafel: { titel, text, reihen } } – die Nachricht wird neu gezeichnet
+ *   { fenster: { id, titel, felder } } – ein Eingabefenster geht auf
+ *
+ * Die Nachricht wird mit Antworttyp 7 bearbeitet: so bleibt eine einzige
+ * Nachricht die Schaltzentrale, statt bei jedem Klick eine neue zu schicken.
+ */
 export async function behandleKnopf(interaktion, handler) {
   const id = interaktion.data?.custom_id;
   if (!id || typeof handler !== 'function') return;
@@ -644,18 +719,68 @@ export async function behandleKnopf(interaktion, handler) {
   const nutzer = interaktion.member?.user || interaktion.user || {};
   const name = interaktion.member?.nick || nutzer.global_name || nutzer.username || 'jemand';
 
+  // Aus einem Menü kommen die gewählten Werte, aus einem Eingabefenster die
+  // Texte – beides als flache Liste, damit der Handler nicht zwei Formen
+  // unterscheiden muss.
+  const werte = interaktion.data?.values
+    || (interaktion.data?.components || [])
+         .flatMap(r => (r.components || []).map(f => f.value))
+         .filter(v => v !== undefined);
+
   let ergebnis;
   try {
-    ergebnis = await handler(id, { ...nutzer, anzeigename: name });
+    ergebnis = await handler(id, { ...nutzer, anzeigename: name }, werte);
   } catch (e) {
-    console.error('  Knopf', id, 'fehlgeschlagen:', e.message);
+    console.error('  Interaktion', id, 'fehlgeschlagen:', e.message);
     ergebnis = { text: '❌ Das hat nicht funktioniert: ' + e.message };
   }
   if (!ergebnis) return;
 
+  // --- Ein Eingabefenster: muss die erste Antwort sein, nichts davor ---
+  if (ergebnis.fenster) {
+    const f = ergebnis.fenster;
+    try {
+      await rest(`/interactions/${interaktion.id}/${interaktion.token}/callback`, 'POST', {
+        type: 9,                                   // Eingabefenster
+        data: {
+          custom_id: kuerze(f.id, KNOPF_ID_MAX),
+          title: kuerze(f.titel, 45),
+          components: (f.felder || []).slice(0, 5).map(feld => ({
+            type: 1,
+            components: [{
+              type: 4, custom_id: kuerze(feld.id, KNOPF_ID_MAX),
+              label: kuerze(feld.name, 45), style: 1,
+              required: feld.pflicht !== false,
+              ...(feld.hinweis ? { placeholder: kuerze(feld.hinweis, 100) } : {}),
+              max_length: feld.max || 100,
+            }],
+          })),
+        },
+      });
+    } catch (e) { console.error('  Eingabefenster ging nicht auf:', e.message); }
+    return;
+  }
+
   // Die alte Nachricht mitschicken, sonst ersetzt Typ 7 sie durch nichts.
   const alt = interaktion.message || {};
   const embeds = (alt.embeds || []).map(e => ({ ...e }));
+
+  if (ergebnis.tafel) {
+    // Neu zeichnen: dieselbe Nachricht, anderer Inhalt.
+    const t = ergebnis.tafel;
+    embeds[0] = embed(t.titel, t.text, t.prio || 'min', t.fuss);
+    try {
+      await rest(`/interactions/${interaktion.id}/${interaktion.token}/callback`, 'POST', {
+        type: 7,
+        data: { embeds: [embeds[0]], components: reihen(t.reihen),
+                allowed_mentions: { parse: [] } },
+      });
+    } catch (e) { console.error('  Tafel nicht bearbeitbar:', e.message); }
+    if (ergebnis.text) await nachreichen(interaktion, ergebnis.text);
+    log('Tafel', id, 'von', nutzer.username || nutzer.id);
+    return;
+  }
+
   if (ergebnis.fussnote && embeds[0]) {
     const bisher = embeds[0].footer?.text ? embeds[0].footer.text + ' · ' : '';
     embeds[0].footer = { text: (bisher + ergebnis.fussnote).slice(0, 2048) };
@@ -677,14 +802,29 @@ export async function behandleKnopf(interaktion, handler) {
     console.error('  Knopf: Nachricht nicht bearbeitbar:', e.message);
   }
 
-  // Die eigentliche Rückmeldung nur für den, der gedrückt hat.
-  if (ergebnis.text) {
-    try {
-      await rest(`/webhooks/${appId()}/${interaktion.token}`, 'POST',
-        { content: kappen(ergebnis.text, 1900), flags: 64, allowed_mentions: { parse: [] } });
-    } catch (e) { log('Knopf-Rückmeldung:', e.message); }
-  }
+  if (ergebnis.text) await nachreichen(interaktion, ergebnis.text);
   log('Knopf', id, 'von', nutzer.username || nutzer.id);
+}
+
+/** Eine Rückmeldung, die nur der sieht, der gedrückt hat. */
+async function nachreichen(interaktion, text) {
+  try {
+    await rest(`/webhooks/${appId()}/${interaktion.token}`, 'POST',
+      { content: kappen(text, 1900), flags: 64, allowed_mentions: { parse: [] } });
+  } catch (e) { log('Rückmeldung:', e.message); }
+}
+
+/**
+ * Die Schaltzentrale in einen Kanal stellen. Gibt die Nachricht zurück, damit
+ * der Aufrufer sie anpinnen oder ihre Adresse nennen kann.
+ */
+export async function tafelSenden(kanal, tafel) {
+  if (!kanal) throw new Error('KEIN_KANAL');
+  return rest(`/channels/${kanal}/messages`, 'POST', {
+    embeds: [embed(tafel.titel, tafel.text, tafel.prio || 'min', tafel.fuss)],
+    components: reihen(tafel.reihen),
+    allowed_mentions: { parse: [] },
+  });
 }
 
 // Exportiert, damit die Rechteprüfung ohne echtes Gateway geprüft werden kann.
@@ -735,7 +875,8 @@ export async function fuehreAus(interaktion, befehle) {
   try {
     const optionen = {};
     for (const o of interaktion.data?.options || []) optionen[o.name] = o.value;
-    const ergebnis = await b.ausfuehren({ istChef, nutzer, rollen, optionen, oeffentlich });
+    const ergebnis = await b.ausfuehren({ istChef, nutzer, rollen, optionen, oeffentlich,
+                                          kanal: interaktion.channel_id || '' });
     await antworte(interaktion, ergebnis, heimlich);
     log('Befehl', name, 'von', nutzer.username || nutzer.id);
   } catch (e) {
@@ -796,8 +937,8 @@ export function verbinde(befehle, knopfHandler) {
           log('Sitzung fortgesetzt');
         } else if (p.t === 'INTERACTION_CREATE' && p.d?.type === 2) {
           fuehreAus(p.d, befehle).catch(e => console.error('  Interaktion:', e.message));
-        } else if (p.t === 'INTERACTION_CREATE' && p.d?.type === 3) {
-          // Jemand hat einen Knopf unter einer Meldung gedrückt.
+        } else if (p.t === 'INTERACTION_CREATE' && (p.d?.type === 3 || p.d?.type === 5)) {
+          // Ein Knopf, eine Auswahl oder ein abgeschicktes Eingabefenster.
           behandleKnopf(p.d, knopfHandler).catch(e => console.error('  Knopf:', e.message));
         } else if (p.t === 'INTERACTION_CREATE' && p.d?.type === 4) {
           // Jemand tippt in einem Feld mit Vorschlagsliste.

@@ -410,65 +410,99 @@ Befehle, die er auch ausführen kann. Ein Angestellter sieht die vier
 Inhaber-Befehle dort gar nicht, sondern nur deren Anzahl, ohne Namen, damit er
 weiß, dass es sie gibt. Der Inhaber sieht alles ohne Hinweis.
 
-### Meldungen umstellen: `/melden`
+### Die Schaltzentrale: `/melden`
 
-Damit änderst du im Discord selbst, **ohne SSH und ohne Neustart**, wer welche
-Meldung sieht.
+`/melden` stellt **eine Nachricht** in den Kanal, in dem du den Befehl benutzt.
+Diese Nachricht ist die Schaltzentrale: Sie zeigt alle Meldungen mit ihrem
+Zustand, und du stellst sie darin mit Menüs und Knöpfen um.
 
-`/melden` ohne alles zeigt eine Übersicht aller 20 Meldungsarten mit ihrem
-aktuellen Ziel. Ein ✏️ markiert, was du selbst geändert hast.
+**Pinne sie an** (Rechtsklick auf die Nachricht → Anpinnen), dann findest du sie
+immer wieder. Sie funktioniert dauerhaft, auch Wochen später und nach einem
+Neustart des Watchers — welches Thema gerade offen ist, steckt in den Knöpfen
+selbst, nicht im Speicher des Dienstes.
 
-`/melden thema:<Meldung>` zeigt nur diese eine Regel.
+**Die Übersicht:**
 
-Zum Ändern kommt ein Schalter dazu. Es gibt sechs, und alle sind Ja/Nein
-oder ein Kanal – keine Auswahllisten mehr:
+```
+🎛️ Meldungen – Schaltzentrale
 
-| Option | Wirkung |
+·  Plötzlicher Lagerverlust (mit Namen)
+✏️ Lagerbestand niedrig — #lager
+·  Nachkauf setzt aus
+   …
+✏️ Vorfall im Unternehmen — #vorfälle · Ping · Nachfassen 5′
+🔇 Mietrückstand
+✏️ Vorfall: ABWERBUNG — #vorfälle · Ping · Nachfassen 5′
+
+· Voreinstellung · ✏️ von dir geändert · 🔇 abgeschaltet
+
+[▼ Thema zum Umstellen wählen        ]
+( ➕ Vorfallsart hinzufügen )  ( 🔄 Neu laden )
+```
+
+Wählst du ein Thema aus dem Menü, zeigt **dieselbe** Nachricht dessen Zustand
+samt Knöpfen. Es sammeln sich also keine Nachrichten an:
+
+```
+Vorfall im Unternehmen
+
+📬 Geht nach #vorfälle
+🔔 Pingt, wer gerade ingame online ist.
+⏰ Bleibt der Vorfall offen, kommt nach 5 Min. eine Erinnerung.
+
+( 🔇 Abschalten ) ( 🔕 Ping aus ) ( ⏰ Nachfassen aus ) ( ↩️ Zurücksetzen )
+[# In einen anderen Kanal schicken  ]
+( ◀️ Zurück zur Übersicht )
+```
+
+| Knopf | Wirkung |
 |---|---|
-| `kanal:` | Diese Meldung geht in diesen Kanal statt in den vorgesehenen. |
-| `aus:` | Ja = die Meldung kommt **gar nicht mehr**, auch nicht aufs Handy. Nein = wieder an. |
-| `ping:` | **Nur bei Vorfällen.** Ja = anpingen, wer gerade ingame online ist. |
-| `erinnerung:` | **Nur beim Vorfall im Unternehmen.** Ja = nach 5 Minuten nachfassen, solange er offen ist. |
-| `vorfallart:` | **Nur beim Vorfall.** Die Einstellung gilt dann nur für diese Art, z. B. `ABWERBUNG`. |
-| `standard:` | Ja = alle eigenen Einstellungen für dieses Thema verwerfen. |
+| **Abschalten** | Die Meldung kommt **gar nicht mehr** – auch nicht aufs Handy. Der Knopf wird dann zu „Wieder einschalten". |
+| **Ping an/aus** | Anpingen, wer gerade ingame online ist. Erscheint nur bei Vorfällen – alles andere hat keine Frist. |
+| **Nachfassen an/aus** | Nach 5 Minuten erinnern, solange der Vorfall offen ist. Nur beim Vorfall im Unternehmen. |
+| **Zurücksetzen** | Verwirft alles, was du für dieses Thema eingestellt hast. Erscheint nur, wenn es etwas zu verwerfen gibt. |
+| **Kanal wählen** | Ein Auswahlmenü mit allen Textkanälen. Die Meldung geht danach dorthin. |
+| **Vorfallsart hinzufügen** | Öffnet ein Eingabefeld für eine Art wie `ABWERBUNG`. Danach lässt sie sich einzeln einstellen, unabhängig von den übrigen Vorfällen. |
 
-**Beispiele:**
+**Nur du kannst sie bedienen.** Die Nachricht steht sichtbar im Kanal, aber ein
+Klick von jemand anderem bekommt nur den Hinweis, dass das dem Inhaber
+vorbehalten ist — eine angepinnte Nachricht wäre sonst eine offene
+Fernbedienung.
 
-```
-/melden thema:Vorfall im Unternehmen  kanal:#⚠️〢vorfälle
-/melden thema:Vorfall im Unternehmen  vorfallart:ABWERBUNG  erinnerung:true
-/melden thema:Wiki-Änderungen         aus:true
-/melden thema:Kassenvorfall           ping:true
-/melden thema:Lagerbestand niedrig    standard:true
-```
+Verlierst du die Tafel, ruf einfach wieder `/melden`. Eine zweite funktioniert
+genauso; sie zeigen beide denselben Stand, weil beide dieselbe Datei lesen.
 
 ### Was fest ist und nicht mehr einstellbar
 
-Vier Entscheidungen hat der Watcher jetzt für dich getroffen, weil es für jedes
-Thema dieselbe Antwort gab:
+Vier Entscheidungen hat der Watcher für dich getroffen, weil es für jedes Thema
+dieselbe Antwort gab:
 
 | | |
 |---|---|
-| **Ruhezeit** | Jede Meldung kommt höchstens **alle 30 Minuten**. Eine Einstellung je Thema war eine Frage mit nur einer Antwort. |
+| **Ruhezeit** | Jede Meldung kommt höchstens **alle 30 Minuten**. |
 | **Ping** | Immer nur **wer gerade ingame online ist**, und nur bei Vorfällen. `@everyone`, `@here` und Rollen-Pings gibt es nicht mehr — sie erreichten verlässlich die Falschen: Leute, die Discord offen haben, aber nicht spielen. |
 | **Nachfassen** | Immer nach **5 Minuten**. Bei einer Frist von zehn Minuten ist alles andere zu früh oder zu spät. |
-| **Zwischenstand der Ausschüttung** | **Alle 3 Stunden**. Wer ihn gar nicht will, schaltet das Thema mit `aus:true` ab — dieselbe Wirkung, eine Einstellung weniger. |
+| **Zwischenstand der Ausschüttung** | **Alle 3 Stunden**. Wer ihn gar nicht will, schaltet das Thema ab — dieselbe Wirkung, eine Einstellung weniger. |
 
-Alle vier lassen sich noch über die `.env` verschieben (`UC_ERINNERUNG_MIN`,
-`UC_VORFALL_ERINNERUNG_MIN`, `UC_AUSSCHUETTUNG_TAKT`), aber nicht mehr aus dem
-Discord heraus. Das ist Absicht: es sind Entscheidungen für die ganze Firma,
-nicht je Meldung.
+Über die `.env` lassen sie sich verschieben (`UC_ERINNERUNG_MIN`,
+`UC_VORFALL_ERINNERUNG_MIN`, `UC_AUSSCHUETTUNG_TAKT`), aus dem Discord heraus
+nicht. Das ist Absicht: es sind Entscheidungen für die ganze Firma, nicht je
+Meldung.
 
 ### Wohin eine Meldung geht
 
 Jedes Thema hat einen vorgesehenen Ort — ins Team, zu dir, oder in den
-Vorfall-Kanal. `kanal:` überschreibt das. Ein zusätzliches `ziel:`-Feld gab es
-einmal; es sagte nichts, was `kanal:` nicht schon sagt.
+Vorfall-Kanal. Die Kanalauswahl an der Tafel überschreibt das.
 
 Meldungen mit Namenslisten (Diebstahlverdacht, Personal) gehen von Haus aus
-**nur an dich**. Setzt du dort einen Kanal, ist das eine bewusste Entscheidung —
-der Bot hält dich nicht davon ab.
+**nur an dich**. Schickst du sie in einen geteilten Kanal, ist das eine bewusste
+Entscheidung — der Bot hält dich nicht davon ab.
 
+Abschalten heißt **vollständig** abschalten, auch die Benachrichtigung aufs
+Handy über ntfy. Sonst wäre die Einstellung eine Halbwahrheit.
+
+Die Regeln liegen in `uc-watcher-regeln.json` neben dem Zustand und gelten
+sofort. Löschst du die Datei, gilt wieder die Voreinstellung.
 
 ### Der Knopf „Ich kümmere mich"
 
@@ -498,21 +532,13 @@ Eintrag aufgeräumt.
 `/testvorfall` schickt den Knopf mit und sagt in der Antwort, was ein Druck
 bei dieser Vorfallsart bewirken würde.
 
-`aus:true` schaltet eine Meldung **vollständig** ab – auch die
-Benachrichtigung aufs Handy über ntfy, nicht nur die im Discord. Sonst wäre die
-Einstellung eine Halbwahrheit.
-
-Zwei Dinge dazu:
+Zwei Dinge zum Ping:
 
 - **Pings wirken in Kanälen**, auch in deinem Inhaber-Kanal. Nur in einer DM
   gibt es sie nicht – dort erreicht dich die Meldung ohnehin direkt.
 - **Ein Ping braucht eine Zuordnung.** Gepingt wird, wer per `/zuordnen`
   bekannt ist und gerade spielt. Ohne Zuordnung bleibt es still – der Bot
   erfindet niemanden.
-
-Die Regeln liegen in `uc-watcher-regeln.json` neben dem Zustand und gelten
-sofort, auch nach einem Neustart. Löschst du die Datei, gilt wieder die
-Voreinstellung.
 
 ### Nur anpingen, wer gerade spielt
 
@@ -534,11 +560,7 @@ gehört. Das stellst du mit `/zuordnen` ein:
 Der Bot prüft dabei mit, ob er den Namen im Team überhaupt kennt, und sagt es
 dir, wenn nicht – meist ein Tippfehler. Groß- und Kleinschreibung ist egal.
 
-Dann den Ping setzen:
-
-```
-/melden thema:Vorfall im Unternehmen  ping:true
-```
+Dann an der Schaltzentrale das Thema wählen und **Ping an** drücken.
 
 Auf dem Server kannst du jederzeit nachsehen, wen es gerade träfe:
 

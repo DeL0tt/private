@@ -221,8 +221,8 @@ sie sich wiederholt – und ob sie überhaupt kommt. Alles ohne SSH und ohne
 Neustart. `/melden` ohne Angaben zeigt die Übersicht. Die Einstellungen stehen
 in `uc-watcher-regeln.json`.
 
-`/melden` stellt ein, wer welche Meldung sieht: `kanal:`, `aus:`, `ping:`,
-`erinnerung:` – alles Ja/Nein oder ein Kanal.
+`/melden` stellt die Schaltzentrale in den Kanal: eine anpinnbare Nachricht mit
+Menüs und Knöpfen, an der alle Meldungen umgestellt werden.
 `/zuordnen` verbindet Discord-Konten mit Spielernamen, damit „nur wer ingame
 online ist" pingen kann.
 

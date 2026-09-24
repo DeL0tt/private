@@ -9,7 +9,7 @@ import path from 'node:path';
 import { discordAktiv, discordSende, discordStart, discordStop, empfaenger,
          regelText, THEMEN, themaName, ladeRegeln, speichereRegeln,
          ladeZuordnung, speichereZuordnung, zuordnungEigen, pruefeToken,
-         kanaele, pingbar, ERINNERUNG_MIN,
+         kanaele, pingbar, ERINNERUNG_MIN, tafelSenden, istInhaber,
          istErledigt, merkeErledigt } from './discord.mjs';
 import { merkeZeiten, merkeAusschuettung, merkeAuszahlung, speichereArchiv,
          ladeArchiv, holeTag, holeTage, letzteTage, alleTage, tagMinus,
@@ -1100,7 +1100,19 @@ function erledigtKnopf(schluessel) {
  * die Fußnote der Meldung, damit im Kanal steht, wer sich kümmert – sonst
  * drücken fünf Leute nacheinander, ohne voneinander zu wissen.
  */
-async function knopfGedrueckt(id, nutzer) {
+async function knopfGedrueckt(id, nutzer, werte = []) {
+  // Die Schaltzentrale bringt ihre eigenen Kennungen mit. Sie gehört dem
+  // Inhaber: sie steht zwar in einem Kanal, aber umstellen darf nur er –
+  // sonst wäre eine angepinnte Nachricht eine offene Fernbedienung.
+  if (id.startsWith(ZT)) {
+    if (!istInhaber(nutzer.id)) {
+      return { text: '🔒 Die Schaltzentrale kann nur der Firmeninhaber ' +
+                     'bedienen. Angesehen werden darf sie von allen.',
+               knopfWeg: false };
+    }
+    return ztKlick(id, werte);
+  }
+
   if (!id.startsWith(KNOPF_ERLEDIGT)) return null;
   const schluessel = id.slice(KNOPF_ERLEDIGT.length);
   const name = nutzer.anzeigename || nutzer.username || 'jemand';
@@ -2088,6 +2100,227 @@ function zeitraumText(tage) {
   return t;
 }
 
+/* ========================= SCHALTZENTRALE ========================= */
+
+/**
+ * Eine Nachricht, an der sich alle Meldungen umstellen lassen.
+ *
+ * Statt neun Feldern in einem Befehl: eine Tafel, die man anpinnt. Sie zeigt
+ * die Übersicht, man wählt ein Thema aus dem Menü, und für dieses Thema
+ * stehen dann Knöpfe da. Nach jedem Klick wird dieselbe Nachricht neu
+ * gezeichnet – es sammelt sich nichts an.
+ *
+ * Der Zustand steckt in den Kennungen der Knöpfe, nicht im Speicher: welches
+ * Thema gerade offen ist, steht in jeder custom_id. So funktioniert die Tafel
+ * auch Wochen später und nach einem Neustart des Dienstes weiter.
+ */
+const ZT = 'zt:';                       // Vorsilbe aller Kennungen der Tafel
+
+const ztId = (was, thema = '') => ZT + was + (thema ? '|' + thema : '');
+
+/** Kurzer Zustand eines Themas für die Übersicht. */
+function ztZeile(schluessel, name, regeln) {
+  const eigen = regeln[schluessel];
+  const r = empfaenger(schluessel, regeln);
+  const zeichen = r.ziel === 'aus' ? '🔇'
+    : eigen ? '✏️' : '·';
+  const zusatz = [
+    r.ziel === 'kanal' && r.kanal ? `<#${r.kanal}>` : null,
+    r.ping === 'online' ? 'Ping' : null,
+    eigen?.erinnerung ? `Nachfassen ${ERINNERUNG_MIN}′` : null,
+  ].filter(Boolean);
+  return `${zeichen} **${name}**${zusatz.length ? ' — ' + zusatz.join(' · ') : ''}`;
+}
+
+/** Alle Themen, die man wählen kann: die feste Liste plus eigene Vorfallsarten. */
+function ztThemen(regeln) {
+  const arten = Object.keys(regeln)
+    .filter(k => k.startsWith('event_') && k !== 'event_')
+    .map(k => [k, `Vorfall: ${k.slice('event_'.length)}`]);
+  return [...THEMEN, ...arten];
+}
+
+/** Die Übersicht: alle Themen, dazu das Menü zum Auswählen. */
+function ztUebersicht() {
+  const regeln = ladeRegeln();
+  const themen = ztThemen(regeln);
+  const zeilen = themen.map(([k, name]) => ztZeile(k, name, regeln));
+
+  let text = zeilen.join('\n') +
+    '\n\n`·` Voreinstellung · `✏️` von dir geändert · `🔇` abgeschaltet' +
+    `\n\nJede Meldung kommt höchstens alle ${CFG.ERINNERUNG_MIN} Min. Gepingt ` +
+    'wird nur bei Vorfällen, und nur, wer gerade ingame online ist.';
+  if (!kanaele().vorfall) {
+    text += '\n\n⚠️ Kein eigener Vorfall-Kanal eingetragen – Vorfälle gehen ' +
+      'dorthin, wo die Zeile oben hinzeigt. Hier änderbar, oder dauerhaft mit ' +
+      '`UC_DISCORD_VORFALL_KANAL` in der `.env`.';
+  }
+
+  return {
+    titel: '🎛️ Meldungen – Schaltzentrale',
+    text,
+    fuss: 'Diese Nachricht bleibt. Anpinnen, dann ist sie immer da.',
+    reihen: [
+      [{ auswahl: 'Thema zum Umstellen wählen', id: ztId('waehle'),
+         optionen: themen.slice(0, 24).map(([k, name]) => ({
+           name, value: k,
+           beschreibung: regelText(empfaenger(k, regeln))
+             .replace(/<#(\d+)>/g, 'Kanal').slice(0, 100),
+         })) }],
+      [{ knopf: 'Vorfallsart hinzufügen', id: ztId('neueart'), stil: 2, emoji: '➕' },
+       { knopf: 'Neu laden', id: ztId('laden'), stil: 2, emoji: '🔄' }],
+    ],
+  };
+}
+
+/** Die Ansicht eines Themas: was gilt, und die Knöpfe dafür. */
+function ztThema(schluessel) {
+  const regeln = ladeRegeln();
+  const eintrag = ztThemen(regeln).find(([k]) => k === schluessel);
+  if (!eintrag) return ztUebersicht();
+  const [, name] = eintrag;
+  const eigen = regeln[schluessel] || {};
+  const r = empfaenger(schluessel, regeln);
+  const aus = r.ziel === 'aus';
+  const darfPingen = pingbar(schluessel);
+  const darfNachfassen = schluessel === 'event_' || schluessel.startsWith('event_');
+
+  // Nur das Ziel, nicht den ganzen Regeltext: Ping und Nachfassen bekommen
+  // eigene Zeilen, und zweimal dasselbe zu lesen hilft niemandem.
+  const wohin = r.ziel === 'aus' ? '—'
+    : r.ziel === 'kanal' && r.kanal ? `<#${r.kanal}>`
+    : r.ziel === 'team' ? (kanaele().team ? `<#${kanaele().team}>` : 'ins Team')
+    : kanaele().chef ? `<#${kanaele().chef}>` : 'an dich (als DM)';
+
+  const text = [
+    `**${name}**`,
+    '',
+    aus ? '📭 Geht nirgendwohin.' : `📬 Geht nach ${wohin}`,
+    '',
+    aus ? '🔇 Diese Meldung ist abgeschaltet – auch aufs Handy kommt nichts.' : null,
+    darfPingen
+      ? (r.ping === 'online'
+          ? '🔔 Pingt, wer gerade ingame online ist.'
+          : '🔕 Pingt niemanden.')
+      : '_Ping gibt es hier nicht: kein Vorfall, also keine Frist._',
+    darfNachfassen
+      ? (eigen.erinnerung
+          ? `⏰ Bleibt der Vorfall offen, kommt nach ${ERINNERUNG_MIN} Min. eine Erinnerung.`
+          : '⏰ Es wird nicht nachgefasst. Der Knopf „Ich kümmere mich" hängt trotzdem an jeder Meldung.')
+      : null,
+    Object.keys(eigen).length
+      ? null
+      : '_Hier ist nichts von dir eingestellt – es gilt die Voreinstellung._',
+  ].filter(x => x !== null).join('\n');
+
+  const schalter = [
+    { knopf: aus ? 'Wieder einschalten' : 'Abschalten',
+      id: ztId(aus ? 'an' : 'aus', schluessel), stil: aus ? 3 : 4,
+      emoji: aus ? '🔊' : '🔇' },
+    darfPingen
+      ? { knopf: r.ping === 'online' ? 'Ping aus' : 'Ping an',
+          id: ztId('ping', schluessel), stil: 1,
+          emoji: r.ping === 'online' ? '🔕' : '🔔' }
+      : null,
+    darfNachfassen
+      ? { knopf: eigen.erinnerung ? 'Nachfassen aus' : 'Nachfassen an',
+          id: ztId('erinnerung', schluessel), stil: 1, emoji: '⏰' }
+      : null,
+    Object.keys(eigen).length
+      ? { knopf: 'Zurücksetzen', id: ztId('standard', schluessel), stil: 2, emoji: '↩️' }
+      : null,
+  ].filter(Boolean);
+
+  return {
+    titel: '🎛️ Meldungen – Schaltzentrale',
+    text,
+    fuss: 'Änderungen gelten sofort.',
+    reihen: [
+      schalter,
+      [{ kanalwahl: 'In einen anderen Kanal schicken', id: ztId('kanal', schluessel) }],
+      [{ knopf: 'Zurück zur Übersicht', id: ztId('laden'), stil: 2, emoji: '◀️' }],
+    ],
+  };
+}
+
+/**
+ * Ein Klick auf der Tafel. Gibt die neu gezeichnete Tafel zurück – und wo es
+ * etwas zu sagen gibt, einen Satz dazu, den nur der Klickende sieht.
+ */
+function ztKlick(id, werte) {
+  const [was, schluessel = ''] = id.slice(ZT.length).split('|');
+
+  if (was === 'laden') return { tafel: ztUebersicht() };
+  if (was === 'waehle') return { tafel: ztThema(werte[0]) };
+
+  if (was === 'neueart') {
+    return { fenster: {
+      id: ztId('neueart_fertig'),
+      titel: 'Vorfallsart hinzufügen',
+      felder: [{ id: 'art', name: 'Art, z. B. ABWERBUNG', hinweis: 'ABWERBUNG',
+                 max: 30 }],
+    } };
+  }
+  if (was === 'neueart_fertig') {
+    const art = artSchluessel(werte[0] || '');
+    // artSchluessel macht aus allem Unerlaubten Unterstriche – aus reinen
+    // Leerzeichen also '___'. Das ist kein Name, sondern eine leere Eingabe.
+    if (!/[A-Z0-9]/.test(art)) {
+      return { tafel: ztUebersicht(),
+               text: '❌ Das war kein Name. Erwartet wird etwas wie `ABWERBUNG`.' };
+    }
+    const thema = `event_${art}`;
+    const regeln = ladeRegeln();
+    // Anlegen, damit die Art in der Liste auftaucht. Ohne Eintrag gälte
+    // ohnehin die allgemeine Vorfallsregel – der leere Eintrag ändert daran
+    // nichts, macht die Art aber wählbar.
+    if (!regeln[thema]) { regeln[thema] = {}; speichereRegeln(regeln); }
+    return { tafel: ztThema(thema),
+             text: `✅ **${art}** ist jetzt einzeln einstellbar.` };
+  }
+
+  const regeln = ladeRegeln();
+  const regel = { ...(regeln[schluessel] || {}) };
+  let hinweis = '';
+
+  switch (was) {
+    case 'aus':  regel.aus = true;  hinweis = 'Abgeschaltet – auch aufs Handy kommt nichts mehr.'; break;
+    case 'an':   delete regel.aus;  hinweis = 'Wieder eingeschaltet.'; break;
+    case 'ping':
+      if (!pingbar(schluessel)) {
+        return { tafel: ztThema(schluessel),
+                 text: '❌ Ping gibt es nur bei Vorfällen – alles andere hat keine Frist.' };
+      }
+      regel.ping = empfaenger(schluessel, regeln).ping !== 'online';
+      break;
+    case 'erinnerung':
+      if (!schluessel.startsWith('event_')) {
+        return { tafel: ztThema(schluessel),
+                 text: '❌ Nachfassen gibt es nur beim Vorfall im Unternehmen.' };
+      }
+      regel.erinnerung = !regel.erinnerung;
+      hinweis = regel.erinnerung
+        ? `Nachgefasst wird nach ${ERINNERUNG_MIN} Minuten, höchstens ` +
+          `${CFG.VORFALL_ERINNERUNG_MAX}-mal. Der Knopf „Ich kümmere mich" beendet es.`
+        : 'Es wird nicht mehr nachgefasst. Der Knopf bleibt trotzdem dran.';
+      break;
+    case 'kanal':
+      regel.kanal = werte[0];
+      hinweis = `Geht jetzt nach <#${werte[0]}>.`;
+      break;
+    case 'standard':
+      delete regeln[schluessel];
+      speichereRegeln(regeln);
+      return { tafel: ztThema(schluessel), text: '↩️ Wieder auf Voreinstellung.' };
+    default:
+      return { tafel: ztUebersicht() };
+  }
+
+  regeln[schluessel] = regel;
+  speichereRegeln(regeln);
+  return { tafel: ztThema(schluessel), text: hinweis || undefined };
+}
+
 const BEFEHLE = {
   firma: {
     beschreibung: 'Zustand der Firma: Status, Lager, Personal, wer online ist',
@@ -2539,153 +2772,28 @@ const BEFEHLE = {
   },
 
   melden: {
-    beschreibung: 'Einstellen, wer welche Meldung sieht und ob gepingt wird',
+    beschreibung: 'Die Schaltzentrale aufstellen: welche Meldung wohin geht',
     verbergen: CFG.BEFEHLE_VERBERGEN,
     nurChef: true,
-    optionen: [
-      { name: 'thema', description: 'Welche Meldung?', type: 3, required: false,
-        choices: THEMEN.map(([k, name]) => ({ name: name.slice(0, 100), value: k })) },
-      { name: 'kanal', description: 'In diesen Kanal statt in den vorgesehenen',
-        type: 7, required: false },
-      { name: 'aus', description: 'Diese Meldung abschalten (auch aufs Handy)',
-        type: 5, required: false },
-      { name: 'ping', description: 'Nur bei Vorfällen: anpingen, wer gerade ingame online ist',
-        type: 5, required: false },
-      { name: 'erinnerung', description: `Nur bei Vorfällen: nach ${ERINNERUNG_MIN} Min. nachfassen, solange er offen ist`,
-        type: 5, required: false },
-      { name: 'vorfallart', description: 'Nur bei Vorfällen: Art wählen oder eintippen, z. B. ABWERBUNG',
-        type: 3, required: false, autocomplete: true },
-      { name: 'standard', description: 'Eigene Einstellungen für dieses Thema verwerfen',
-        type: 5, required: false },
-    ],
 
-    vorschlaege(feld, eingabe) {
-      if (feld !== 'vorfallart') return [];
-      const gesehen = load().vorfallArten || {};
-      const ausRegeln = Object.keys(ladeRegeln())
-        .filter(k => k.startsWith('event_') && k !== 'event_')
-        .map(k => k.slice('event_'.length));
-
-      const such = String(eingabe || '').toLowerCase();
-      const arten = [...new Set([...Object.keys(gesehen), ...ausRegeln, ...VORFALL_BEKANNT])]
-        .filter(a => a.toLowerCase().includes(such))
-        .sort((a, b) => (gesehen[b]?.zuletzt || 0) - (gesehen[a]?.zuletzt || 0));
-
-      const liste = arten.map(a => ({
-        name: (gesehen[a] ? `${a} (${gesehen[a].anzahl}× gesehen)`
-              : ausRegeln.includes(a) ? `${a} (eingestellt)`
-              : `${a} (bekannte Art)`).slice(0, 100),
-        value: a,
-      }));
-
-      // Getipptes immer anbieten: der Watcher kennt nur Arten, die er selbst
-      // schon gesehen hat – ohne das wäre das Feld vor dem ersten Vorfall
-      // leer und damit unbenutzbar.
-      const eigen = String(eingabe || '').toUpperCase().replace(/[^A-Z0-9]+/g, '_');
-      if (eigen && !liste.some(x => x.value === eigen)) {
-        liste.unshift({ name: `${eigen} (so übernehmen)`.slice(0, 100), value: eigen });
+    async ausfuehren({ kanal }) {
+      // Die Tafel geht in den Kanal, in dem der Befehl benutzt wurde – dort
+      // will man sie ja anpinnen.
+      if (!kanal) {
+        return '❌ Das geht nur in einem Kanal, nicht in einer DM – die ' +
+               'Schaltzentrale ist eine Nachricht, die stehen bleibt.';
       }
-      return liste;
-    },
-    async ausfuehren({ optionen }) {
-      const regeln = ladeRegeln();
-
-      // Ohne Thema: zeigen, was gerade gilt.
-      if (!optionen.thema) {
-        const zeilen = THEMEN.map(([k, name]) => {
-          const eigen = !!regeln[k];
-          return `${eigen ? '✏️' : '·'} **${name}**\n   ${regelText(empfaenger(k, regeln))}`;
-        });
-
-        // Regeln für einzelne Vorfallsarten stehen nicht in THEMEN – sie
-        // entstehen erst, wenn man eine anlegt.
-        for (const k of Object.keys(regeln).filter(x => x.startsWith('event_') && x !== 'event_')) {
-          zeilen.push(`✏️ **Vorfall: ${k.slice('event_'.length)}**\n   ${regelText(regeln[k])}`);
-        }
-        let t = '**Wer sieht welche Meldung?**\n' + zeilen.join('\n') +
-          '\n\n✏️ = von dir geändert · · = Voreinstellung' +
-          `\n\nJede Meldung kommt höchstens alle ${CFG.ERINNERUNG_MIN} Min. ` +
-          'Gepingt wird nur bei Vorfällen, und nur, wer gerade ingame online ist.';
-        // Ein eigener Vorfall-Kanal ist der häufigste Stolperstein: der Kanal
-        // ist im Discord da, aber im Watcher nicht eingetragen – dann landen
-        // Vorfälle im allgemeinen Team-Kanal, ohne dass jemand einen Fehler
-        // sieht.
-        if (!kanaele().vorfall) {
-          t += '\n\n⚠️ Es ist **kein eigener Vorfall-Kanal** eingetragen. ' +
-               'Vorfälle gehen deshalb dorthin, wo die Regel oben hinzeigt. ' +
-               'Zum Ändern `UC_DISCORD_VORFALL_KANAL` in der `.env` setzen ' +
-               'und den Dienst neu starten – oder hier ' +
-               '`/melden thema:Vorfall im Unternehmen kanal:#…`.';
-        }
-        return t + '\n\nÄndern: `/melden thema:… kanal:… ping:…`';
+      try {
+        const m = await tafelSenden(kanal, ztUebersicht());
+        return '🎛️ Die Schaltzentrale steht jetzt in diesem Kanal.\n\n' +
+          '**Pinne sie an**, dann findest du sie immer wieder: Rechtsklick auf ' +
+          'die Nachricht → Anpinnen. Sie funktioniert dauerhaft, auch nach einem ' +
+          'Neustart des Watchers.' +
+          (m?.id ? `\n\n_Falls du sie doch verlierst: einfach nochmal /melden._` : '');
+      } catch (e) {
+        return `❌ Die Schaltzentrale ließ sich nicht aufstellen: ${e.message}\n\n` +
+          'Meist fehlt dem Bot in diesem Kanal das Recht „Nachrichten senden".';
       }
-
-      // Mit einer Vorfallsart gilt die Regel nur für diese – sie schlägt die
-      // allgemeine, weil der längere Themenanfang gewinnt.
-      if (optionen.vorfallart && optionen.thema !== 'event_') {
-        return '❌ `vorfallart:` gibt es nur beim Vorfall im Unternehmen.';
-      }
-      const art = optionen.vorfallart ? artSchluessel(optionen.vorfallart) : '';
-      const thema = art ? `event_${art}` : optionen.thema;
-      const name = art ? `Vorfall: ${art}` : themaName(optionen.thema);
-
-      // Ping und Nachfassen gibt es nur, wo sie etwas bedeuten. Geprüft wird
-      // gegen das gewählte Thema, nicht gegen das abgeleitete: mit einer
-      // Vorfallsart heißt es intern 'event_ABWERBUNG'.
-      if (optionen.ping !== undefined && !pingbar(optionen.thema)) {
-        return '❌ `ping:` gibt es nur bei Vorfällen. Alles andere hat keine ' +
-               'Frist – dafür jemanden anzupingen wäre eine Belästigung.';
-      }
-      if (optionen.erinnerung !== undefined && optionen.thema !== 'event_') {
-        return '❌ `erinnerung:` gibt es nur beim Vorfall im Unternehmen – ' +
-               'nur der bleibt offen, bis jemand handelt.';
-      }
-
-      const gesetzt = ['kanal', 'aus', 'ping', 'erinnerung', 'standard']
-        .filter(k => optionen[k] !== undefined);
-
-      // Nur ein Thema genannt: dessen Regel zeigen.
-      if (!gesetzt.length) {
-        return `**${name}**\n${regelText(empfaenger(thema, regeln))}\n\n` +
-          '_Zum Ändern zusätzlich `kanal:`, `aus:`, `ping:` oder ' +
-          '`erinnerung:` angeben._';
-      }
-
-      if (optionen.standard) {
-        delete regeln[thema];
-        speichereRegeln(regeln);
-        return `**${name}** steht wieder auf der Voreinstellung:\n` +
-          regelText(empfaenger(thema, regeln));
-      }
-
-      const regel = { ...(regeln[thema] || {}) };
-
-      // Ein Kanal ist das Ziel – ein weiteres Feld dafür gab es einmal, es
-      // sagte nichts, was hier nicht schon steht.
-      if (optionen.kanal !== undefined) regel.kanal = optionen.kanal;
-      if (optionen.aus !== undefined) {
-        if (optionen.aus) regel.aus = true; else delete regel.aus;
-      }
-      if (optionen.ping !== undefined) regel.ping = !!optionen.ping;
-      if (optionen.erinnerung !== undefined) regel.erinnerung = !!optionen.erinnerung;
-
-      regeln[thema] = regel;
-      speichereRegeln(regeln);
-
-      let t = `✅ **${name}**\n${regelText(empfaenger(thema, regeln))}`;
-      if (regel.erinnerung) {
-        t += `\n\nBleibt der Vorfall offen, kommt nach ${ERINNERUNG_MIN} Minuten ` +
-          `eine Erinnerung, höchstens ${CFG.VORFALL_ERINNERUNG_MAX}-mal. ` +
-          'Der Knopf „Ich kümmere mich" unter der Meldung beendet sie.';
-      } else if (regel.erinnerung === false) {
-        t += '\n\nEs wird nicht mehr nachgefasst – nur die erste Meldung. ' +
-          'Der Knopf „Ich kümmere mich" bleibt trotzdem dran: er zeigt dem ' +
-          'Team, dass jemand dran ist.';
-      }
-      if (regel.aus) {
-        t += '\n\nDiese Meldung kommt jetzt **gar nicht mehr** – auch nicht aufs Handy.';
-      }
-      return t;
     },
   },
   hilfe: {
