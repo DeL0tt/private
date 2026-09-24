@@ -9,7 +9,7 @@ import path from 'node:path';
 import { discordAktiv, discordSende, discordStart, discordStop, empfaenger,
          regelText, THEMEN, themaName, ladeRegeln, speichereRegeln,
          ladeZuordnung, speichereZuordnung, zuordnungEigen, pruefeToken,
-         ladeRechte, speichereRechte, kanaele,
+         kanaele, pingbar, ERINNERUNG_MIN,
          istErledigt, merkeErledigt } from './discord.mjs';
 import { merkeZeiten, merkeAusschuettung, merkeAuszahlung, speichereArchiv,
          ladeArchiv, holeTag, holeTage, letzteTage, alleTage, tagMinus,
@@ -52,10 +52,15 @@ const CFG = {
   // Die Wiki-Seite in Notion (ID aus der Adresse, mit oder ohne Bindestriche)
   NOTION_WIKI: process.env.UC_NOTION_WIKI || '3c4a6c9607aa80ef9ca5c6658d04c349',
   NOTION_INTERVALL_STD: +(process.env.UC_NOTION_INTERVALL_STD || 168),   // wöchentlich
-  ERINNERUNG_MIN: +(process.env.UC_ERINNERUNG_MIN || 60),
+  // Keine Meldung kommt öfter als alle 30 Minuten. Das war einmal je Thema
+  // einstellbar – eine Einstellung, die niemand braucht, weil die Antwort für
+  // jedes Thema dieselbe ist.
+  ERINNERUNG_MIN: +(process.env.UC_ERINNERUNG_MIN || 30),
 
   AUSSCHUETTUNG_STD:            +(process.env.UC_AUSSCHUETTUNG_STD || 12),
-  AUSSCHUETTUNG_STUNDENMELDUNG: process.env.UC_AUSSCHUETTUNG_STUNDENMELDUNG !== '0',
+  // Der Zwischenstand kommt alle drei Stunden. Ein einstellbarer Takt war eine
+  // Wahl zwischen Lärm und Nutzlosigkeit; drei Stunden sind beides nicht.
+  AUSSCHUETTUNG_TAKT: +(process.env.UC_AUSSCHUETTUNG_TAKT || 3),
   TAGESBERICHT:                  process.env.UC_TAGESBERICHT !== '0',
 
   // Ab wann eine nicht erreichbare Seite gemeldet wird. Kurze Aussetzer sind
@@ -70,17 +75,6 @@ const CFG = {
   // alle Befehle samt Beschreibung, auch wenn der Bot sie verweigert.
   BEFEHLE_VERBERGEN: process.env.UC_DISCORD_BEFEHLE_VERBERGEN !== '0',
 
-  // Dürfen alle Kassenstände, Beträge und Anwesenheitslisten sehen? Ja – im
-  // Betrieb verursacht das keine Probleme, und gekürzte Meldungen wären nur
-  // unvollständige. Mit UC_ZAHLEN_OFFEN=0 wird wieder zurückgehalten: dann
-  // bekommen geteilte Kanäle die gekürzte Fassung, und /kasse sowie
-  // /tagesbericht sind wieder dem Inhaber vorbehalten.
-  ZAHLEN_OFFEN: process.env.UC_ZAHLEN_OFFEN !== '0',
-
-  // Bleibt ein Vorfall offen, wird nach so vielen Minuten nachgefasst.
-  // Aus, weil längst nicht jeder Vorfall wichtig genug ist, um zweimal zu
-  // stören – wer nachgefasst haben will, schaltet es über /melden ein.
-  VORFALL_ERINNERUNG_MIN: +(process.env.UC_VORFALL_ERINNERUNG_MIN ?? 0),
   // Wie oft höchstens nachgefasst wird, damit ein hängender Vorfall nicht
   // endlos meldet.
   VORFALL_ERINNERUNG_MAX: +(process.env.UC_VORFALL_ERINNERUNG_MAX || 3),
@@ -114,13 +108,29 @@ const CFG = {
   DEBUG:        process.env.UC_DEBUG === '1',
 };
 
-// Kassenbuch-Kategorien, die einen Vorfall darstellen (Groß/Klein egal).
-// Vorfallsarten, die es im Spiel gibt. Nur als Starthilfe für die Auswahl in
-// /melden – der Watcher ergänzt selbst, was ihm tatsächlich begegnet.
-const VORFALL_BEKANNT = (process.env.UC_VORFALL_ARTEN ||
-  'ABWERBUNG,RAZZIA,UEBERFALL,EINBRUCH,DIEBSTAHL,SABOTAGE,STEUERPRUEFUNG,LIEFERENGPASS')
+/**
+ * Vorfallsarten als Starthilfe für die Auswahl in /melden.
+ *
+ * Belegt sind nur diese zwei: ABWERBUNG steht in einer echten Meldung aus dem
+ * Spiel, LIEFERENGPASS wird vom Ereignis mit Expresslieferung und Aufschlag
+ * begleitet, das der Watcher eigens auswertet. Weitere Arten waren geraten und
+ * stehen deshalb nicht mehr hier – eine Auswahlliste, die Arten anbietet, die
+ * es nicht gibt, lädt dazu ein, Regeln für nichts anzulegen.
+ *
+ * Was es wirklich gibt, schreibt der Watcher selbst mit: jede begegnete Art
+ * landet in state.vorfallArten und steht danach in der Auswahl, mit der Zahl
+ * der Sichtungen. `--einstellungen` zeigt die Liste. Eintippen geht immer.
+ */
+const VORFALL_BEKANNT = (process.env.UC_VORFALL_ARTEN || 'ABWERBUNG,LIEFERENGPASS')
   .split(',').map(a => a.trim().toUpperCase()).filter(Boolean);
 
+/**
+ * Buchungskategorien, die einen Kassenvorfall darstellen – ein Vorfall, der
+ * sich als Abgang im Kassenbuch zeigt. Auch das ist eine Vermutung: welche
+ * Wörter das Spiel benutzt, wissen wir nur von den Buchungen, die vorbeikamen.
+ * Was nicht erkannt wird, landet im Log statt in einer Meldung – eine falsche
+ * Meldung wäre schlimmer als eine fehlende.
+ */
 const VORFALL_KATEGORIEN = [
   'steuerprüfung', 'steuerpruefung', 'razzia', 'überfall', 'ueberfall',
   'einbruch', 'diebstahl', 'strafe', 'bußgeld', 'bussgeld', 'sabotage',
@@ -680,24 +690,20 @@ function onlineDiscordIds(state) {
  * Schickt eine Meldung raus: an ntfy (dein Handy) und, falls eingerichtet,
  * an Discord.
  *
- * extra.teamText / extra.teamTitel: entschärfte Fassung für den Team-Kanal,
- * ohne Geldbeträge und ohne Namenslisten. Fehlt sie bei einem Team-Thema,
- * bekommt das Team denselben Text.
+ * Alle sehen denselben Wortlaut. Eine gekürzte Fassung für geteilte Kanäle
+ * gab es früher; in einer Firma, in der alle die Zahlen sehen dürfen, war sie
+ * nur die schlechtere Meldung.
  */
 async function push(thema, titel, text, state, prio = 'high', extra = {}) {
   const regel = extra.ziel ? { ziel: extra.ziel } : empfaenger(thema, ladeRegeln());
-
-  // Sind die Zahlen offen, bekommen geteilte Kanäle denselben Wortlaut wie
-  // der Inhaber – eine gekürzte Fassung wäre dann nur eine schlechtere.
-  const kurz = CFG.ZAHLEN_OFFEN ? {} : { teamTitel: extra.teamTitel, teamText: extra.teamText };
 
   // "Gar nicht" heißt gar nicht: auch kein ntfy aufs Handy. Sonst wäre die
   // Einstellung eine Halbwahrheit.
   if (regel.ziel === 'aus') return log('Abgeschaltet:', thema);
 
-  // Wie lange dieselbe Meldung Ruhe gibt, ist je Thema über /melden
-  // einstellbar – sonst gilt die allgemeine Vorgabe.
-  const ruhe = (regel.wiederholung ?? CFG.ERINNERUNG_MIN) * MIN;
+  // Eine feste Ruhezeit für alles. Je Thema einstellbar war sie eine Frage,
+  // auf die es nur eine Antwort gab.
+  const ruhe = CFG.ERINNERUNG_MIN * MIN;
   const now = Date.now();
   if (now - (state.lastPush[thema] || 0) < ruhe) return log('Cooldown:', thema);
   state.lastPush[thema] = now;
@@ -705,7 +711,7 @@ async function push(thema, titel, text, state, prio = 'high', extra = {}) {
   raeumeSperren(state);
   info('PUSH:', titel);
   log(text);
-  await discordSende({ ...regel, titel, text, prio, ...kurz, knopf: extra.knopf,
+  await discordSende({ ...regel, titel, text, prio, knopf: extra.knopf,
                        pingNutzer: regel.ping === 'online' ? onlineDiscordIds(state) : undefined });
 
   if (!CFG.NTFY_TOPIC) return log('  (kein UC_NTFY_TOPIC gesetzt – nur Discord)');
@@ -1042,9 +1048,11 @@ async function erinnereAnVorfall(state, ereignis) {
   }
 
   const regel = empfaenger(schluessel, ladeRegeln());
-  const abstand = regel.erinnerung ?? CFG.VORFALL_ERINNERUNG_MIN;
-  if (!abstand || offen.runde >= CFG.VORFALL_ERINNERUNG_MAX) return;
-  if (Date.now() - offen.zuletzt < abstand * MIN) return;
+  // Nachgefasst wird nur, wenn es für dieses Thema eingeschaltet ist – und
+  // dann immer nach derselben Zeit. Eine Auswahl aus fünf Abständen war eine
+  // Entscheidung, die niemand treffen wollte.
+  if (!regel.erinnerung || offen.runde >= CFG.VORFALL_ERINNERUNG_MAX) return;
+  if (Date.now() - offen.zuletzt < ERINNERUNG_MIN * MIN) return;
 
   offen.runde++;
   offen.zuletzt = Date.now();
@@ -1102,7 +1110,7 @@ async function knopfGedrueckt(id, nutzer) {
   // Ohne Erinnerung ist er ein Zeichen fürs Team, keine Abschaltung – dann
   // soll die Rückmeldung nichts anderes behaupten.
   const regel = empfaenger(schluessel, ladeRegeln());
-  const nachgefasst = !!(regel.erinnerung ?? CFG.VORFALL_ERINNERUNG_MIN);
+  const nachgefasst = !!regel.erinnerung;
 
   if (!neu) {
     const wann = eintrag?.zeit ? ` (vor ${dauer(Date.now() - eintrag.zeit)})` : '';
@@ -1126,10 +1134,9 @@ async function knopfGedrueckt(id, nutzer) {
 async function pruefeAusschuettung(state) {
   const ziel = CFG.AUSSCHUETTUNG_STD * 3_600_000;
 
-  // Wie oft der Zwischenstand kommt, ist über /melden einstellbar: 1 = jede
-  // Stunde, 3 = alle drei, 0 = gar nicht (nur die fertige Ausschüttung).
-  const takt = ladeRegeln()['ausschuettung_std_']?.takt
-    ?? (CFG.AUSSCHUETTUNG_STUNDENMELDUNG ? 1 : 0);
+  // Fester Takt. Wer den Zwischenstand gar nicht will, schaltet das Thema
+  // über /melden ab – das ist dieselbe Wirkung, eine Einstellung weniger.
+  const takt = CFG.AUSSCHUETTUNG_TAKT;
 
   const stunden = Math.floor(state.teamOnlineMs / 3_600_000);
   if (takt > 0 && stunden % takt === 0
@@ -1142,13 +1149,7 @@ async function pruefeAusschuettung(state) {
       `Noch ${dauer(ziel - state.teamOnlineMs)} bis zur nächsten Ausschüttung.` +
       (state.gewinn !== null ? `\nGewinn bisher: ${fmt(state.gewinn)}` : '') +
       (wer.length ? `\n\nGerade online: ${wer.join(', ')}` : ''),
-      state, 'low', {
-        // Das Team sieht den Fortschritt, aber keine Beträge.
-        teamText:
-          `Team-Onlinezeit: ${dauer(state.teamOnlineMs)}\n` +
-          `Noch ${dauer(ziel - state.teamOnlineMs)} bis zur nächsten Ausschüttung.` +
-          (wer.length ? `\n\nGerade online: ${wer.join(', ')}` : ''),
-      });
+      state, 'low');
   }
 
   if (state.teamOnlineMs >= ziel && !state.faelligGemeldet) {
@@ -1156,10 +1157,7 @@ async function pruefeAusschuettung(state) {
     await push('ausschuettung_faellig', '💰 Ausschüttung ist fällig',
       `${CFG.AUSSCHUETTUNG_STD} Std. Team-Onlinezeit erreicht (${dauer(state.teamOnlineMs)}).` +
       (state.gewinn !== null ? `\nAktueller Gewinn: ${fmt(state.gewinn)}` : ''),
-      state, 'high', {
-        teamText: `${CFG.AUSSCHUETTUNG_STD} Std. Team-Onlinezeit erreicht ` +
-          `(${dauer(state.teamOnlineMs)}). Die Ausschüttung kann gemacht werden.`,
-      });
+      state, 'high');
   }
 }
 
@@ -1599,12 +1597,7 @@ async function werteBuchungenAus(state, buchungen) {
       await push(`vorfall_${b.stamp}`, `🚨 ${sauber(b.category)}`,
         `${detail}\nBetrag: ${fmt(b.amount)}\nKassenstand danach: ${fmt(b.balance)}` +
         (bericht.length ? `\n\nOnline zu dem Zeitpunkt:\n${bericht.join('\n')}` : ''),
-        state, 'urgent', {
-          // Falls diese Meldung in einen geteilten Kanal gestellt wird: der
-          // Vorfall und der Betrag dürfen dort stehen, der Kassenstand der
-          // Firma und die Namensliste nicht.
-          teamText: `${detail}\nBetrag: ${fmt(b.amount)}`,
-        });
+        state, 'urgent', { knopf: erledigtKnopf(`vorfall_${b.stamp}`) });
       continue;
     }
 
@@ -1768,14 +1761,7 @@ async function durchlauf() {
             (bericht.length
               ? `Online zum Zeitpunkt:\n${bericht.join('\n')}`
               : 'Niemand aus dem Team war online.'),
-            state, 'urgent', {
-              // Wer anwesend war, ist ein Verdacht und gehört nicht in einen
-              // geteilten Kanal. Die Zahlen dürfen dort stehen.
-              teamText: `Lager: ${state.lager} → ${lager} (${verlust} Einheiten, ` +
-                `${prozent.toFixed(1)} %)\n` +
-                `Erklärbar wären höchstens ${Math.round(erklaerbar)} in ` +
-                `${Math.round(minuten)} Min.`,
-            });
+            state, 'urgent');
         }
       }
     }
@@ -1863,11 +1849,7 @@ async function durchlauf() {
     await push(vSchluessel, '🚨 Vorfall im Unternehmen',
       ereignisText(f.event) + expressText(ex) +
       (bericht.length ? `\n\nOnline zum Zeitpunkt:\n${bericht.join('\n')}` : ''),
-      state, 'urgent', {
-        // Wer online war, ist eine Frage für den Inhaber, nicht fürs Team.
-        teamText: ereignisText(f.event) + expressText(ex, false),
-        knopf: erledigtKnopf(vSchluessel),
-      });
+      state, 'urgent', { knopf: erledigtKnopf(vSchluessel) });
 
     await erinnereAnVorfall(state, f.event);
   } else if (state.offenerVorfall) {
@@ -1893,10 +1875,7 @@ async function durchlauf() {
         `Einkaufspreise im Schnitt +${aenderung.toFixed(0)} %\n\n` +
         teuerste.join('\n') + expressText(ex) +
         (bericht.length ? `\n\nOnline zum Zeitpunkt:\n${bericht.join('\n')}` : ''),
-        state, 'high', {
-          teamText: `Einkaufspreise im Schnitt +${aenderung.toFixed(0)} %\n\n` +
-            teuerste.join('\n') + expressText(ex, false),
-        });
+        state, 'high');
     }
     state.preise = preiseJetzt;
   }
@@ -1964,34 +1943,6 @@ const firmaFrisch    = () => frisch('firma', async () => (await holeFirma()).com
 const ledgerFrisch   = (id) => frisch(`ledger:${id}`, () => holeLedger(id));
 const betriebeFrisch = () => frisch('betriebe', holeBetriebe);
 
-/**
- * Die Befehle, die sich per /rechte weitergeben lassen – mit dem Satz, der
- * beim Vergeben erklärt, was damit wirklich sichtbar wird. Eine Liste statt
- * dreier, die sonst auseinanderlaufen.
- */
-const UEBERTRAGBAR = {
-  kasse: { kurz: 'Firmenzahlen: Kassenstand, Gewinn, Buchungen',
-    umfang: 'Kassenstand, Gewinn und die letzten Buchungen in /kasse – und ' +
-            'damit auch die Beträge in /firma und /zeiten. Das Tagesbudget ' +
-            'in /kasse sehen ohnehin alle.' },
-  tagesbericht: { kurz: 'Onlinezeiten des ganzen Teams',
-    umfang: 'die Onlinezeiten aller Angestellten in /tagesbericht, auch die ' +
-            'vergangener Tage und ganzer Zeiträume – und damit auch die volle ' +
-            'Liste in /zeiten statt nur der eigenen Zeit.' },
-  watcher: { kurz: 'läuft der Watcher, Technik',
-    umfang: 'den technischen Zustand: Laufzeit, Token-Ablauf, Erreichbarkeit.' },
-  melden: { kurz: 'Meldungen umstellen',
-    umfang: 'das Umstellen aller Meldungen – auch das Abschalten und das ' +
-            'Verschieben in andere Kanäle.' },
-  zuordnen: { kurz: 'Spieler zuordnen',
-    umfang: 'das Zuordnen von Discord-Konten zu Spielernamen.' },
-};
-
-/** Wer darf einen Befehl – als Text für die Anzeige. */
-const werDarf = (r) => [
-  ...(r?.rollen || []).map(id => `<@&${id}>`),
-  ...(r?.nutzer || []).map(id => `<@${id}>`),
-].join(', ');
 
 /**
  * Das Firmenlager als Text: Bestand, Nachkauf, gemessene Reichweite.
@@ -2141,7 +2092,7 @@ const BEFEHLE = {
   firma: {
     beschreibung: 'Zustand der Firma: Status, Lager, Personal, wer online ist',
     oeffentlich: true,
-    async ausfuehren({ zeigtBetraege }) {
+    async ausfuehren() {
       const f = await firmaFrisch();
       const online = (f.members || []).filter(m => m.online);
       let t = `**${f.name}** · Level ${f.level} · ${sauber(f.status)}\n` +
@@ -2151,12 +2102,7 @@ const BEFEHLE = {
         (online.length ? ` (${online.map(m => m.name).join(', ')})` : '');
       if (f.wagesUnpaid) t += '\n⚠️ Die Löhne konnten nicht gezahlt werden.';
       if (f.rentStrikes > 0) t += `\n⚠️ Mietmahnungen: ${f.rentStrikes} von ${f.rentStrikesMax}`;
-      // Beträge nur für den Inhaber.
-      // Wer /kasse benutzen darf, sieht die Beträge auch hier – sonst wäre
-      // die Zurückhaltung an dieser Stelle sinnlos.
-      if (zeigtBetraege()) {
-        t += `\n\nKasse: ${fmt(f.kasse?.balance)} · Gewinn: ${fmt(f.kasse?.profitSincePayout)}`;
-      }
+      t += `\n\nKasse: ${fmt(f.kasse?.balance)} · Gewinn: ${fmt(f.kasse?.profitSincePayout)}`;
       return t;
     },
   },
@@ -2175,7 +2121,7 @@ const BEFEHLE = {
   zeiten: {
     beschreibung: 'Wer ist online, wie lange war ich da, wie weit ist die Ausschüttung',
     oeffentlich: true,
-    async ausfuehren({ nutzer, oeffentlich, zeigtBetraege }) {
+    async ausfuehren({ nutzer }) {
       const st = load();
       const online = Object.entries(st.spieler || {})
         .filter(([, p]) => p.online).map(([n]) => n);
@@ -2197,17 +2143,13 @@ const BEFEHLE = {
           ? '✅ Ziel erreicht – die Ausschüttung kann gemacht werden.'
           : `Noch ${dauer(ziel - st.teamOnlineMs)}.`);
 
-      if (zeigtBetraege()) {
-        if (st.gewinn !== null) t += `\nGewinn bisher: ${fmt(st.gewinn)}`;
-        if (st.letzteAusschuettung) {
-          t += `\nLetzte Ausschüttung: ` +
-            new Date(st.letzteAusschuettung).toLocaleString('de-DE');
-        }
+      if (st.gewinn !== null) t += `\nGewinn bisher: ${fmt(st.gewinn)}`;
+      if (st.letzteAusschuettung) {
+        t += `\nLetzte Ausschüttung: ` +
+          new Date(st.letzteAusschuettung).toLocaleString('de-DE');
       }
 
-      // Die eigene Zeit nur in einer privaten Antwort – es sei denn, die
-      // Zahlen sind ohnehin offen.
-      if (!oeffentlich || CFG.ZAHLEN_OFFEN) {
+      {
         const meinName = ladeZuordnung()[nutzer.id];
         if (meinName) {
           const p = st.spieler[Object.keys(st.spieler || {})
@@ -2240,7 +2182,7 @@ const BEFEHLE = {
       { name: 'aufschluesselung', description: 'Welche Buchungen zehren am Tagesbudget?',
         type: 5, required: false },
     ],
-    async ausfuehren({ optionen, oeffentlich, zeigtBetraege }) {
+    async ausfuehren({ optionen, oeffentlich }) {
       const st = load();
       const topf = auszahlungTopf(st);
       let t = '';
@@ -2275,9 +2217,7 @@ const BEFEHLE = {
         }
       }
 
-      // --- Firmenzahlen: am Schalter ---
-      if (!zeigtBetraege()) return t;
-
+      // --- Firmenzahlen ---
       try {
         const f = await firmaFrisch();
         t += `\n\n**Kasse:** ${fmt(f.kasse?.balance)}\n` +
@@ -2299,9 +2239,7 @@ const BEFEHLE = {
 
   tagesbericht: {
     beschreibung: 'Onlinezeiten eines Spieltags – oder mehrerer, mit Vergleich',
-    nurChef: !CFG.ZAHLEN_OFFEN,
-    verbergen: !CFG.ZAHLEN_OFFEN && CFG.BEFEHLE_VERBERGEN,
-    oeffentlich: CFG.ZAHLEN_OFFEN,
+    oeffentlich: true,
     optionen: [
       { name: 'tag', description: 'Welcher Spieltag? Leer = heute',
         type: 3, required: false, autocomplete: true },
@@ -2508,66 +2446,6 @@ const BEFEHLE = {
     },
   },
 
-  rechte: {
-    beschreibung: 'Vergeben, wer die vorbehaltenen Befehle benutzen darf',
-    verbergen: CFG.BEFEHLE_VERBERGEN,
-    nurChef: true,
-    nichtUebertragbar: true,     // Rechte vergeben bleibt beim Inhaber
-    optionen: [
-      { name: 'befehl', description: 'Welcher Befehl?', type: 3, required: false,
-        choices: Object.entries(UEBERTRAGBAR)
-          .map(([n, u]) => ({ name: `/${n} – ${u.kurz}`.slice(0, 100), value: n })) },
-      { name: 'rolle', description: 'Recht an eine ganze Rolle geben', type: 8, required: false },
-      { name: 'nutzer', description: 'Recht an eine einzelne Person geben', type: 6, required: false },
-      { name: 'entfernen', description: 'Das Recht wieder wegnehmen', type: 5, required: false },
-    ],
-
-    async ausfuehren({ optionen }) {
-      const rechte = ladeRechte();
-
-      const zeigeAlles = () => {
-        const zeilen = Object.keys(UEBERTRAGBAR).map(b =>
-          `**/${b}** – ${werDarf(rechte[b]) || '_nur du_'}`);
-        return '**Wer darf welchen Befehl?**\n' + zeilen.join('\n') +
-          '\n\nDie übrigen Befehle (/firma, /lager, /ausschuettung, /zeiten, /hilfe) ' +
-          'kann ohnehin jeder benutzen.\n' +
-          'Vergeben: `/rechte befehl:… rolle:…` oder `nutzer:…`';
-      };
-
-      if (!optionen.befehl) return zeigeAlles();
-      if (!optionen.rolle && !optionen.nutzer) {
-        return `**/${optionen.befehl}** darf: ${werDarf(rechte[optionen.befehl]) || '_nur du_'}\n\n` +
-          '_Zum Ändern zusätzlich `rolle:` oder `nutzer:` angeben._';
-      }
-
-      const eintrag = rechte[optionen.befehl] || { rollen: [], nutzer: [] };
-      eintrag.rollen ||= []; eintrag.nutzer ||= [];
-      const art = optionen.rolle ? 'rollen' : 'nutzer';
-      const id = String(optionen.rolle || optionen.nutzer);
-      const anzeige = optionen.rolle ? `<@&${id}>` : `<@${id}>`;
-
-      if (optionen.entfernen) {
-        if (!eintrag[art].includes(id)) return `${anzeige} hatte dieses Recht gar nicht.`;
-        eintrag[art] = eintrag[art].filter(x => x !== id);
-        rechte[optionen.befehl] = eintrag;
-        speichereRechte(rechte);
-        return `✅ ${anzeige} darf **/${optionen.befehl}** nicht mehr benutzen.`;
-      }
-
-      if (eintrag[art].includes(id)) return `${anzeige} darf **/${optionen.befehl}** bereits.`;
-      eintrag[art].push(id);
-      rechte[optionen.befehl] = eintrag;
-      speichereRechte(rechte);
-
-      let t = `✅ ${anzeige} darf ab jetzt **/${optionen.befehl}** benutzen.`;
-      // Sagen, was damit wirklich sichtbar wird – ein Recht zu vergeben, ohne
-      // dessen Umfang zu kennen, ist die Art Fehler, die man später bereut.
-      const umfang = UEBERTRAGBAR[optionen.befehl]?.umfang;
-      if (umfang) t += `\n\nDamit sieht ${anzeige} ${umfang}`;
-      return t + '\n\n_Gilt sofort, auch nach einem Neustart._';
-    },
-  },
-
   testvorfall: {
     beschreibung: 'Einen Vorfall vortäuschen, um Kanal und Ping zu prüfen',
     verbergen: CFG.BEFEHLE_VERBERGEN,
@@ -2650,9 +2528,9 @@ const BEFEHLE = {
       t += knopf
         ? '\n\n**Knopf:** „Ich kümmere mich" hängt an der Meldung. Ein Druck ' +
           'zeigt dem Team, dass jemand dran ist' +
-          ((regel.erinnerung ?? CFG.VORFALL_ERINNERUNG_MIN)
-            ? ' – und beendet die Erinnerungen für diesen Vorfall.'
-            : '. Erinnerungen sind für diese Art aus, es gibt also nichts zu beenden.')
+          (regel.erinnerung
+            ? ` – und beendet die Erinnerungen (alle ${ERINNERUNG_MIN} Min.) für diesen Vorfall.`
+            : '. Nachfassen ist für diese Art aus, es gibt also nichts zu beenden.')
         : '\n\n**Knopf:** keiner – dieser Vorfall ist schon übernommen.';
 
       return t + '\n\n_Die Probe verändert nichts: keine Erinnerung, keine ' +
@@ -2667,63 +2545,20 @@ const BEFEHLE = {
     optionen: [
       { name: 'thema', description: 'Welche Meldung?', type: 3, required: false,
         choices: THEMEN.map(([k, name]) => ({ name: name.slice(0, 100), value: k })) },
-      { name: 'ziel', description: 'Wer soll sie sehen? (bei kanal: nicht nötig)',
-        type: 3, required: false,
-        choices: [
-          { name: 'nur ich',                 value: 'chef' },
-          { name: 'nur das Team',            value: 'team' },
-          { name: 'ich und das Team',        value: 'beide' },
-          { name: 'der Kanal und ich',       value: 'kanal_chef' },
-          { name: 'gar nicht (aus)',         value: 'aus' },
-          { name: 'zurück auf Standard',     value: 'standard' },
-        ] },
-      { name: 'kanal', description: 'In diesen Kanal – ziel: braucht es dann nicht',
+      { name: 'kanal', description: 'In diesen Kanal statt in den vorgesehenen',
         type: 7, required: false },
-      { name: 'ping', description: 'Wer wird benachrichtigt? (bei rolle: nicht nötig)',
-        type: 3, required: false,
-        choices: [
-          { name: 'niemand',                          value: 'keiner' },
-          { name: 'nur wer gerade ingame online ist', value: 'online' },
-          { name: '@everyone',                        value: 'everyone' },
-          { name: '@here',                            value: 'here' },
-        ] },
-      { name: 'rolle', description: 'Diese Rolle anpingen – ping: braucht es dann nicht',
-        type: 8, required: false },
-      { name: 'wiederholung', description: 'Wie lange Ruhe, bevor dieselbe Meldung wiederkommt?',
-        type: 3, required: false,
-        choices: [
-          { name: 'nach 15 Minuten',   value: '15' },
-          { name: 'nach 30 Minuten',   value: '30' },
-          { name: 'nach 1 Stunde',     value: '60' },
-          { name: 'nach 3 Stunden',    value: '180' },
-          { name: 'nach 12 Stunden',   value: '720' },
-          { name: 'erst am nächsten Tag', value: '1440' },
-        ] },
+      { name: 'aus', description: 'Diese Meldung abschalten (auch aufs Handy)',
+        type: 5, required: false },
+      { name: 'ping', description: 'Nur bei Vorfällen: anpingen, wer gerade ingame online ist',
+        type: 5, required: false },
+      { name: 'erinnerung', description: `Nur bei Vorfällen: nach ${ERINNERUNG_MIN} Min. nachfassen, solange er offen ist`,
+        type: 5, required: false },
       { name: 'vorfallart', description: 'Nur bei Vorfällen: Art wählen oder eintippen, z. B. ABWERBUNG',
         type: 3, required: false, autocomplete: true },
-      { name: 'erinnerung', description: 'Nur bei Vorfällen: nachfassen, solange er offen ist',
-        type: 3, required: false,
-        choices: [
-          { name: 'nicht nachfassen',      value: '0' },
-          { name: 'nach 2 Minuten',        value: '2' },
-          { name: 'nach 3 Minuten',        value: '3' },
-          { name: 'nach 5 Minuten',        value: '5' },
-          { name: 'nach 10 Minuten',       value: '10' },
-        ] },
-      { name: 'takt', description: 'Nur beim Zwischenstand der Ausschüttung: wie oft?',
-        type: 3, required: false,
-        choices: [
-          { name: 'jede Stunde',                   value: '1' },
-          { name: 'alle zwei Stunden',             value: '2' },
-          { name: 'alle drei Stunden',             value: '3' },
-          { name: 'alle sechs Stunden',            value: '6' },
-          { name: 'nur wenn die Ausschüttung fällig ist', value: '0' },
-        ] },
+      { name: 'standard', description: 'Eigene Einstellungen für dieses Thema verwerfen',
+        type: 5, required: false },
     ],
 
-    // Was der Watcher bisher an Vorfallsarten gesehen hat, plus alles, wofür
-    // schon eine Regel besteht – damit man eine Einstellung wiederfindet,
-    // auch wenn die Art länger nicht vorkam.
     vorschlaege(feld, eingabe) {
       if (feld !== 'vorfallart') return [];
       const gesehen = load().vorfallArten || {};
@@ -2752,7 +2587,6 @@ const BEFEHLE = {
       }
       return liste;
     },
-
     async ausfuehren({ optionen }) {
       const regeln = ladeRegeln();
 
@@ -2769,7 +2603,9 @@ const BEFEHLE = {
           zeilen.push(`✏️ **Vorfall: ${k.slice('event_'.length)}**\n   ${regelText(regeln[k])}`);
         }
         let t = '**Wer sieht welche Meldung?**\n' + zeilen.join('\n') +
-          '\n\n✏️ = von dir geändert · · = Voreinstellung';
+          '\n\n✏️ = von dir geändert · · = Voreinstellung' +
+          `\n\nJede Meldung kommt höchstens alle ${CFG.ERINNERUNG_MIN} Min. ` +
+          'Gepingt wird nur bei Vorfällen, und nur, wer gerade ingame online ist.';
         // Ein eigener Vorfall-Kanal ist der häufigste Stolperstein: der Kanal
         // ist im Discord da, aber im Watcher nicht eingetragen – dann landen
         // Vorfälle im allgemeinen Team-Kanal, ohne dass jemand einen Fehler
@@ -2779,9 +2615,9 @@ const BEFEHLE = {
                'Vorfälle gehen deshalb dorthin, wo die Regel oben hinzeigt. ' +
                'Zum Ändern `UC_DISCORD_VORFALL_KANAL` in der `.env` setzen ' +
                'und den Dienst neu starten – oder hier ' +
-               '`/melden thema:Vorfall im Unternehmen ziel:ein bestimmter Kanal kanal:#…`.';
+               '`/melden thema:Vorfall im Unternehmen kanal:#…`.';
         }
-        return t + '\n\nÄndern: `/melden thema:… ziel:… ping:…`';
+        return t + '\n\nÄndern: `/melden thema:… kanal:… ping:…`';
       }
 
       // Mit einer Vorfallsart gilt die Regel nur für diese – sie schlägt die
@@ -2793,132 +2629,70 @@ const BEFEHLE = {
       const thema = art ? `event_${art}` : optionen.thema;
       const name = art ? `Vorfall: ${art}` : themaName(optionen.thema);
 
-      // Ein ausgefülltes Feld sagt schon, was gewählt ist: wer einen Kanal
-      // angibt, will in diesen Kanal, und wer eine Rolle angibt, will sie
-      // anpingen. Das noch einmal in ziel:/ping: zu wiederholen, war eine
-      // Pflichtübung mit eigener Fehlermeldung – die fällt damit weg.
-      const ziel = optionen.ziel || (optionen.kanal ? 'kanal' : undefined);
-      const ping = optionen.ping || (optionen.rolle ? 'rolle' : undefined);
-
-      // Nur ein Thema genannt: dessen Regel zeigen.
-      if (!ziel && !ping && !optionen.takt &&
-          !optionen.wiederholung && !optionen.erinnerung) {
-        return `**${name}**\n${regelText(empfaenger(thema, regeln))}\n\n` +
-          '_Zum Ändern zusätzlich `ziel:` oder `ping:` angeben._';
+      // Ping und Nachfassen gibt es nur, wo sie etwas bedeuten. Geprüft wird
+      // gegen das gewählte Thema, nicht gegen das abgeleitete: mit einer
+      // Vorfallsart heißt es intern 'event_ABWERBUNG'.
+      if (optionen.ping !== undefined && !pingbar(optionen.thema)) {
+        return '❌ `ping:` gibt es nur bei Vorfällen. Alles andere hat keine ' +
+               'Frist – dafür jemanden anzupingen wäre eine Belästigung.';
+      }
+      if (optionen.erinnerung !== undefined && optionen.thema !== 'event_') {
+        return '❌ `erinnerung:` gibt es nur beim Vorfall im Unternehmen – ' +
+               'nur der bleibt offen, bis jemand handelt.';
       }
 
-      if (ziel === 'standard') {
+      const gesetzt = ['kanal', 'aus', 'ping', 'erinnerung', 'standard']
+        .filter(k => optionen[k] !== undefined);
+
+      // Nur ein Thema genannt: dessen Regel zeigen.
+      if (!gesetzt.length) {
+        return `**${name}**\n${regelText(empfaenger(thema, regeln))}\n\n` +
+          '_Zum Ändern zusätzlich `kanal:`, `aus:`, `ping:` oder ' +
+          '`erinnerung:` angeben._';
+      }
+
+      if (optionen.standard) {
         delete regeln[thema];
         speichereRegeln(regeln);
         return `**${name}** steht wieder auf der Voreinstellung:\n` +
           regelText(empfaenger(thema, regeln));
       }
 
-      const regel = { ...(regeln[thema] || empfaenger(thema, regeln)) };
+      const regel = { ...(regeln[thema] || {}) };
 
-      if (ziel) {
-        const inKanal = ziel === 'kanal' || ziel === 'kanal_chef';
-        if (inKanal && !optionen.kanal) {
-          return '❌ „der Kanal und ich" braucht auch `kanal:` – sonst weiß ich ' +
-                 'nicht, welcher Kanal gemeint ist.';
-        }
-        regel.ziel = inKanal ? 'kanal' : ziel;
-        if (inKanal) {
-          regel.kanal = optionen.kanal;
-          // "und ich" heißt: der Kanal bekommt die gekürzte Fassung, du die
-          // vollständige mit Beträgen und Namen.
-          if (ziel === 'kanal_chef') regel.auchChef = true;
-          else delete regel.auchChef;
-        } else {
-          delete regel.kanal; delete regel.auchChef;
-        }
+      // Ein Kanal ist das Ziel – ein weiteres Feld dafür gab es einmal, es
+      // sagte nichts, was hier nicht schon steht.
+      if (optionen.kanal !== undefined) regel.kanal = optionen.kanal;
+      if (optionen.aus !== undefined) {
+        if (optionen.aus) regel.aus = true; else delete regel.aus;
       }
-
-      if (ping) regel.ping = ping === 'rolle' ? optionen.rolle : ping;
-
-      if (optionen.wiederholung !== undefined) regel.wiederholung = Number(optionen.wiederholung);
-
-      // Geprüft wird gegen das gewählte Thema, nicht gegen das abgeleitete:
-      // mit einer Vorfallsart heißt es intern 'event_ABWERBUNG', und die
-      // Prüfung auf 'event_' hätte genau die Kombination abgelehnt, für die
-      // die Vorfallsart gedacht ist.
-      if (optionen.takt !== undefined) {
-        if (optionen.thema !== 'ausschuettung_std_') {
-          return '❌ `takt:` gibt es nur beim Zwischenstand der Ausschüttung.';
-        }
-        regel.takt = Number(optionen.takt);
-      }
-
-      if (optionen.erinnerung !== undefined) {
-        if (optionen.thema !== 'event_') {
-          return '❌ `erinnerung:` gibt es nur beim Vorfall im Unternehmen – ' +
-                 'nur der bleibt offen, bis jemand handelt.';
-        }
-        regel.erinnerung = Number(optionen.erinnerung);
-      }
+      if (optionen.ping !== undefined) regel.ping = !!optionen.ping;
+      if (optionen.erinnerung !== undefined) regel.erinnerung = !!optionen.erinnerung;
 
       regeln[thema] = regel;
       speichereRegeln(regeln);
 
-      let t = `✅ **${name}**\n${regelText(regel)}`;
-      if (regel.erinnerung !== undefined) {
-        t += regel.erinnerung === 0
-          ? '\n\nEs wird nicht mehr nachgefasst – nur die erste Meldung.'
-          : `\n\nBleibt der Vorfall offen, kommt nach ${regel.erinnerung} Minuten ` +
-            `eine Erinnerung, höchstens ${CFG.VORFALL_ERINNERUNG_MAX}-mal.`;
+      let t = `✅ **${name}**\n${regelText(empfaenger(thema, regeln))}`;
+      if (regel.erinnerung) {
+        t += `\n\nBleibt der Vorfall offen, kommt nach ${ERINNERUNG_MIN} Minuten ` +
+          `eine Erinnerung, höchstens ${CFG.VORFALL_ERINNERUNG_MAX}-mal. ` +
+          'Der Knopf „Ich kümmere mich" unter der Meldung beendet sie.';
+      } else if (regel.erinnerung === false) {
+        t += '\n\nEs wird nicht mehr nachgefasst – nur die erste Meldung. ' +
+          'Der Knopf „Ich kümmere mich" bleibt trotzdem dran: er zeigt dem ' +
+          'Team, dass jemand dran ist.';
       }
-      if (regel.wiederholung !== undefined) {
-        const w = regel.wiederholung;
-        t += `\n\nDieselbe Meldung kommt frühestens ` +
-          (w >= 1440 ? 'am nächsten Tag' : w >= 60 ? `nach ${w / 60} Std.` : `nach ${w} Min.`) +
-          ' wieder.';
+      if (regel.aus) {
+        t += '\n\nDiese Meldung kommt jetzt **gar nicht mehr** – auch nicht aufs Handy.';
       }
-      if (regel.takt !== undefined) {
-        t += regel.takt === 0
-          ? '\n\nKein Zwischenstand mehr – es kommt nur noch die Meldung, ' +
-            'wenn die Ausschüttung fällig ist.'
-          : `\n\nZwischenstand ${regel.takt === 1 ? 'jede Stunde' : `alle ${regel.takt} Stunden`}.`;
-      }
-
-      // Bei den Meldungen mit Namen oder Beträgen einmal deutlich sagen, was
-      // da künftig mitliest. Der Inhaber darf das entscheiden – aber nicht
-      // versehentlich.
-      const heikel = {
-        'lagerverlust_': 'Namen aller Anwesenden zum Zeitpunkt des Verlusts',
-        'personal_':     'Namen der Anwesenden',
-        'vorfall_':      'Beträge, Kassenstand und Namen der Anwesenden',
-        'tagesbericht_': 'die Onlinezeiten aller Angestellten',
-        'ausschuettung_': 'den ausgeschütteten Betrag',
-        'auth':          'Hinweise auf deinen Zugang',
-      }[thema];
-      if (heikel && ['team', 'beide', 'kanal'].includes(regel.ziel)) {
-        t += `\n\n⚠️ Diese Meldung enthält ${heikel}. Das lesen ab jetzt alle mit, ` +
-             'die den Kanal sehen können.';
-      }
-      if (regel.ziel === 'aus') {
-        t += '\n\n⚠️ Diese Meldung bekommt ab jetzt **niemand** – auch du nicht.';
-      }
-      if (regel.ping === 'online') {
-        const zu = Object.keys(ladeZuordnung()).length;
-        t += zu
-          ? `\n\nAngepingt werden nur zugeordnete Konten, die gerade spielen ` +
-            `(${zu} zugeordnet). Ist niemand online, kommt die Meldung ohne Ping.`
-          : '\n\n⚠️ Noch ist niemand zugeordnet – so pingt das nie jemanden. ' +
-            'Zuordnen mit `/zuordnen nutzer:@Name name:UC-Name`.';
-      }
-      if (regel.ping === 'everyone') {
-        t += '\n\nDamit @everyone wirklich klingelt, braucht der Bot im Kanal das ' +
-             'Recht „Everyone erwähnen".';
-      }
-      return t + '\n\n_Gilt sofort, auch nach einem Neustart._';
+      return t;
     },
   },
-
   hilfe: {
     beschreibung: 'Welche Befehle es gibt',
     async ausfuehren({ istChef, darf }) {
       const erlaubt = Object.entries(BEFEHLE)
-        .filter(([name, b]) => !b.nurChef || darf(b.recht || name));
+        .filter(([, b]) => !b.nurChef || istChef);
       const gesperrt = Object.keys(BEFEHLE).length - erlaubt.length;
       return '**Befehle des UC-Watchers**\n' +
         erlaubt.map(([name, b]) => `/${name} – ${b.beschreibung}`).join('\n') +
@@ -3275,7 +3049,7 @@ if (args.includes('--einstellungen')) {
     ['UC_AUSZAHLUNG_RESET_STD', '0'], ['UC_AUSZAHLUNG_KATEGORIEN', 'auszahlung,gehalt'],
     ['UC_BETRIEB', 'Zoohandlung'], ['UC_BETRIEB_ABZUG', '0'],
     ['UC_BETRIEB_MAX', '240'], ['UC_BETRIEB_SCHWELLE', '40'],
-    ['UC_NACHKAUF_FENSTER_MIN', '90'], ['UC_VORFALL_ERINNERUNG_MIN', '0'],
+    ['UC_NACHKAUF_FENSTER_MIN', '90'], ['UC_VORFALL_ERINNERUNG_MIN', '5'],
     ['UC_VORFALL_ERINNERUNG_MAX', '3'], ['UC_UNBEKANNTE_BUCHUNGEN', '0'],
     ['UC_TAGESBERICHT', '1'], ['UC_AUSSCHUETTUNG_STUNDENMELDUNG', '1'],
   ];
@@ -3326,12 +3100,22 @@ if (args.includes('--einstellungen')) {
       (eigen[id] ? '' : '   (aus der .env)'));
   }
 
-  console.log('\n═══ Rechte aus /rechte ═══');
-  const rechte = ladeRechte();
-  if (!Object.keys(rechte).length) console.log('  (keine vergeben – alles bleibt beim Inhaber)');
-  for (const [befehl, r] of Object.entries(rechte)) {
-    const wer = [...(r.rollen || []).map(x => `Rolle ${x}`), ...(r.nutzer || []).map(x => `Nutzer ${x}`)];
-    if (wer.length) console.log(`  /${befehl.padEnd(14)} ${wer.join(', ')}`);
+  console.log('\n═══ Befehle ═══');
+  console.log('  Für alle:    ' +
+    Object.keys(BEFEHLE).filter(n => !BEFEHLE[n].nurChef).map(n => '/' + n).join(' '));
+  console.log('  Nur Inhaber: ' +
+    Object.keys(BEFEHLE).filter(n => BEFEHLE[n].nurChef).map(n => '/' + n).join(' '));
+
+  console.log('\n═══ Gesehene Vorfallsarten ═══');
+  const arten = Object.entries(st.vorfallArten || {})
+    .sort((a, b) => (b[1].zuletzt || 0) - (a[1].zuletzt || 0));
+  if (!arten.length) {
+    console.log('  (noch keine – die Auswahl in /melden bietet bis dahin nur ' +
+                'die Liste aus UC_VORFALL_ARTEN an)');
+  }
+  for (const [art, v] of arten) {
+    console.log(`  ${art.padEnd(18)} ${String(v.anzahl).padStart(3)}× ` +
+      `zuletzt ${new Date(v.zuletzt).toLocaleString('de-DE')}`);
   }
 
   console.log('\n═══ Laufender Zustand ═══');
@@ -3340,8 +3124,6 @@ if (args.includes('--einstellungen')) {
   console.log('  Firma gelaufen heute: ' + dauer(st.firmaTagMs || 0));
   console.log('  Lager zuletzt:        ' + (st.lager ?? '—'));
   console.log('  Zoohandlung zuletzt:  ' + (st.betriebBestand ?? '— (noch nicht gelesen)'));
-  console.log('  Gesehene Vorfallsarten: ' +
-    (Object.keys(st.vorfallArten || {}).join(', ') || '— (seit dem Update keiner)'));
   console.log('  Letzter Einkauf:      ' +
     (st.letzterEinkauf ? `vor ${dauer(Date.now() - st.letzterEinkauf)}` : '— (Nachkauf unbekannt)'));
   process.exit(0);

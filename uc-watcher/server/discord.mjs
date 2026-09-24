@@ -77,7 +77,6 @@ function appId() {
  * Aufbau: {
  *   regeln:    { '<themenanfang>': {…} },
  *   zuordnung: { '<discordId>': 'UC-Name' },
- *   rechte:    { '<befehl>': { rollen: [...], nutzer: [...] } },
  *   erledigt:  { '<vorfallschlüssel>': { wer, name, zeit } }
  * }
  *
@@ -94,14 +93,14 @@ function lade() {
     const rohdaten = JSON.parse(fs.readFileSync(REGELN_DATEI, 'utf8'));
     // Ältere Dateien enthielten die Regeln ohne Umschlag, direkt als
     // Themen-Zuordnung. Die werden weiter gelesen.
-    const inhalt = rohdaten.regeln || rohdaten.zuordnung || rohdaten.rechte
+    const inhalt = rohdaten.regeln || rohdaten.zuordnung || rohdaten.erledigt
       ? { regeln: rohdaten.regeln || {}, zuordnung: rohdaten.zuordnung || {},
-          rechte: rohdaten.rechte || {}, erledigt: rohdaten.erledigt || {} }
-      : { regeln: rohdaten, zuordnung: {}, rechte: {}, erledigt: {} };
+          erledigt: rohdaten.erledigt || {} }
+      : { regeln: rohdaten, zuordnung: {}, erledigt: {} };
     cache = { stand, inhalt };
     return inhalt;
   } catch {
-    return { regeln: {}, zuordnung: {}, rechte: {}, erledigt: {} };  // noch nie etwas eingestellt
+    return { regeln: {}, zuordnung: {}, erledigt: {} };   // noch nie etwas eingestellt
   }
 }
 
@@ -140,9 +139,6 @@ export const zuordnungEigen = () => lade().zuordnung;
  * Vergeben wird an Rollen (gilt für alle, die sie tragen) oder an einzelne
  * Konten. Der Inhaber darf immer alles.
  */
-export const ladeRechte = () => lade().rechte;
-export const speichereRechte = (rechte) => speichere({ ...lade(), rechte });
-
 /* ========================= ERLEDIGTE VORFÄLLE ========================= */
 
 // Wie lange ein Erledigt-Zeichen aufgehoben wird. Länger als jede Frist eines
@@ -173,14 +169,6 @@ export function merkeErledigt(schluessel, wer, name) {
   }
   speichere({ ...lade(), erledigt });
   return { neu: !schonDa, eintrag: erledigt[schluessel] };
-}
-
-export function darfNutzen(befehl, { istChef, nutzerId, rollen = [] }) {
-  if (istChef) return true;
-  const r = ladeRechte()[befehl];
-  if (!r) return false;
-  if ((r.nutzer || []).includes(String(nutzerId))) return true;
-  return (r.rollen || []).some(rolle => rollen.map(String).includes(String(rolle)));
 }
 
 /* ========================= EMPFÄNGER ========================= */
@@ -222,23 +210,24 @@ const NUR_CHEF = ['lagerverlust_', 'personal_'];
 // Ohne UC_DISCORD_VORFALL_KANAL bleibt alles beim Inhaber.
 const VORFALL_THEMEN = ['event_', 'vorfall_'];
 
-// Wo von Haus aus gepingt wird. Ein Vorfall hat eine Frist und eine pausierte
-// Firma kostet laufend Geld – beides muss jemanden erreichen, der gerade
-// spielen ist. Gepingt wird nur, wer per /zuordnen bekannt ist; ohne
-// Zuordnung bleibt es still. Über /melden änderbar.
-// 'pausiert_trotz_online' steht hier bewusst nicht: die Meldung geht nur an
-// den Inhaber, und ein Ping in einem Kanal, den die Angepingten nicht sehen
-// können, erreicht niemanden.
-const PING_VOREINSTELLUNG = {
-  'event_': 'online',
-  'betrieb_leer': 'online',        // leer heißt: jemand muss jetzt nachfüllen
-};
+// Gepingt wird nur bei Vorfällen, und immer nur, wer gerade in UnicaCity
+// online ist. Alles andere hat keine Frist: bei einem niedrigen Lagerbestand
+// jemanden aus dem Feierabend zu holen, wäre eine Belästigung. @everyone,
+// @here und Rollen-Pings gibt es deshalb nicht mehr – sie erreichten
+// verlässlich die Falschen.
+const PINGBAR = ['event_', 'vorfall_'];
 
-const standardPing = (t) => {
-  const treffer = Object.keys(PING_VOREINSTELLUNG)
-    .filter(k => t.startsWith(k)).sort((a, b) => b.length - a.length)[0];
-  return treffer ? { ping: PING_VOREINSTELLUNG[treffer] } : {};
-};
+// Nachgefasst wird, wenn überhaupt, nach fünf Minuten. Eine Auswahl aus fünf
+// Abständen war eine Entscheidung, die niemand treffen wollte: bei einer Frist
+// von zehn Minuten ist alles andere entweder zu früh oder zu spät.
+export const ERINNERUNG_MIN = +(process.env.UC_VORFALL_ERINNERUNG_MIN || 5);
+
+// Ein Vorfall im Unternehmen hat eine Frist und pingt darum von selbst. Der
+// Kassenvorfall ist bereits passiert – dort ist nichts mehr zu retten, also
+// still, bis jemand es anders einstellt.
+const PING_VON_SELBST = ['event_'];
+
+const istPingbar = (t) => PINGBAR.some(x => t.startsWith(x));
 
 // Mit UC_DISCORD_TEAM_THEMEN lässt sich die Team-Liste komplett ersetzen, etwa
 // auf 'lager,event_', wenn dem Team weniger zugestellt werden soll.
@@ -259,7 +248,7 @@ export const THEMEN = [
   ['betrieb_knapp',          'Betrieb wird knapp (Zoohandlung)'],
   ['preissprung',            'Lieferengpass, Einkauf teurer'],
   ['pausiert_trotz_online',  'Firma pausiert, obwohl jemand online ist'],
-  ['ausschuettung_std_',     'Ausschüttung: Zwischenstand'],
+  ['ausschuettung_std_',     'Ausschüttung: Zwischenstand (alle 3 Std.)'],
   ['ausschuettung_faellig',  'Ausschüttung ist fällig'],
   ['ausschuettung_',         'Ausschüttung erfolgt (mit Betrag)'],
   ['event_',                 'Vorfall im Unternehmen'],
@@ -270,10 +259,6 @@ export const THEMEN = [
   ['tagesbericht_',          'Tagesbericht mit Onlinezeiten'],
   ['auth',                   'Zugang abgelaufen'],
   ['apiweg',                 'UnicaCity nicht erreichbar'],
-  ['wiki_',                  'Wiki-Änderungen'],
-  ['notion_zugang',          'Notion nicht erreichbar'],
-  ['notion_',                'Notion-Abgleich'],
-  ['selftest',               'Probemeldung'],
 ];
 
 export const themaName = (schluessel) =>
@@ -314,46 +299,55 @@ export function empfaenger(thema, regeln = {}) {
   const treffer = Object.keys(regeln || {})
     .filter(k => regelPasst(k, t))
     .sort((a, b) => b.length - a.length)[0];
-  if (treffer) return { ...regeln[treffer] };
+  const eigen = treffer ? regeln[treffer] : null;
 
+  // Abgeschaltet heißt abgeschaltet – auch kein ntfy aufs Handy.
+  if (eigen?.aus) return { ziel: 'aus' };
+
+  // Ping nur bei Vorfällen, und nur online. Eine eigene Einstellung schlägt
+  // die Voreinstellung; ohne Einstellung pingt, was von selbst pingt.
+  const ping = istPingbar(t)
+    ? ((eigen?.ping ?? PING_VON_SELBST.some(x => t.startsWith(x))) ? 'online' : undefined)
+    : undefined;
+
+  // Ein selbst gesetzter Kanal gilt vor allem anderen.
+  if (eigen?.kanal) return { ziel: 'kanal', kanal: eigen.kanal, ping };
+
+  // In einer DM erreicht ein Ping niemanden außer dem Inhaber selbst.
   if (NUR_CHEF.some(x => t.startsWith(x))) return { ziel: 'chef' };
+
   if (CFG.VORFALL_KANAL && VORFALL_THEMEN.some(x => t.startsWith(x))) {
-    return { ziel: 'kanal', kanal: CFG.VORFALL_KANAL, ...standardPing(t) };
+    return { ziel: 'kanal', kanal: CFG.VORFALL_KANAL, ping };
   }
-  return { ziel: TEAM_LISTE.some(x => t.startsWith(x)) ? 'team' : 'chef', ...standardPing(t) };
+  return { ziel: TEAM_LISTE.some(x => t.startsWith(x)) ? 'team' : 'chef', ping };
 }
+
+/** Pingt dieses Thema, wie es gerade eingestellt ist? Für /melden und /hilfe. */
+export const pingtJetzt = (thema, regeln = {}) =>
+  empfaenger(thema, regeln).ping === 'online';
+
+/** Darf man für dieses Thema überhaupt einen Ping einstellen? */
+export const pingbar = (thema) => istPingbar(String(thema || ''));
 
 /** Beschreibt eine Regel in einem Satz, für die Anzeige in Discord. */
 export function regelText(regel) {
+  if (regel.ziel === 'aus') return 'gar nicht – abgeschaltet';
+
   // Die Kanäle mit Namen nennen, nicht nur „ins Team". Sonst liest man
   // „nur ins Team" und denkt an den Kanal, den man dafür angelegt hat –
   // während die Meldung tatsächlich im allgemeinen Kanal landet.
   const team = CFG.TEAM_KANAL ? `ins Team (<#${CFG.TEAM_KANAL}>)` : 'ins Team (Kanal fehlt!)';
   const dich = CFG.CHEF_KANAL ? `an dich (<#${CFG.CHEF_KANAL}>)` : 'an dich (als DM)';
-  const wohin = {
-    chef: `nur ${dich}`, team: `nur ${team}`, beide: `${dich} und ${team}`,
-    kanal: regel.kanal
-      ? `in <#${regel.kanal}>${regel.auchChef ? ' und an dich' : ''}`
-      : 'in einen Kanal (fehlt!)',
-    aus: 'gar nicht',
-  }[regel.ziel] || regel.ziel;
-  const ping = !regel.ping || regel.ping === 'keiner' ? ''
-    : regel.ping === 'online' ? ' · pingt, wer gerade ingame online ist'
-    : regel.ping === 'everyone' ? ' · pingt @everyone'
-    : regel.ping === 'here' ? ' · pingt @here'
-    : ` · pingt <@&${regel.ping}>`;
-  const takt = regel.takt === undefined ? ''
-    : regel.takt === 0 ? ' · kein Zwischenstand'
-    : regel.takt === 1 ? ' · stündlich'
-    : ` · alle ${regel.takt} Std.`;
+  const wohin = regel.ziel === 'kanal'
+    ? (regel.kanal ? `in <#${regel.kanal}>` : 'in einen Kanal (fehlt!)')
+    : regel.ziel === 'chef' ? `nur ${dich}`
+    : regel.ziel === 'team' ? `nur ${team}`
+    : String(regel.ziel);
+
+  const ping = regel.ping === 'online' ? ' · pingt, wer gerade ingame online ist' : '';
   const nachfassen = regel.erinnerung === undefined ? ''
-    : regel.erinnerung === 0 ? ' · ohne Nachfassen'
-    : ` · fasst nach ${regel.erinnerung} Min. nach`;
-  const ruhe = regel.wiederholung === undefined ? ''
-    : regel.wiederholung >= 1440 ? ' · höchstens einmal am Tag'
-    : regel.wiederholung >= 60 ? ` · frühestens nach ${regel.wiederholung / 60} Std. wieder`
-    : ` · frühestens nach ${regel.wiederholung} Min. wieder`;
-  return wohin + ping + takt + nachfassen + ruhe;
+    : regel.erinnerung ? ` · fasst nach ${ERINNERUNG_MIN} Min. nach` : ' · ohne Nachfassen';
+  return wohin + ping + nachfassen;
 }
 
 /**
@@ -525,7 +519,7 @@ async function inKanal(kanal, titel, text, prio, fuss, ping, pingNutzer, knopf) 
  *
  * ziel: 'chef'  – nur an dich (DM oder Chef-Kanal)
  *       'team'  – nur in den Team-Kanal
- *       'beide' – an beide, das Team bekommt teamText/teamTitel, falls gesetzt
+ *       'beide' – an beide
  */
 export async function discordSende(auftrag) {
   // Nichts aus dieser Funktion darf nach oben durchschlagen: sie wird mitten
@@ -539,7 +533,7 @@ export async function discordSende(auftrag) {
 }
 
 async function sendeIntern({ ziel, kanal, auchChef, ping, pingNutzer, titel, text,
-                            prio = 'high', teamTitel, teamText, knopf }) {
+                            prio = 'high', knopf }) {
   if (!discordAktiv() || ziel === 'aus') return;
 
   if (ziel === 'chef' || ziel === 'beide' || (ziel === 'kanal' && auchChef)) {
@@ -552,14 +546,13 @@ async function sendeIntern({ ziel, kanal, auchChef, ping, pingNutzer, titel, tex
                   knopf);   // der Knopf geht auch in einer DM
   }
   if (ziel === 'team' || ziel === 'beide') {
-    await inKanal(CFG.TEAM_KANAL, teamTitel || titel, teamText || text, prio,
+    await inKanal(CFG.TEAM_KANAL, titel, text, prio,
                   undefined, ping, pingNutzer, knopf);
   }
   if (ziel === 'kanal') {
     // Ein frei gewählter Kanal bekommt die Team-Fassung: dort können Leute
     // mitlesen, die nicht der Inhaber sind.
-    await inKanal(kanal, teamTitel || titel, teamText || text, prio,
-                  undefined, ping, pingNutzer, knopf);
+    await inKanal(kanal, titel, text, prio, undefined, ping, pingNutzer, knopf);
   }
 }
 
@@ -709,18 +702,6 @@ export async function fuehreAus(interaktion, befehle) {
   const oeffentlich = !!b.oeffentlich && imBefehlKanal;
   const heimlich = !oeffentlich;
 
-  // Ein vorbehaltener Befehl lässt sich per /rechte an Rollen oder einzelne
-  // Konten weitergeben – außer er ist ausdrücklich nicht übertragbar.
-  const darf = (welcher) => befehle[welcher]?.nichtUebertragbar
-    ? istChef
-    : darfNutzen(welcher, { istChef, nutzerId: nutzer.id, rollen });
-
-  // Eine benannte Entscheidung statt derselben Bedingung in jedem Befehl:
-  // Beträge sind entweder für alle offen, oder nur für den, der /kasse darf –
-  // und dann nie in einer öffentlichen Antwort, sonst stünden sie für alle da.
-  const zeigtBetraege = () =>
-    process.env.UC_ZAHLEN_OFFEN !== '0' || (darf('kasse') && !oeffentlich);
-
   await aufschieben(interaktion, heimlich);
 
   // Bremse: pro Person und Befehl. Der Inhaber ist ausgenommen, damit eine
@@ -742,22 +723,19 @@ export async function fuehreAus(interaktion, befehle) {
     }
   }
 
-  // b.recht lässt einen Befehl am Recht eines anderen hängen (etwa /woche am
-  // Recht für /tagesbericht – dieselben Zahlen, nur anders zusammengefasst).
-  if (b.nurChef && !darf(b.recht || name)) {
+  // Ein Befehl ist entweder für alle da oder nur für den Inhaber. Eine
+  // Rechteverwaltung dazwischen gab es einmal; sie verwaltete Rechte, die
+  // ohnehin alle haben sollten.
+  if (b.nurChef && !istChef) {
     await antworte(interaktion,
-      b.nichtUebertragbar
-        ? '🔒 Diesen Befehl kann nur der Firmeninhaber benutzen.'
-        : '🔒 Dafür fehlen dir die Rechte. Der Firmeninhaber kann sie mit ' +
-          '`/rechte` vergeben.', heimlich);
+      '🔒 Diesen Befehl kann nur der Firmeninhaber benutzen.', heimlich);
     return;
   }
 
   try {
     const optionen = {};
     for (const o of interaktion.data?.options || []) optionen[o.name] = o.value;
-    const ergebnis = await b.ausfuehren({ istChef, nutzer, rollen, optionen, darf,
-                                          oeffentlich, zeigtBetraege });
+    const ergebnis = await b.ausfuehren({ istChef, nutzer, rollen, optionen, oeffentlich });
     await antworte(interaktion, ergebnis, heimlich);
     log('Befehl', name, 'von', nutzer.username || nutzer.id);
   } catch (e) {

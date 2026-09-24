@@ -210,9 +210,8 @@ Vollständige Einrichtung: **DISCORD.md**. Im Alltag reichen diese:
 
 Im Discord selbst – für alle: `/firma`, `/lager`, `/zeiten`, `/kasse`,
 `/hilfe`. Vorbehalten: `/tagesbericht`, `/watcher`, `/melden`, `/zuordnen`,
-`/testvorfall` – einzeln weitergebbar mit `/rechte` an eine Rolle oder eine
-Person. `/rechte` selbst bleibt immer beim Inhaber. Das Recht auf `/kasse`
-öffnet nicht den Befehl (den haben alle), sondern die Firmenzahlen darin.
+`/testvorfall`. Ein Befehl ist entweder für alle da oder nur für den Inhaber –
+eine Rechteverwaltung dazwischen gibt es nicht mehr.
 
 `/testvorfall` täuscht einen Vorfall vor und berichtet, wer dabei gepingt
 wurde – damit lässt sich die Zuordnung prüfen, ohne auf einen echten zu warten.
@@ -222,7 +221,8 @@ sie sich wiederholt – und ob sie überhaupt kommt. Alles ohne SSH und ohne
 Neustart. `/melden` ohne Angaben zeigt die Übersicht. Die Einstellungen stehen
 in `uc-watcher-regeln.json`.
 
-`/rechte` vergibt die vorbehaltenen Befehle an Rollen oder Personen.
+`/melden` stellt ein, wer welche Meldung sieht: `kanal:`, `aus:`, `ping:`,
+`erinnerung:` – alles Ja/Nein oder ein Kanal.
 `/zuordnen` verbindet Discord-Konten mit Spielernamen, damit „nur wer ingame
 online ist" pingen kann.
 
@@ -232,7 +232,8 @@ Zwei Kanäle im selben Server: `#firma-team` für alle (`UC_DISCORD_TEAM_KANAL`)
 und ein privater Kanal nur für dich (`UC_DISCORD_CHEF_KANAL`).
 
 **Was ins Team geht:** Lager, Lieferengpass, Firma pausiert, Ausschüttung,
-Vorfälle – bei den letzten beiden ohne Beträge und ohne Namen.
+Vorfälle. Alle sehen denselben Wortlaut; nur Diebstahlverdacht und Personal
+gehen von Haus aus allein an den Inhaber.
 **Was nur du bekommst:** Kasse, Buchungen, Personal, Arbeitszeiten,
 Lagerverlust, Zugang und Technik.
 

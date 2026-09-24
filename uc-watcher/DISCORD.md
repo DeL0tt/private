@@ -155,12 +155,11 @@ In der Tabelle steht, wohin eine Meldung standardmäßig geht.
 | Zugang abgelaufen, Seite nicht erreichbar | – | ✅ |
 | Wiki- und Notion-Abgleich | – | ✅ |
 
-**Voreingestellt sehen alle alles:** Kassenstände, Beträge und wer wann da
-war. Die Spalten „ohne Namen" und „ohne Beträge" oben beschreiben deshalb nur,
-was passiert, wenn du mit `UC_ZAHLEN_OFFEN=0` wieder zurückhältst – dann
-bekommen geteilte Kanäle die gekürzte Fassung, und `/kasse` und
-`/tagesbericht` sind wieder dem Inhaber vorbehalten (und per `/rechte`
-einzeln weitergebbar).
+**Alle sehen alles:** Kassenstände, Beträge und wer wann da war. Eine gekürzte
+Fassung für geteilte Kanäle gab es früher; in einer Firma, in der alle die
+Zahlen sehen dürfen, war sie nur die schlechtere Meldung. Ausnahme bleiben die
+Themen mit Namenslisten – Diebstahlverdacht und Personal gehen von Haus aus nur
+an dich, weil dort ein Verdacht im Raum steht.
 
 Das ist nur die Voreinstellung. **Mit `/melden` stellst du jede Meldung
 einzeln um** – siehe unten. Die Tabelle gilt für alles, was du nicht selbst
@@ -338,23 +337,33 @@ UC_AUSZAHLUNG_AUSNAHMEN=ausschütt,ausschuett,löhne,loehne,lohn,npc
 Die Ausnahmeliste **ersetzt** die Vorgabe vollständig – wer sie setzt, muss
 die Ausschüttung selbst wieder mit aufführen.
 
-Standardmäßig nur für dich – einzeln weitergebbar (siehe unten):
+`/tagesbericht` gehört ebenfalls allen:
 
 | Befehl | Zeigt |
 |---|---|
 | `/tagesbericht` | Onlinezeiten des Teams – mit `tag:` ein vergangener Spieltag, mit `tage:` ein Zeitraum samt Vergleich |
-| `/watcher` | Läuft er, Token-Ablauf, Erreichbarkeit |
+
+## Nur für dich
+
+Vier Befehle, die den Watcher **einstellen** statt etwas anzuzeigen:
+
+| Befehl | Macht |
+|---|---|
 | `/melden` | Einstellen, wer welche Meldung sieht und ob gepingt wird |
 | `/zuordnen` | Discord-Konto einem UnicaCity-Namen zuordnen |
-| `/rechte` | Wer darf welchen Befehl – **bleibt immer beim Inhaber** |
 | `/testvorfall` | Einen Vorfall vortäuschen, um Kanal und Ping zu prüfen |
+| `/watcher` | Läuft er, Token-Ablauf, Rechenlast |
 
-Antworten sind **nur für den Fragenden sichtbar** – es entsteht kein
-Geplapper im Kanal, und `/kasse` zeigt niemandem sonst deine Zahlen. Bei
-`/firma`, `/zeiten` und `/kasse` siehst du zusätzlich die Beträge, alle anderen
-denselben Befehl ohne.
+Ein Befehl ist entweder für alle da oder nur für dich – eine Rechteverwaltung
+dazwischen gab es einmal. Sie verwaltete Rechte, die ohnehin alle haben sollten,
+und war damit vor allem eine Fehlerquelle: ein Befehl konnte in Discords Liste
+fehlen, obwohl jemand ihn durfte.
 
-Versucht ein Angestellter `/kasse`, bekommt er nur den Hinweis, dass das dem
+Antworten sind **nur für den Fragenden sichtbar** – es entsteht kein Geplapper
+im Kanal. Im Befehlskanal (siehe oben) antworten die offenen Befehle für alle
+sichtbar; die vier hier bleiben auch dort privat.
+
+Versucht ein Angestellter einen davon, bekommt er nur den Hinweis, dass das dem
 Inhaber vorbehalten ist. Der Befehl wird dabei nicht ausgeführt.
 
 ### Prüfen, ob Vorfälle ankommen: `/testvorfall`
@@ -379,30 +388,6 @@ Namen in `/zuordnen` passen nicht zu denen im Spiel.
 Die Probe verändert nichts: keine Erinnerung, keine gespeicherte Sperre, kein
 Eintrag in den Vorfallsarten. Sie lässt sich also beliebig oft wiederholen.
 
-### Rechte vergeben: `/rechte`
-
-Die vorbehaltenen Befehle kannst du einzeln weitergeben – an eine **Rolle**
-(gilt für alle, die sie tragen) oder an eine **einzelne Person**.
-
-```
-/rechte befehl:/kasse         rolle:@Leitung
-/rechte befehl:/tagesbericht  nutzer:@Maxine
-/rechte                                        → zeigt, wer was darf
-/rechte befehl:/kasse  nutzer:@Maxine  entfernen:True
-```
-
-Der Bot sagt dir beim Vergeben, was damit wirklich sichtbar wird. Bei `/kasse`
-etwa: Kassenstand, Gewinn, die letzten Buchungen – **und die Beträge in
-`/firma` und `/zeiten`**, die sonst ausgeblendet sind. Das Tagesbudget in
-`/kasse` sehen ohnehin alle. Bei `/tagesbericht` sind es die Onlinezeiten aller
-Angestellten – auch die vergangener Tage und ganzer Zeiträume – und die volle
-Namensliste in `/zeiten` statt nur der eigenen Zeit. Sonst würde man ein Recht vergeben,
-dessen Umfang man nicht kennt.
-
-`/rechte` selbst ist **nicht übertragbar**. Wer Rechte vergeben darf, könnte
-sich sonst selbst alles geben – das bleibt bei dir, auch wenn jemand in der
-Liste steht.
-
 ### Wer sieht welche Befehle überhaupt?
 
 Zwei verschiedene Dinge, die man leicht verwechselt:
@@ -411,23 +396,19 @@ Zwei verschiedene Dinge, die man leicht verwechselt:
 füllt Discord selbst, nicht der Bot. Ohne Zutun stünden dort **alle** Befehle
 samt Beschreibung, auch die, die der Bot dann verweigern würde.
 
-Deshalb werden `/melden`, `/zuordnen`, `/rechte`, `/watcher` und
-`/testvorfall` bei der Registrierung als Verwaltungsbefehle gekennzeichnet:
-Wer im Server keine Verwaltungsrechte hat, sieht sie gar nicht erst. Mit
+Deshalb werden `/melden`, `/zuordnen`, `/watcher` und `/testvorfall` bei der
+Registrierung als Verwaltungsbefehle gekennzeichnet: Wer im Server keine
+Verwaltungsrechte hat, sieht sie gar nicht erst. Mit
 `UC_DISCORD_BEFEHLE_VERBERGEN=0` lässt sich das abstellen.
 
-> **Wenn du einen dieser Befehle per `/rechte` weitergibst**, musst du ihn
-> zusätzlich in Discord sichtbar machen: Servereinstellungen → Integrationen →
-> der Bot → beim Befehl die Rolle oder Person freigeben. Sonst erlaubt ihn
-> zwar der Bot, aber Discord zeigt ihn der Person nicht an.
+Verborgen und vorbehalten sind jetzt dieselben vier Befehle – ein verborgener
+Befehl, den jeder ausführen darf, wäre nur schwer zu finden; ein sichtbarer, den
+niemand darf, eine Einladung zum Fehlversuch.
 
 **Die Antwort von `/hilfe`** – die kommt vom Bot und zeigt jedem nur die
-Befehle, die er auch ausführen kann. Wer kein
-Recht auf `/kasse` hat, sieht den Befehl dort gar nicht – nur die Anzahl der
-übrigen, ohne deren Namen, damit man weiß, dass man nachfragen kann. Der
-Inhaber sieht alles ohne Hinweis.
-
-Vergeben und Entziehen gilt sofort und übersteht Neustarts.
+Befehle, die er auch ausführen kann. Ein Angestellter sieht die vier
+Inhaber-Befehle dort gar nicht, sondern nur deren Anzahl, ohne Namen, damit er
+weiß, dass es sie gibt. Der Inhaber sieht alles ohne Hinweis.
 
 ### Meldungen umstellen: `/melden`
 
@@ -439,57 +420,55 @@ aktuellen Ziel. Ein ✏️ markiert, was du selbst geändert hast.
 
 `/melden thema:<Meldung>` zeigt nur diese eine Regel.
 
-Zum Ändern kommen `ziel:` und/oder `ping:` dazu:
-
-| `ziel:` | Wirkung |
-|---|---|
-| nur ich | geht ausschließlich an dich |
-| nur das Team | geht ausschließlich in den Team-Kanal |
-| ich und das Team | beides, das Team in der gekürzten Fassung |
-| der Kanal und ich | in den Kanal aus `kanal:` **und** zusätzlich an dich – der Kanal bekommt die gekürzte Fassung |
-
-Für einen frei gewählten Kanal genügt `kanal:` allein – `ziel:` brauchst du
-dann nicht. Ein ausgefülltes Feld sagt schon, was gemeint ist:
-
-```
-/melden thema:Vorfall im Unternehmen  kanal:#⚠️〢vorfälle
-```
-
-Dazu kommen zwei Einstellungen, wie **oft** eine Meldung kommt:
+Zum Ändern kommt ein Schalter dazu. Es gibt sechs, und alle sind Ja/Nein
+oder ein Kanal – keine Auswahllisten mehr:
 
 | Option | Wirkung |
 |---|---|
-| `wiederholung:` | Wie lange Ruhe ist, bevor dieselbe Meldung wiederkommt – 15 Min. bis „erst am nächsten Tag". Ohne Angabe: eine Stunde. |
-| `takt:` | Nur beim **Zwischenstand der Ausschüttung**: stündlich, alle zwei, drei oder sechs Stunden – oder gar nicht, dann kommt nur noch die fällige Ausschüttung. |
-| `erinnerung:` | Nur beim **Vorfall im Unternehmen**: nachfassen, solange er offen ist – nach 2 bis 10 Minuten, oder gar nicht. Der Knopf „Ich kümmere mich" (siehe unten) beendet das Nachfassen; er hängt aber unabhängig davon an jeder Vorfallsmeldung. |
-| `vorfallart:` | Nur beim **Vorfall im Unternehmen**: die Einstellung gilt dann nur für diese Art, z. B. `ABWERBUNG`. |
+| `kanal:` | Diese Meldung geht in diesen Kanal statt in den vorgesehenen. |
+| `aus:` | Ja = die Meldung kommt **gar nicht mehr**, auch nicht aufs Handy. Nein = wieder an. |
+| `ping:` | **Nur bei Vorfällen.** Ja = anpingen, wer gerade ingame online ist. |
+| `erinnerung:` | **Nur beim Vorfall im Unternehmen.** Ja = nach 5 Minuten nachfassen, solange er offen ist. |
+| `vorfallart:` | **Nur beim Vorfall.** Die Einstellung gilt dann nur für diese Art, z. B. `ABWERBUNG`. |
+| `standard:` | Ja = alle eigenen Einstellungen für dieses Thema verwerfen. |
+
+**Beispiele:**
 
 ```
-/melden thema:Ausschüttung: Zwischenstand  takt:alle drei Stunden
-/melden thema:Ausschüttung: Zwischenstand  takt:nur wenn die Ausschüttung fällig ist
-/melden thema:Lagerbestand niedrig  wiederholung:nach 3 Stunden
-/melden thema:Vorfall im Unternehmen  erinnerung:nach 3 Minuten
-/melden thema:Vorfall im Unternehmen  vorfallart:ABWERBUNG  erinnerung:nach 3 Minuten  ping:nur wer gerade ingame online ist
-/melden thema:Wiki-Änderungen  ziel:gar nicht (aus)
+/melden thema:Vorfall im Unternehmen  kanal:#⚠️〢vorfälle
+/melden thema:Vorfall im Unternehmen  vorfallart:ABWERBUNG  erinnerung:true
+/melden thema:Wiki-Änderungen         aus:true
+/melden thema:Kassenvorfall           ping:true
+/melden thema:Lagerbestand niedrig    standard:true
 ```
 
-**Einzelne Vorfallsarten:** Mit `vorfallart:` gilt eine Einstellung nur für
-diese eine Art – eine Abwerbung kostet Geld und darf ruhig zweimal stören,
-ein belangloser Vorfall nicht. Das Feld schlägt dir Arten vor: die, die der
-Watcher schon gesehen hat (mit Anzahl), die bereits eingestellten, und eine
-Startliste der im Spiel üblichen. Steht deine nicht dabei, tipp sie einfach –
-sie wird als „so übernehmen" angeboten. Auswendig wissen musst du nichts. Eine Regel für eine Art schlägt die allgemeine, und `/melden` ohne
-Angaben listet beide untereinander auf.
+### Was fest ist und nicht mehr einstellbar
 
-**Zum Nachfassen bei Vorfällen:** Ein Vorfall hat eine Frist – bei einer
-Abwerbung etwa zehn Minuten. Läuft sie ab, ohne dass jemand reagiert, kostet
-das Geld. Die erste Meldung geht aber unter, wenn gerade niemand hinsieht.
-Deshalb kommt nach der eingestellten Zeit eine Erinnerung mit der
-**verbleibenden Frist** und der Angabe, wie lange er schon offen ist.
-**Voreingestellt ist aus**, denn nicht jeder Vorfall ist es wert, zweimal zu
-stören. Eingeschaltet wird höchstens dreimal nachgefasst – danach ist Schluss,
-damit ein hängender Vorfall nicht endlos meldet. Ist der Vorfall weg, erledigt
-oder abgelaufen, wird nichts mehr geschickt.
+Vier Entscheidungen hat der Watcher jetzt für dich getroffen, weil es für jedes
+Thema dieselbe Antwort gab:
+
+| | |
+|---|---|
+| **Ruhezeit** | Jede Meldung kommt höchstens **alle 30 Minuten**. Eine Einstellung je Thema war eine Frage mit nur einer Antwort. |
+| **Ping** | Immer nur **wer gerade ingame online ist**, und nur bei Vorfällen. `@everyone`, `@here` und Rollen-Pings gibt es nicht mehr — sie erreichten verlässlich die Falschen: Leute, die Discord offen haben, aber nicht spielen. |
+| **Nachfassen** | Immer nach **5 Minuten**. Bei einer Frist von zehn Minuten ist alles andere zu früh oder zu spät. |
+| **Zwischenstand der Ausschüttung** | **Alle 3 Stunden**. Wer ihn gar nicht will, schaltet das Thema mit `aus:true` ab — dieselbe Wirkung, eine Einstellung weniger. |
+
+Alle vier lassen sich noch über die `.env` verschieben (`UC_ERINNERUNG_MIN`,
+`UC_VORFALL_ERINNERUNG_MIN`, `UC_AUSSCHUETTUNG_TAKT`), aber nicht mehr aus dem
+Discord heraus. Das ist Absicht: es sind Entscheidungen für die ganze Firma,
+nicht je Meldung.
+
+### Wohin eine Meldung geht
+
+Jedes Thema hat einen vorgesehenen Ort — ins Team, zu dir, oder in den
+Vorfall-Kanal. `kanal:` überschreibt das. Ein zusätzliches `ziel:`-Feld gab es
+einmal; es sagte nichts, was `kanal:` nicht schon sagt.
+
+Meldungen mit Namenslisten (Diebstahlverdacht, Personal) gehen von Haus aus
+**nur an dich**. Setzt du dort einen Kanal, ist das eine bewusste Entscheidung —
+der Bot hält dich nicht davon ab.
+
 
 ### Der Knopf „Ich kümmere mich"
 
@@ -519,56 +498,21 @@ Eintrag aufgeräumt.
 `/testvorfall` schickt den Knopf mit und sagt in der Antwort, was ein Druck
 bei dieser Vorfallsart bewirken würde.
 
-`ziel: gar nicht (aus)` schaltet eine Meldung **vollständig** ab – auch die
-Benachrichtigung aufs Handy über ntfy, nicht nur die im Discord.
-| gar nicht (aus) | die Meldung entfällt komplett, auch für dich |
-| zurück auf Standard | die Voreinstellung aus der Tabelle oben gilt wieder |
+`aus:true` schaltet eine Meldung **vollständig** ab – auch die
+Benachrichtigung aufs Handy über ntfy, nicht nur die im Discord. Sonst wäre die
+Einstellung eine Halbwahrheit.
 
-| `ping:` | Wirkung |
-|---|---|
-| niemand | nur die Nachricht, keine Benachrichtigung |
-| **nur wer gerade ingame online ist** | **pingt gezielt die Leute, die gerade in UnicaCity spielen** |
-| @everyone | alle im Kanal werden angepingt |
-| @here | alle, die im Discord gerade online sind |
-
-Für eine Rolle genügt `rolle:` allein – `ping:` brauchst du dann nicht:
-
-```
-/melden thema:Lagerbestand niedrig  rolle:@Lagerdienst
-```
-
-
-**Voreingestellt** pingt ein **Vorfall im Unternehmen** und eine **pausierte
-Firma** bereits die Leute, die gerade spielen – beides hat eine Frist oder
-kostet laufend Geld. Das wirkt, sobald die Konten per `/zuordnen` bekannt
-sind; vorher bleibt es still.
-
-> `@here` und „ingame online" sind nicht dasselbe: `@here` meint, wer gerade
-> Discord offen hat, auch am Handy im Bus. „Ingame online" meint, wer wirklich
-> auf dem Server spielt und etwas tun kann.
-
-**Beispiele:**
-
-```
-/melden thema:Lagerbestand niedrig  ziel:nur das Team  rolle:@Lagerdienst
-/melden thema:Vorfall im Unternehmen  ping:@everyone
-/melden thema:Wiki-Änderungen  ziel:gar nicht (aus)
-/melden thema:Tagesbericht mit Onlinezeiten  ziel:zurück auf Standard
-```
-
-Drei Dinge dazu:
+Zwei Dinge dazu:
 
 - **Pings wirken in Kanälen**, auch in deinem Inhaber-Kanal. Nur in einer DM
   gibt es sie nicht – dort erreicht dich die Meldung ohnehin direkt.
-- **Bei heiklen Meldungen warnt der Bot.** Stellst du etwas mit Namen oder
-  Beträgen auf einen geteilten Kanal um, sagt die Antwort dir, was dort
-  künftig mitgelesen wird. Verboten wird es nicht – es ist deine Firma.
-- **Für @everyone braucht der Bot ein Recht.** Ohne „Everyone erwähnen" im
-  Kanal steht die Erwähnung nur da, ohne zu klingeln.
+- **Ein Ping braucht eine Zuordnung.** Gepingt wird, wer per `/zuordnen`
+  bekannt ist und gerade spielt. Ohne Zuordnung bleibt es still – der Bot
+  erfindet niemanden.
 
 Die Regeln liegen in `uc-watcher-regeln.json` neben dem Zustand und gelten
 sofort, auch nach einem Neustart. Löschst du die Datei, gilt wieder die
-Tabelle oben.
+Voreinstellung.
 
 ### Nur anpingen, wer gerade spielt
 
@@ -593,7 +537,7 @@ dir, wenn nicht – meist ein Tippfehler. Groß- und Kleinschreibung ist egal.
 Dann den Ping setzen:
 
 ```
-/melden thema:Lagerbestand niedrig  ziel:nur das Team  ping:nur wer gerade ingame online ist
+/melden thema:Vorfall im Unternehmen  ping:true
 ```
 
 Auf dem Server kannst du jederzeit nachsehen, wen es gerade träfe:
