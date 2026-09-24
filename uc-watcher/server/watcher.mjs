@@ -1970,12 +1970,13 @@ const betriebeFrisch = () => frisch('betriebe', holeBetriebe);
  * dreier, die sonst auseinanderlaufen.
  */
 const UEBERTRAGBAR = {
-  kasse: { kurz: 'Kassenstand, Gewinn, letzte Buchungen',
-    umfang: 'Kassenstand, Gewinn und die letzten Buchungen – und damit auch ' +
-            'die Beträge in /firma und /ausschuettung.' },
+  kasse: { kurz: 'Firmenzahlen: Kassenstand, Gewinn, Buchungen',
+    umfang: 'Kassenstand, Gewinn und die letzten Buchungen in /kasse – und ' +
+            'damit auch die Beträge in /firma und /zeiten. Das Tagesbudget ' +
+            'in /kasse sehen ohnehin alle.' },
   tagesbericht: { kurz: 'Onlinezeiten des ganzen Teams',
-    umfang: 'die Onlinezeiten aller Angestellten – auch vergangener Tage und ' +
-            'als Wochenübersicht mit /woche – und damit auch die volle ' +
+    umfang: 'die Onlinezeiten aller Angestellten in /tagesbericht, auch die ' +
+            'vergangener Tage und ganzer Zeiträume – und damit auch die volle ' +
             'Liste in /zeiten statt nur der eigenen Zeit.' },
   watcher: { kurz: 'läuft der Watcher, Technik',
     umfang: 'den technischen Zustand: Laufzeit, Token-Ablauf, Erreichbarkeit.' },
@@ -1991,6 +1992,150 @@ const werDarf = (r) => [
   ...(r?.rollen || []).map(id => `<@&${id}>`),
   ...(r?.nutzer || []).map(id => `<@${id}>`),
 ].join(', ');
+
+/**
+ * Das Firmenlager als Text: Bestand, Nachkauf, gemessene Reichweite.
+ * Eigene Funktion, weil /lager beide Bestände zeigt und der Aufbau sonst in
+ * einer Befehlsdefinition mit zwei Ausgängen steckte.
+ */
+async function lagerText() {
+  const f = await firmaFrisch();
+  const st = load();
+  const bestand = f.stock?.total ?? 0, kapazitaet = f.stock?.capacity ?? 0;
+  const anteil = kapazitaet ? Math.round(bestand / kapazitaet * 100) : 0;
+  let t = `**Lager:** ${bestand} / ${kapazitaet} (${anteil} %)\n` + balken(anteil);
+
+  const nk = nachkaufStand(f, st);
+
+  // Läuft der Nachkauf, füllt sich das Lager selbst – dann sagt eine
+  // Reichweite nichts aus und bleibt weg.
+  if (nk.an === true) {
+    t += '\n🔄 **Nachkauf läuft** – der Bestand füllt sich selbst auf.';
+    if (nk.quelle === 'Einkäufe' && nk.her) {
+      t += ` Letzter Einkauf vor ${dauer(nk.her)}.`;
+    }
+    if (bestand < CFG.LAGER_SCHWELLE) {
+      t += `\n⚠️ Trotzdem unter der Schwelle von ${CFG.LAGER_SCHWELLE} – ` +
+           'entweder reicht das Geld nicht oder der Nachkauf kommt nicht hinterher.';
+    }
+    return t;
+  }
+
+  if (nk.an === false) {
+    t += '\n⏹️ **Nachkauf ist aus.**' +
+      (nk.quelle === 'Einkäufe' && nk.her
+        ? ` Seit ${dauer(nk.her)} hat das System nichts eingekauft.`
+        : '');
+  }
+
+  // Gemessen statt hochgerechnet: verkauft wird schubweise, die Angabe der
+  // API lässt sich nicht auf die Minute umlegen.
+  const r = reichweite(st, bestand);
+  const a = gemessenerAbsatz(st);
+  if (r) {
+    t += `\n**Reicht noch ${dauer(r.ms)}** – ${r.proMinute.toFixed(1)}/Min, ` +
+      `gemessen über ${Math.round(r.minuten)} Min ` +
+      `(${r.abgeflossen} Stück in ${r.schuebe} Schüben).`;
+  } else if (a) {
+    t += '\nIn der letzten Stunde ging nichts raus – keine Reichweite berechenbar.';
+  } else {
+    t += '\nReichweite noch unbekannt: der Watcher misst den Absatz selbst ' +
+      'und braucht dafür etwa 10 Minuten Laufzeit.';
+  }
+
+  if (bestand < CFG.LAGER_SCHWELLE) {
+    t += `\n⚠️ Unter der Schwelle von ${CFG.LAGER_SCHWELLE} – nachfüllen.`;
+  }
+  return t;
+}
+
+/**
+ * Die Zoohandlung als Text, oder '' wenn kein Betrieb eingerichtet ist.
+ * Ein Fehler wird benannt statt geworfen: das Firmenlager soll trotzdem
+ * herauskommen, wenn nur die Betriebsübersicht klemmt.
+ */
+async function betriebText() {
+  if (!CFG.BETRIEB) return '';
+  let daten;
+  try {
+    daten = await betriebeFrisch();
+  } catch (e) {
+    return e.message.startsWith('BETRIEB_PFAD_UNBEKANNT')
+      ? `**${CFG.BETRIEB}:** _Übersicht nicht gefunden – auf dem Server ` +
+        '`--betrieb-probe` ausführen._'
+      : `**${CFG.BETRIEB}:** _Abruf fehlgeschlagen: ${e.message}_`;
+  }
+
+  const st = betriebStand(daten);
+  if (!st.gefunden) return `**${CFG.BETRIEB}:** _gibt es dort nicht._`;
+  if (st.bestand === null) {
+    return `**${st.name}:** _gefunden, aber der Bestand steht in keinem ` +
+           'bekannten Feld. `--betrieb-probe` zeigt die Antwort._';
+  }
+
+  let t = `**${st.name}: ${st.bestand} von ${st.max}**\n` + balken(st.anteil);
+  if (!CFG.BETRIEB_ID && CFG.BETRIEB_ABZUG) {
+    t += `\nGelesen ${st.angezeigt}, abzüglich ${CFG.BETRIEB_ABZUG}.`;
+  }
+  if (st.bestand <= 0) t += '\n🔴 **Leer.** Es kann nichts mehr entnommen werden.';
+  else if (st.bestand <= CFG.BETRIEB_SCHWELLE) {
+    t += `\n⚠️ Wird knapp – unter ${CFG.BETRIEB_SCHWELLE}.`;
+  }
+  return t;
+}
+
+/**
+ * Die Übersicht über mehrere Spieltage, mit Vergleich zur Zeit davor.
+ * Gehört zu /tagesbericht: derselbe Datenbestand, dieselbe Frage über einen
+ * längeren Zeitraum.
+ */
+function zeitraumText(tage) {
+  const n = Math.min(90, Math.max(2, tage));
+
+  // Den laufenden Tag mitnehmen, sonst fehlt heute im Zeitraum.
+  const st = load();
+  merkeZeiten(st.tag, st.spieler, st.firmaTagMs);
+
+  const v = vergleich(n);
+  if (!v.jetzt.tage) return '_Das Archiv ist noch leer – die Zahlen sammeln sich ' +
+    'ab jetzt an._';
+
+  // Ohne ältere Tage gibt es nichts zu vergleichen – dann wäre jeder Pfeil nur
+  // ein „neu", und das liest sich wie ein Anstieg.
+  const pfeil = (d) => !v.davor.tage ? ''
+    : Math.abs(d) < 5 * MIN ? '  ·' : d > 0 ? ' ▲' : ' ▼';
+  const zeilen = v.spieler.map(p =>
+    `${p.name.padEnd(18)} ${dauer(p.ms).padStart(14)} ` +
+    `${String(p.tage).padStart(2)} Tg ${dauer(p.schnitt).padStart(13)}/Tg` +
+    pfeil(p.diff));
+
+  let t = `**Letzte ${v.jetzt.tage} Spieltage** ` +
+    `(${tagKurz(v.jetzt.von)} bis ${tagKurz(v.jetzt.bis)})\n` + tabelle(zeilen) +
+    `\nSumme: ${dauer(v.jetzt.gesamtMs)} · Firma gelaufen: ${dauer(v.jetzt.firmaMs)}`;
+
+  if (v.davor.tage) {
+    const rel = v.davor.gesamtMs
+      ? ` (${v.gesamtMs >= 0 ? '+' : ''}${Math.round(v.gesamtMs / v.davor.gesamtMs * 100)} %)`
+      : '';
+    t += `\n\n**Gegenüber den ${v.davor.tage} Tagen davor** ` +
+      `(${tagKurz(v.davor.von)} bis ${tagKurz(v.davor.bis)}): ` +
+      `${v.gesamtMs >= 0 ? '+' : '−'}${dauer(Math.abs(v.gesamtMs))}${rel}`;
+  } else {
+    t += '\n\n_Für einen Vergleich fehlen noch ältere Tage._';
+  }
+
+  if (v.jetzt.ausschuettungen) {
+    t += `\n\n**Ausschüttungen:** ${v.jetzt.ausschuettungen} über ${fmt(v.jetzt.betrag)}`;
+  }
+  // Die Anteile stehen bewusst dabei: danach ließe sich verteilen, wenn der
+  // Inhaber das will. Die Rechnung macht der Bot nicht von selbst.
+  const a = anteile(letzteTage(n));
+  if (a.length > 1 && v.jetzt.gesamtMs) {
+    t += '\n**Anteil an der Gesamtzeit:** ' +
+      a.slice(0, 8).map(p => `${p.name} ${zahl(p.prozent)} %`).join(' · ');
+  }
+  return t;
+}
 
 const BEFEHLE = {
   firma: {
@@ -2017,87 +2162,23 @@ const BEFEHLE = {
   },
 
   lager: {
-    beschreibung: 'Lagerbestand, Absatz und wie lange der Bestand noch reicht',
+    beschreibung: 'Wo fehlt Ware: Firmenlager und Zoohandlung',
     oeffentlich: true,
     async ausfuehren() {
-      const f = await firmaFrisch();
-      const st = load();
-      const bestand = f.stock?.total ?? 0, kapazitaet = f.stock?.capacity ?? 0;
-      const anteil = kapazitaet ? Math.round(bestand / kapazitaet * 100) : 0;
-      let t = `**Lager:** ${bestand} / ${kapazitaet} (${anteil} %)\n` + balken(anteil);
-
-      // Läuft der Nachkauf, füllt sich das Lager selbst – dann sagt eine
-      // Reichweite nichts aus und bleibt weg.
-      const nk = nachkaufStand(f, st);
-      if (nk.an === true) {
-        t += '\n\n🔄 **Nachkauf läuft** – der Bestand füllt sich selbst auf.';
-        if (nk.quelle === 'Einkäufe' && nk.her) {
-          t += `\nLetzter Einkauf vor ${dauer(nk.her)}.`;
-        }
-        if (bestand < CFG.LAGER_SCHWELLE) {
-          t += `\n\n⚠️ Trotzdem unter der Schwelle von ${CFG.LAGER_SCHWELLE} – ` +
-               'entweder reicht das Geld nicht oder der Nachkauf kommt nicht hinterher.';
-        }
-        return t;
-      }
-
-      if (nk.an === false) {
-        t += '\n\n⏹️ **Nachkauf ist aus.**' +
-          (nk.quelle === 'Einkäufe' && nk.her
-            ? ` Seit ${dauer(nk.her)} hat das System nichts eingekauft.`
-            : '');
-      }
-
-      // Gemessen statt hochgerechnet: verkauft wird schubweise, die Angabe der
-      // API lässt sich nicht auf die Minute umlegen.
-      const r = reichweite(st, bestand);
-      const a = gemessenerAbsatz(st);
-      if (r) {
-        t += `\n\n**Reicht noch ${dauer(r.ms)}**\n` +
-          `${r.proMinute.toFixed(1)} Einheiten/Min, gemessen über ${Math.round(r.minuten)} Min ` +
-          `(${r.abgeflossen} Stück in ${r.schuebe} Schüben).`;
-      } else if (a) {
-        t += '\n\nIn der letzten Stunde ging nichts raus – keine Reichweite berechenbar.';
-      } else {
-        t += '\n\nReichweite noch unbekannt: der Watcher misst den Absatz selbst ' +
-          'und braucht dafür etwa 10 Minuten Laufzeit.';
-      }
-
-      if (bestand < CFG.LAGER_SCHWELLE) {
-        t += `\n\n⚠️ Unter der Schwelle von ${CFG.LAGER_SCHWELLE} – nachfüllen.`;
-      }
-      return t;
+      // Beide Bestände in einer Antwort. Es ist eine Frage – „wo muss ich
+      // nachfüllen" –, und wer sie stellt, soll sich nicht zwischen zwei
+      // Befehlen entscheiden müssen.
+      const [firma, betrieb] = await Promise.all([lagerText(), betriebText()]);
+      return betrieb ? `${firma}\n\n${betrieb}` : firma;
     },
   },
-
-  ausschuettung: {
-    beschreibung: 'Wie weit ist die Team-Onlinezeit bis zur nächsten Ausschüttung',
-    oeffentlich: true,
-    async ausfuehren({ zeigtBetraege }) {
-      const st = load();
-      const ziel = CFG.AUSSCHUETTUNG_STD * 3_600_000;
-      const anteil = Math.min(100, Math.round(st.teamOnlineMs / ziel * 100));
-      let t = `**Ausschüttung:** ${dauer(st.teamOnlineMs)} von ${CFG.AUSSCHUETTUNG_STD} Std. (${anteil} %)\n` +
-        balken(anteil) + '\n' +
-        (st.teamOnlineMs >= ziel
-          ? '✅ Ziel erreicht – die Ausschüttung kann gemacht werden.'
-          : `Noch ${dauer(ziel - st.teamOnlineMs)}.`);
-      const zahlen = zeigtBetraege();
-      if (zahlen && st.gewinn !== null) t += `\n\nGewinn bisher: ${fmt(st.gewinn)}`;
-      if (zahlen && st.letzteAusschuettung) {
-        t += `\nLetzte Ausschüttung: ${new Date(st.letzteAusschuettung).toLocaleString('de-DE')}`;
-      }
-      return t;
-    },
-  },
-
   zeiten: {
-    beschreibung: 'Wer ist gerade online, und wie lange war ich heute da',
+    beschreibung: 'Wer ist online, wie lange war ich da, wie weit ist die Ausschüttung',
     oeffentlich: true,
-    async ausfuehren({ nutzer, oeffentlich }) {
+    async ausfuehren({ nutzer, oeffentlich, zeigtBetraege }) {
       const st = load();
-      const eintraege = Object.entries(st.spieler || {});
-      const online = eintraege.filter(([, p]) => p.online).map(([n]) => n);
+      const online = Object.entries(st.spieler || {})
+        .filter(([, p]) => p.online).map(([n]) => n);
 
       // Wer gerade spielt, darf jeder wissen – das steht ohnehin im Spiel.
       // Wie lange wer da war, gehört in den Tagesbericht, nicht hierhin.
@@ -2105,8 +2186,24 @@ const BEFEHLE = {
         ? `🟢 **Gerade online (${online.length}):** ${online.join(', ')}`
         : '⚪ **Gerade ist niemand aus der Firma online.**';
 
-      t += `\n\nTeam-Onlinezeit bis zur Ausschüttung: ${dauer(st.teamOnlineMs)} ` +
-           `von ${CFG.AUSSCHUETTUNG_STD} Std.`;
+      // Der Fortschritt zur Ausschüttung hing früher an einem eigenen Befehl,
+      // stand aber immer schon auch hier. Es ist dieselbe Frage: wie weit ist
+      // das Team.
+      const ziel = CFG.AUSSCHUETTUNG_STD * 3_600_000;
+      const anteil = Math.min(100, Math.round(st.teamOnlineMs / ziel * 100));
+      t += `\n\n**Ausschüttung:** ${dauer(st.teamOnlineMs)} von ` +
+        `${CFG.AUSSCHUETTUNG_STD} Std. (${anteil} %)\n` + balken(anteil) + '\n' +
+        (st.teamOnlineMs >= ziel
+          ? '✅ Ziel erreicht – die Ausschüttung kann gemacht werden.'
+          : `Noch ${dauer(ziel - st.teamOnlineMs)}.`);
+
+      if (zeigtBetraege()) {
+        if (st.gewinn !== null) t += `\nGewinn bisher: ${fmt(st.gewinn)}`;
+        if (st.letzteAusschuettung) {
+          t += `\nLetzte Ausschüttung: ` +
+            new Date(st.letzteAusschuettung).toLocaleString('de-DE');
+        }
+      }
 
       // Die eigene Zeit nur in einer privaten Antwort – es sei denn, die
       // Zahlen sind ohnehin offen.
@@ -2127,109 +2224,89 @@ const BEFEHLE = {
     },
   },
 
-  betrieb: {
-    beschreibung: 'Bestand der Zoohandlung – was wirklich entnommen werden kann',
-    oeffentlich: true,
-    async ausfuehren() {
-      let daten;
-      try {
-        daten = await betriebeFrisch();
-      } catch (e) {
-        return e.message.startsWith('BETRIEB_PFAD_UNBEKANNT')
-          ? '❌ Der Watcher findet die Betriebsübersicht nicht. Auf dem Server ' +
-            '`node --env-file=.env watcher.mjs --betrieb-probe` ausführen.'
-          : `❌ Abruf fehlgeschlagen: ${e.message}`;
-      }
 
-      const st = betriebStand(daten);
-      if (!st.gefunden) return `❌ Einen Betrieb namens **${CFG.BETRIEB}** gibt es dort nicht.`;
-      if (st.bestand === null) {
-        return `❌ **${st.name}** gefunden, aber der Bestand steht in keinem bekannten Feld. ` +
-               '`--betrieb-probe` zeigt, wie die Antwort aussieht.';
-      }
 
-      let t = `**${st.name}: ${st.bestand} von ${st.max}**\n` + balken(st.anteil);
-      if (!CFG.BETRIEB_ID && CFG.BETRIEB_ABZUG) {
-        t += `\nGelesen ${st.angezeigt}, abzüglich ${CFG.BETRIEB_ABZUG}.`;
-      }
 
-      if (st.bestand <= 0) t += '\n\n🔴 **Leer.** Es kann nichts mehr entnommen werden.';
-      else if (st.bestand <= CFG.BETRIEB_SCHWELLE) t += `\n\n⚠️ Wird knapp – unter ${CFG.BETRIEB_SCHWELLE}.`;
-      return t;
-    },
-  },
 
-  gehalt: {
-    beschreibung: 'Wie viel vom Tagesbudget für Auszahlungen und Gehälter noch frei ist',
+
+  kasse: {
+    beschreibung: 'Kasse, Gewinn, Tagesbudget und die letzten Buchungen',
+    // Der Befehl selbst ist offen: der freie Betrag des Tagesbudgets war immer
+    // für alle da und soll es bleiben. Die Firmenzahlen darin hängen weiter am
+    // Schalter – so nimmt die Zusammenlegung niemandem etwas weg, in keiner
+    // Einstellung.
     oeffentlich: true,
     optionen: [
-      { name: 'aufschluesselung', description: 'Welche Buchungen wurden gezählt?',
+      { name: 'aufschluesselung', description: 'Welche Buchungen zehren am Tagesbudget?',
         type: 5, required: false },
     ],
-    async ausfuehren({ optionen, darf, oeffentlich }) {
+    async ausfuehren({ optionen, oeffentlich, zeigtBetraege }) {
       const st = load();
       const topf = auszahlungTopf(st);
-      // Ohne Limit gäbe es nichts auszuschöpfen – dann keine Prozentrechnung,
-      // sonst stünde dort NaN.
-      if (!topf.limit) {
-        return `**Heute raus: ${fmt(topf.genutzt)}**\n\n` +
-          '_Es ist kein Tagesbudget eingestellt (`UC_AUSZAHLUNG_LIMIT`)._';
-      }
-      const anteil = Math.round(topf.genutzt / topf.limit * 100);
-      let t = `**Noch frei: ${fmt(topf.frei)}**\n` + balken(anteil) + '\n' +
-        `${fmt(topf.genutzt)} von ${fmt(topf.limit)} sind heute raus (${anteil} %).`;
+      let t = '';
 
-      if (!topf.frei) t += '\n\n🔴 Das Tagesbudget ist aufgebraucht.';
-      else if (anteil >= 80) t += '\n\n⚠️ Es wird knapp.';
+      // --- Tagesbudget: für alle ---
+      if (!topf.limit) {
+        t += `**Heute ausgezahlt: ${fmt(topf.genutzt)}**\n` +
+          '_Es ist kein Tagesbudget eingestellt (`UC_AUSZAHLUNG_LIMIT`)._';
+      } else {
+        const anteil = Math.round(topf.genutzt / topf.limit * 100);
+        t += `**Tagesbudget – noch frei: ${fmt(topf.frei)}**\n` + balken(anteil) + '\n' +
+          `${fmt(topf.genutzt)} von ${fmt(topf.limit)} sind heute raus (${anteil} %).`;
+        if (!topf.frei) t += '\n🔴 Aufgebraucht.';
+        else if (anteil >= 80) t += '\n⚠️ Es wird knapp.';
+        t += `\n_Setzt sich täglich um ` +
+          `${String(CFG.AUSZAHLUNG_RESET_STD).padStart(2, '0')}:00 Uhr zurück._`;
+      }
 
       // Von Haus aus nur die Summe: wer wann wie viel gezogen hat, ist für die
-      // Frage „wie viel geht noch" ohne Belang und macht die Antwort lang.
-      // Auf Wunsch die Aufschlüsselung – damit prüfbar ist, was gezählt wurde,
-      // wenn die Summe nicht zu den eigenen Auszahlungen passt.
+      // Frage „wie viel geht noch" ohne Belang. Auf Wunsch die Aufschlüsselung,
+      // damit prüfbar ist, was gezählt wurde.
       if (optionen.aufschluesselung) {
-        if (oeffentlich || !darf('kasse')) {
-          // Einzelne Buchungen sind mehr als eine Summe: die gehören nicht
-          // in einen Kanal, in dem alle mitlesen.
-          t += '\n\n_Die Aufschlüsselung gibt es nur privat und nur für den, ' +
-               'der auch `/kasse` darf._';
+        if (oeffentlich) {
+          // In der Aufschlüsselung stehen die Buchungstexte und damit Namen.
+          // Summen und Kategorien dürfen im Kanal stehen, Namen nicht.
+          t += '\n\n_Die Aufschlüsselung kommt nur in einer privaten Antwort – ' +
+               'in ihr stehen Namen. Frag außerhalb des Befehlskanals._';
         } else if (!topf.buchungen.length) {
           t += '\n\n_Heute wurde noch keine Auszahlung verbucht._';
         } else {
           t += '\n' + freibetragListe(topf.buchungen);
         }
       }
-      return t + `\n\n_Setzt sich täglich um ${String(CFG.AUSZAHLUNG_RESET_STD).padStart(2, '0')}:00 Uhr zurück._`;
-    },
-  },
 
-  kasse: {
-    beschreibung: 'Kassenstand, Gewinn und die letzten Buchungen',
-    nurChef: !CFG.ZAHLEN_OFFEN,
-    verbergen: !CFG.ZAHLEN_OFFEN && CFG.BEFEHLE_VERBERGEN,
-    oeffentlich: CFG.ZAHLEN_OFFEN,
-    async ausfuehren() {
-      const f = await firmaFrisch();
-      let t = `**Kasse:** ${fmt(f.kasse?.balance)}\n` +
-        `Gewinn seit der letzten Ausschüttung: ${fmt(f.kasse?.profitSincePayout)}`;
+      // --- Firmenzahlen: am Schalter ---
+      if (!zeigtBetraege()) return t;
+
       try {
-        const l = await ledgerFrisch(f.id);
-        const letzte = (l.entries || []).slice(-5).reverse()
-          .map(b => `${new Date(b.stamp).toLocaleTimeString('de-DE').slice(0, 5)} ` +
-                    `${sauber(b.category).padEnd(20).slice(0, 20)} ${fmt(b.amount).padStart(14)}`);
-        if (letzte.length) t += '\n\n**Letzte Buchungen**\n' + tabelle(letzte);
-      } catch (e) { t += `\n\n_Kassenbuch nicht abrufbar: ${e.message}_`; }
+        const f = await firmaFrisch();
+        t += `\n\n**Kasse:** ${fmt(f.kasse?.balance)}\n` +
+          `Gewinn seit der letzten Ausschüttung: ${fmt(f.kasse?.profitSincePayout)}`;
+        try {
+          const l = await ledgerFrisch(f.id);
+          const letzte = (l.entries || []).slice(-5).reverse()
+            .map(b => `${new Date(b.stamp).toLocaleTimeString('de-DE').slice(0, 5)} ` +
+                      `${sauber(b.category).padEnd(20).slice(0, 20)} ${fmt(b.amount).padStart(14)}`);
+          if (letzte.length) t += '\n\n**Letzte Buchungen**\n' + tabelle(letzte);
+        } catch (e) { t += `\n\n_Kassenbuch nicht abrufbar: ${e.message}_`; }
+      } catch (e) {
+        t += `\n\n_Kasse nicht abrufbar: ${e.message}_`;
+      }
       return t;
     },
   },
 
+
   tagesbericht: {
-    beschreibung: 'Onlinezeiten eines Spieltags als Übersicht',
+    beschreibung: 'Onlinezeiten eines Spieltags – oder mehrerer, mit Vergleich',
     nurChef: !CFG.ZAHLEN_OFFEN,
     verbergen: !CFG.ZAHLEN_OFFEN && CFG.BEFEHLE_VERBERGEN,
     oeffentlich: CFG.ZAHLEN_OFFEN,
     optionen: [
       { name: 'tag', description: 'Welcher Spieltag? Leer = heute',
         type: 3, required: false, autocomplete: true },
+      { name: 'tage', description: 'Statt eines Tages: die letzten n Spieltage mit Vergleich',
+        type: 4, required: false, min_value: 2, max_value: 90 },
     ],
 
     // Vorgeschlagen wird, was auch wirklich im Archiv liegt – so kann man
@@ -2252,6 +2329,10 @@ const BEFEHLE = {
     },
 
     async ausfuehren({ optionen }) {
+      // Mit tage: die Übersicht über mehrere Spieltage – derselbe Bestand,
+      // nur anders zusammengefasst. Früher war das ein eigener Befehl.
+      if (optionen.tage) return zeitraumText(optionen.tage);
+
       const heute = spieltag();
       const tag = String(optionen.tag || heute).trim() || heute;
 
@@ -2293,67 +2374,7 @@ const BEFEHLE = {
     },
   },
 
-  woche: {
-    beschreibung: 'Onlinezeiten der letzten Tage, mit Vergleich zur Zeit davor',
-    nurChef: !CFG.ZAHLEN_OFFEN,
-    recht: 'tagesbericht',      // dieselben Zahlen, nur anders zusammengefasst
-    verbergen: !CFG.ZAHLEN_OFFEN && CFG.BEFEHLE_VERBERGEN,
-    oeffentlich: CFG.ZAHLEN_OFFEN,
-    optionen: [
-      { name: 'tage', description: 'Wie viele Spieltage? Standard 7',
-        type: 4, required: false, min_value: 2, max_value: 90 },
-    ],
 
-    async ausfuehren({ optionen }) {
-      const n = Math.min(90, Math.max(2, optionen.tage || 7));
-
-      // Den laufenden Tag mitnehmen, sonst fehlt heute in der Woche.
-      const st = load();
-      merkeZeiten(st.tag, st.spieler, st.firmaTagMs);
-
-      const v = vergleich(n);
-      if (!v.jetzt.tage) return '_Das Archiv ist noch leer – die Zahlen ' +
-        'sammeln sich ab jetzt an._';
-
-      // Ohne ältere Tage gibt es nichts zu vergleichen – dann wäre jeder
-      // Pfeil nur ein „neu", und das liest sich wie ein Anstieg.
-      const pfeil = (d) => !v.davor.tage ? ''
-        : Math.abs(d) < 5 * MIN ? '  ·' : d > 0 ? ' ▲' : ' ▼';
-      const zeilen = v.spieler.map(p =>
-        `${p.name.padEnd(18)} ${dauer(p.ms).padStart(14)} ` +
-        `${String(p.tage).padStart(2)} Tg ${dauer(p.schnitt).padStart(13)}/Tg` +
-        pfeil(p.diff));
-
-      let t = `**Letzte ${v.jetzt.tage} Spieltage** ` +
-        `(${tagKurz(v.jetzt.von)} bis ${tagKurz(v.jetzt.bis)})\n` + tabelle(zeilen) +
-        `\nSumme: ${dauer(v.jetzt.gesamtMs)} · ` +
-        `Firma gelaufen: ${dauer(v.jetzt.firmaMs)}`;
-
-      if (v.davor.tage) {
-        const rel = v.davor.gesamtMs
-          ? ` (${v.gesamtMs >= 0 ? '+' : ''}${Math.round(v.gesamtMs / v.davor.gesamtMs * 100)} %)`
-          : '';
-        t += `\n\n**Gegenüber den ${v.davor.tage} Tagen davor** ` +
-          `(${tagKurz(v.davor.von)} bis ${tagKurz(v.davor.bis)}): ` +
-          `${v.gesamtMs >= 0 ? '+' : '−'}${dauer(Math.abs(v.gesamtMs))}${rel}`;
-      } else {
-        t += '\n\n_Für einen Vergleich fehlen noch ältere Tage._';
-      }
-
-      if (v.jetzt.ausschuettungen) {
-        t += `\n\n**Ausschüttungen:** ${v.jetzt.ausschuettungen} über ` +
-          `${fmt(v.jetzt.betrag)}`;
-      }
-      // Die Anteile stehen bewusst dabei: danach ließe sich verteilen, wenn
-      // der Inhaber das will. Die Rechnung macht der Bot nicht von selbst.
-      const a = anteile(letzteTage(n));
-      if (a.length > 1 && v.jetzt.gesamtMs) {
-        t += '\n**Anteil an der Gesamtzeit:** ' +
-          a.slice(0, 8).map(p => `${p.name} ${zahl(p.prozent)} %`).join(' · ');
-      }
-      return t;
-    },
-  },
 
   watcher: {
     beschreibung: 'Läuft der Watcher, und wie viel Rechenleistung belegt er',
@@ -2646,26 +2667,28 @@ const BEFEHLE = {
     optionen: [
       { name: 'thema', description: 'Welche Meldung?', type: 3, required: false,
         choices: THEMEN.map(([k, name]) => ({ name: name.slice(0, 100), value: k })) },
-      { name: 'ziel', description: 'Wer soll sie sehen?', type: 3, required: false,
+      { name: 'ziel', description: 'Wer soll sie sehen? (bei kanal: nicht nötig)',
+        type: 3, required: false,
         choices: [
-          { name: 'nur ich',              value: 'chef' },
-          { name: 'nur das Team',         value: 'team' },
-          { name: 'ich und das Team',     value: 'beide' },
-          { name: 'ein bestimmter Kanal',       value: 'kanal' },
-          { name: 'ein bestimmter Kanal und ich', value: 'kanal_chef' },
-          { name: 'gar nicht (aus)',      value: 'aus' },
-          { name: 'zurück auf Standard',  value: 'standard' },
+          { name: 'nur ich',                 value: 'chef' },
+          { name: 'nur das Team',            value: 'team' },
+          { name: 'ich und das Team',        value: 'beide' },
+          { name: 'der Kanal und ich',       value: 'kanal_chef' },
+          { name: 'gar nicht (aus)',         value: 'aus' },
+          { name: 'zurück auf Standard',     value: 'standard' },
         ] },
-      { name: 'kanal', description: 'Kanal, wenn ziel = ein bestimmter Kanal', type: 7, required: false },
-      { name: 'ping', description: 'Wer wird benachrichtigt?', type: 3, required: false,
+      { name: 'kanal', description: 'In diesen Kanal – ziel: braucht es dann nicht',
+        type: 7, required: false },
+      { name: 'ping', description: 'Wer wird benachrichtigt? (bei rolle: nicht nötig)',
+        type: 3, required: false,
         choices: [
-          { name: 'niemand',                           value: 'keiner' },
-          { name: 'nur wer gerade ingame online ist',  value: 'online' },
-          { name: '@everyone',                         value: 'everyone' },
-          { name: '@here',                             value: 'here' },
-          { name: 'eine Rolle (Feld rolle ausfüllen)', value: 'rolle' },
+          { name: 'niemand',                          value: 'keiner' },
+          { name: 'nur wer gerade ingame online ist', value: 'online' },
+          { name: '@everyone',                        value: 'everyone' },
+          { name: '@here',                            value: 'here' },
         ] },
-      { name: 'rolle', description: 'Rolle, wenn ping = eine Rolle', type: 8, required: false },
+      { name: 'rolle', description: 'Diese Rolle anpingen – ping: braucht es dann nicht',
+        type: 8, required: false },
       { name: 'wiederholung', description: 'Wie lange Ruhe, bevor dieselbe Meldung wiederkommt?',
         type: 3, required: false,
         choices: [
@@ -2770,14 +2793,21 @@ const BEFEHLE = {
       const thema = art ? `event_${art}` : optionen.thema;
       const name = art ? `Vorfall: ${art}` : themaName(optionen.thema);
 
+      // Ein ausgefülltes Feld sagt schon, was gewählt ist: wer einen Kanal
+      // angibt, will in diesen Kanal, und wer eine Rolle angibt, will sie
+      // anpingen. Das noch einmal in ziel:/ping: zu wiederholen, war eine
+      // Pflichtübung mit eigener Fehlermeldung – die fällt damit weg.
+      const ziel = optionen.ziel || (optionen.kanal ? 'kanal' : undefined);
+      const ping = optionen.ping || (optionen.rolle ? 'rolle' : undefined);
+
       // Nur ein Thema genannt: dessen Regel zeigen.
-      if (!optionen.ziel && !optionen.ping && !optionen.takt &&
+      if (!ziel && !ping && !optionen.takt &&
           !optionen.wiederholung && !optionen.erinnerung) {
         return `**${name}**\n${regelText(empfaenger(thema, regeln))}\n\n` +
           '_Zum Ändern zusätzlich `ziel:` oder `ping:` angeben._';
       }
 
-      if (optionen.ziel === 'standard') {
+      if (ziel === 'standard') {
         delete regeln[thema];
         speichereRegeln(regeln);
         return `**${name}** steht wieder auf der Voreinstellung:\n` +
@@ -2786,29 +2816,25 @@ const BEFEHLE = {
 
       const regel = { ...(regeln[thema] || empfaenger(thema, regeln)) };
 
-      if (optionen.ziel) {
-        const inKanal = optionen.ziel === 'kanal' || optionen.ziel === 'kanal_chef';
+      if (ziel) {
+        const inKanal = ziel === 'kanal' || ziel === 'kanal_chef';
         if (inKanal && !optionen.kanal) {
-          return '❌ Bei einem Kanal als Ziel musst du auch `kanal:` angeben.';
+          return '❌ „der Kanal und ich" braucht auch `kanal:` – sonst weiß ich ' +
+                 'nicht, welcher Kanal gemeint ist.';
         }
-        regel.ziel = inKanal ? 'kanal' : optionen.ziel;
+        regel.ziel = inKanal ? 'kanal' : ziel;
         if (inKanal) {
           regel.kanal = optionen.kanal;
           // "und ich" heißt: der Kanal bekommt die gekürzte Fassung, du die
           // vollständige mit Beträgen und Namen.
-          if (optionen.ziel === 'kanal_chef') regel.auchChef = true;
+          if (ziel === 'kanal_chef') regel.auchChef = true;
           else delete regel.auchChef;
         } else {
           delete regel.kanal; delete regel.auchChef;
         }
       }
 
-      if (optionen.ping) {
-        if (optionen.ping === 'rolle' && !optionen.rolle) {
-          return '❌ Bei `ping: eine Rolle` musst du auch `rolle:` angeben.';
-        }
-        regel.ping = optionen.ping === 'rolle' ? optionen.rolle : optionen.ping;
-      }
+      if (ping) regel.ping = ping === 'rolle' ? optionen.rolle : ping;
 
       if (optionen.wiederholung !== undefined) regel.wiederholung = Number(optionen.wiederholung);
 

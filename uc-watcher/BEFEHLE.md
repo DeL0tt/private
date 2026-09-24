@@ -208,11 +208,11 @@ Vollständige Einrichtung: **DISCORD.md**. Im Alltag reichen diese:
 | `node --env-file=.env watcher.mjs --discord-test` | Befehle neu registrieren, Zustellung prüfen |
 | `journalctl -u uc-watcher \| grep discord` | Was der Bot macht |
 
-Im Discord selbst – für alle: `/firma`, `/lager`, `/ausschuettung`, `/zeiten`,
-`/gehalt`, `/betrieb`,
-`/hilfe`. Vorbehalten: `/kasse`, `/tagesbericht`, `/watcher`, `/melden`,
-`/zuordnen`, `/testvorfall` – einzeln weitergebbar mit `/rechte` an eine Rolle
-oder eine Person. `/rechte` selbst bleibt immer beim Inhaber.
+Im Discord selbst – für alle: `/firma`, `/lager`, `/zeiten`, `/kasse`,
+`/hilfe`. Vorbehalten: `/tagesbericht`, `/watcher`, `/melden`, `/zuordnen`,
+`/testvorfall` – einzeln weitergebbar mit `/rechte` an eine Rolle oder eine
+Person. `/rechte` selbst bleibt immer beim Inhaber. Das Recht auf `/kasse`
+öffnet nicht den Befehl (den haben alle), sondern die Firmenzahlen darin.
 
 `/testvorfall` täuscht einen Vorfall vor und berichtet, wer dabei gepingt
 wurde – damit lässt sich die Zuordnung prüfen, ohne auf einen echten zu warten.

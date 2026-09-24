@@ -183,11 +183,9 @@ Jeder im Server kann benutzen:
 | Befehl | Zeigt |
 |---|---|
 | `/firma` | Status, Lager, Personal, wer online ist |
-| `/lager` | Bestand mit Balken und **gemessener** Reichweite |
-| `/ausschuettung` | Fortschritt bis zur nächsten Ausschüttung |
-| `/zeiten` | Wer gerade online ist, plus die eigene Zeit heute |
-| `/gehalt` | Wie viel vom Tagesbudget (35.000$) noch frei ist (mit `aufschluesselung:` auch, welche Buchungen gezählt haben) |
-| `/betrieb` | Bestand der Zoohandlung – was wirklich entnehmbar ist |
+| `/lager` | **Beide Bestände:** Firmenlager mit gemessener Reichweite und die Zoohandlung |
+| `/zeiten` | Wer gerade online ist, die eigene Zeit heute und der Fortschritt bis zur Ausschüttung |
+| `/kasse` | Tagesbudget (35.000$); mit dem Recht dazu auch Kasse, Gewinn und die letzten Buchungen |
 | `/hilfe` | Welche Befehle es gibt |
 
 ### Ein Kanal für Befehle
@@ -200,12 +198,12 @@ Dafür gibt es `UC_DISCORD_BEFEHL_KANAL`:
 UC_DISCORD_BEFEHL_KANAL=123456789012345678    # z. B. #befehle
 ```
 
-Dort antworten `/firma`, `/lager`, `/ausschuettung`, `/zeiten` und `/gehalt`
+Dort antworten `/firma`, `/lager`, `/zeiten` und `/kasse`
 **für alle sichtbar**. Überall sonst bleiben sie privat.
 
 Zwei Dinge bleiben geschützt: Die vorbehaltenen Befehle (`/kasse`,
 `/tagesbericht`, …) antworten **auch dort privat**. Und `/firma` und
-`/ausschuettung` zeigen im offenen Kanal **keine Beträge** – auch dann nicht,
+`/zeiten` zeigen im offenen Kanal **keine Beträge** – auch dann nicht,
 wenn der Fragende sie sonst sehen dürfte. Sonst stünde der Kassenstand für
 alle da, nur weil der Falsche getippt hat.
 
@@ -240,7 +238,7 @@ Dasselbe Maß schützt die Einbruchserkennung: Sie lässt mindestens den größt
 bisher beobachteten Verkaufsschub als erklärbar durchgehen, damit ein normaler
 Verkauf nicht als Diebstahl gemeldet wird.
 
-### Der Betrieb: `/betrieb`
+### Der Betrieb in `/lager`
 
 Zeigt den Bestand der Zoohandlung.
 
@@ -287,10 +285,12 @@ UC_BETRIEB_ABZUG=100
 UC_BETRIEB_SCHWELLE=40
 ```
 
-### Das Tagesbudget: `/gehalt`
+### Das Tagesbudget in `/kasse`
 
 Gehälter und Auszahlungen zehren an einem gemeinsamen Topf von 35.000$ je Tag.
-`/gehalt` zeigt, wie viel davon noch frei ist.
+`/kasse` zeigt, wie viel davon noch frei ist – und zwar allen. Die
+Firmenzahlen im selben Befehl (Kassenstand, Gewinn, Buchungen) hängen weiter am
+Zahlen-Schalter, es geht also niemandem etwas verloren, wenn du ihn zudrehst.
 
 Der Topf setzt sich **um Mitternacht** zurück. Das ist bewusst etwas anderes
 als der Spieltag des Watchers, der um 04:00 wechselt – Onlinezeiten und
@@ -315,7 +315,7 @@ Passt die Zahl nicht zu deinen eigenen Auszahlungen, lass sie dir aufschlüsseln
 – dann steht da, welche Buchung gezählt hat und welche nicht:
 
 ```
-/gehalt aufschluesselung:true
+/kasse aufschluesselung:true
 ```
 
 Das kommt immer privat und nur für den, der auch `/kasse` darf – einzelne
@@ -342,9 +342,7 @@ Standardmäßig nur für dich – einzeln weitergebbar (siehe unten):
 
 | Befehl | Zeigt |
 |---|---|
-| `/kasse` | Kassenstand, Gewinn, letzte fünf Buchungen |
-| `/tagesbericht` | Onlinezeiten des ganzen Teams – mit `tag:` auch für vergangene Spieltage |
-| `/woche` | Letzte 7 Spieltage je Spieler, mit Vergleich zur Woche davor |
+| `/tagesbericht` | Onlinezeiten des Teams – mit `tag:` ein vergangener Spieltag, mit `tage:` ein Zeitraum samt Vergleich |
 | `/watcher` | Läuft er, Token-Ablauf, Erreichbarkeit |
 | `/melden` | Einstellen, wer welche Meldung sieht und ob gepingt wird |
 | `/zuordnen` | Discord-Konto einem UnicaCity-Namen zuordnen |
@@ -353,7 +351,7 @@ Standardmäßig nur für dich – einzeln weitergebbar (siehe unten):
 
 Antworten sind **nur für den Fragenden sichtbar** – es entsteht kein
 Geplapper im Kanal, und `/kasse` zeigt niemandem sonst deine Zahlen. Bei
-`/firma` und `/ausschuettung` siehst du zusätzlich die Beträge, alle anderen
+`/firma`, `/zeiten` und `/kasse` siehst du zusätzlich die Beträge, alle anderen
 denselben Befehl ohne.
 
 Versucht ein Angestellter `/kasse`, bekommt er nur den Hinweis, dass das dem
@@ -395,10 +393,10 @@ Die vorbehaltenen Befehle kannst du einzeln weitergeben – an eine **Rolle**
 
 Der Bot sagt dir beim Vergeben, was damit wirklich sichtbar wird. Bei `/kasse`
 etwa: Kassenstand, Gewinn, die letzten Buchungen – **und die Beträge in
-`/firma` und `/ausschuettung`**, die sonst ausgeblendet sind. Bei
-`/tagesbericht` sind es die Onlinezeiten aller Angestellten – dazu `/woche`,
-das dieselben Zahlen nur anders zusammenfasst, und die volle Namensliste in
-`/zeiten` statt nur der eigenen Zeit. Sonst würde man ein Recht vergeben,
+`/firma` und `/zeiten`**, die sonst ausgeblendet sind. Das Tagesbudget in
+`/kasse` sehen ohnehin alle. Bei `/tagesbericht` sind es die Onlinezeiten aller
+Angestellten – auch die vergangener Tage und ganzer Zeiträume – und die volle
+Namensliste in `/zeiten` statt nur der eigenen Zeit. Sonst würde man ein Recht vergeben,
 dessen Umfang man nicht kennt.
 
 `/rechte` selbst ist **nicht übertragbar**. Wer Rechte vergeben darf, könnte
@@ -448,8 +446,14 @@ Zum Ändern kommen `ziel:` und/oder `ping:` dazu:
 | nur ich | geht ausschließlich an dich |
 | nur das Team | geht ausschließlich in den Team-Kanal |
 | ich und das Team | beides, das Team in der gekürzten Fassung |
-| ein bestimmter Kanal | in einen frei gewählten Kanal (`kanal:` ausfüllen) |
-| ein bestimmter Kanal und ich | zusätzlich zu dir – der Kanal bekommt die gekürzte Fassung |
+| der Kanal und ich | in den Kanal aus `kanal:` **und** zusätzlich an dich – der Kanal bekommt die gekürzte Fassung |
+
+Für einen frei gewählten Kanal genügt `kanal:` allein – `ziel:` brauchst du
+dann nicht. Ein ausgefülltes Feld sagt schon, was gemeint ist:
+
+```
+/melden thema:Vorfall im Unternehmen  kanal:#⚠️〢vorfälle
+```
 
 Dazu kommen zwei Einstellungen, wie **oft** eine Meldung kommt:
 
@@ -526,7 +530,13 @@ Benachrichtigung aufs Handy über ntfy, nicht nur die im Discord.
 | **nur wer gerade ingame online ist** | **pingt gezielt die Leute, die gerade in UnicaCity spielen** |
 | @everyone | alle im Kanal werden angepingt |
 | @here | alle, die im Discord gerade online sind |
-| eine Rolle | eine bestimmte Rolle (`rolle:` ausfüllen) |
+
+Für eine Rolle genügt `rolle:` allein – `ping:` brauchst du dann nicht:
+
+```
+/melden thema:Lagerbestand niedrig  rolle:@Lagerdienst
+```
+
 
 **Voreingestellt** pingt ein **Vorfall im Unternehmen** und eine **pausierte
 Firma** bereits die Leute, die gerade spielen – beides hat eine Frist oder
@@ -540,7 +550,7 @@ sind; vorher bleibt es still.
 **Beispiele:**
 
 ```
-/melden thema:Lagerbestand niedrig  ziel:nur das Team  ping:eine Rolle  rolle:@Lagerdienst
+/melden thema:Lagerbestand niedrig  ziel:nur das Team  rolle:@Lagerdienst
 /melden thema:Vorfall im Unternehmen  ping:@everyone
 /melden thema:Wiki-Änderungen  ziel:gar nicht (aus)
 /melden thema:Tagesbericht mit Onlinezeiten  ziel:zurück auf Standard
