@@ -401,6 +401,9 @@ export function pruefeToken() {
 // warten soll. Einmal warten und wiederholen reicht in der Praxis.
 async function rest(pfad, methode = 'GET', koerper, zweiterVersuch = false) {
   const res = await fetch(API + pfad, {
+    // Kein Aufruf darf ewig hängen: discordSende() wird mitten im Durchlauf
+    // des Watchers benutzt, und ein blockierter Abruf hielte ihn dort fest.
+    signal: AbortSignal.timeout(+(process.env.UC_ABRUF_TIMEOUT_MS || 20_000)),
     method: methode,
     headers: {
       Authorization: 'Bot ' + CFG.TOKEN,

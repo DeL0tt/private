@@ -178,6 +178,10 @@ const NORMALE_KATEGORIEN = [
 ];
 
 const MIN = 60_000;
+
+// Kein Abruf darf ewig hängen. Ohne Grenze wartet fetch() unbegrenzt – und ein
+// hängender Durchlauf zählt keine Zeit mehr, während die Uhr weiterläuft.
+const ABRUF_MS = +(process.env.UC_ABRUF_TIMEOUT_MS || 20_000);
 const log  = (...a) => CFG.DEBUG && console.log(new Date().toISOString(), ...a);
 const info = (...a) => console.log(new Date().toISOString(), ...a);
 
@@ -205,6 +209,7 @@ const leer = () => ({
   vorfallLauf: 0,         // zählt hoch, wenn ein neuer Vorfall beginnt
   vorfallArten: {},       // gesehene Arten, für die Auswahl in /melden
   lagerVerlauf: [],       // { t, lager } für den gemessenen Absatz
+  zeitkonto: null,        // { tag, gezaehlt, pausiert, niemand, luecke, ausfaelle }
   lastPush: {},
   apiWegSeit: 0,          // seit wann UnicaCity nicht erreichbar ist
 });
@@ -379,6 +384,7 @@ async function erneuere() {
   if (!zugang.cookie) throw new Error('KEIN_COOKIE');
 
   const res = await fetch(CFG.API + '/api/auth/refresh', {
+    signal: AbortSignal.timeout(ABRUF_MS),
     method: 'POST',
     headers: {
       Cookie: zugang.cookie,
@@ -422,6 +428,7 @@ async function api(pfad, zweiterVersuch = false) {
   if (!tokenFrisch()) await erneuere();
 
   const res = await fetch(CFG.API + pfad, {
+    signal: AbortSignal.timeout(ABRUF_MS),
     headers: {
       Authorization: 'Bearer ' + zugang.token,
       Cookie: zugang.cookie || '',
@@ -623,15 +630,49 @@ function updateSpieler(state, members) {
 // firmaTagMs zählt den Spieltag und wird um 04:00 zurückgesetzt. Getrennt,
 // weil der Tagesbericht sonst nach einer Ausschüttung weniger Laufzeit
 // meldet als Stunden vorher.
-function updateTeamzeit(state, laeuft) {
+/**
+ * Die Zeit zwischen zwei Durchläufen verbuchen – und zwar jede, mit Grund.
+ *
+ * Der Zähler ist eine Summe aus Minutenentscheidungen. Stimmt er am Ende nicht
+ * mit dem Spiel überein, ist die einzige Frage: welche Minuten wurden nicht
+ * gezählt und warum. Ohne diese Aufstellung lässt sich das nicht beantworten,
+ * nur vermuten – deshalb führt der Watcher ein Zeitkonto je Spieltag.
+ *
+ * @param {'laeuft'|'pausiert'|'niemand'} lage
+ */
+function updateTeamzeit(state, lage) {
   const now = Date.now(), letzter = state.letzterTick;
   state.letzterTick = now;
   const tag = spieltag();
   if (state.firmaTag !== tag) { state.firmaTagMs = 0; state.firmaTag = tag; }
+
+  // Das Konto gehört zum Spieltag und wird mit ihm zurückgesetzt.
+  if (state.zeitkonto?.tag !== tag) {
+    state.zeitkonto = { tag, gezaehlt: 0, pausiert: 0, niemand: 0, luecke: 0, ausfaelle: 0 };
+  }
+  const konto = state.zeitkonto;
+
   if (!letzter) return;
   const luecke = now - letzter;
-  if (luecke > CFG.LUECKE_MIN * MIN) return;      // Watcher lief nicht – nicht zählen
-  if (laeuft) { state.teamOnlineMs += luecke; state.firmaTagMs += luecke; }
+
+  // Zu großer Abstand: der Watcher lief nicht. Diese Zeit wird nicht gezählt,
+  // denn was in ihr passiert ist, weiß niemand.
+  if (luecke > CFG.LUECKE_MIN * MIN) {
+    konto.luecke += luecke;
+    konto.ausfaelle++;
+    info(`Zeitlücke von ${dauer(luecke)} – nicht gezählt (Watcher lief nicht)`);
+    return;
+  }
+
+  if (lage === 'laeuft') {
+    state.teamOnlineMs += luecke;
+    state.firmaTagMs += luecke;
+    konto.gezaehlt += luecke;
+  } else if (lage === 'pausiert') {
+    konto.pausiert += luecke;
+  } else {
+    konto.niemand += luecke;
+  }
 }
 
 // Um 04:00 wechselt der Spieltag. Davor: Bericht über den abgelaufenen Tag,
@@ -730,6 +771,7 @@ async function push(thema, titel, text, state, prio = 'high', extra = {}) {
   // enthalten Emojis und Umlaute.
   try {
     const res = await fetch(CFG.NTFY_SERVER, {
+      signal: AbortSignal.timeout(ABRUF_MS),
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1325,15 +1367,19 @@ function preisAenderung(alt, neu) {
 
 // Kategorien und Artikel sind öffentlich – hier braucht es keinen Zugang.
 async function holeWiki() {
-  const res = await fetch(CFG.API + '/api/wiki/categories',
-    { headers: { 'User-Agent': CFG.USER_AGENT, Accept: 'application/json' } });
+  const res = await fetch(CFG.API + '/api/wiki/categories', {
+    signal: AbortSignal.timeout(ABRUF_MS),
+    headers: { 'User-Agent': CFG.USER_AGENT, Accept: 'application/json' },
+  });
   if (!res.ok) throw new Error('WIKI ' + res.status);
   const { categories = [] } = await res.json();
 
   const artikel = {};
   for (const k of categories) {
-    const r = await fetch(`${CFG.API}/api/wiki/categories/${k.slug}/articles`,
-      { headers: { 'User-Agent': CFG.USER_AGENT, Accept: 'application/json' } });
+    const r = await fetch(`${CFG.API}/api/wiki/categories/${k.slug}/articles`, {
+      signal: AbortSignal.timeout(ABRUF_MS),
+      headers: { 'User-Agent': CFG.USER_AGENT, Accept: 'application/json' },
+    });
     if (!r.ok) { log('Wiki-Kategorie nicht lesbar:', k.slug, r.status); continue; }
     const { articles = [] } = await r.json();
     for (const a of articles) {
@@ -1425,6 +1471,7 @@ const mitStrichen = id => {
 
 async function notion(pfad) {
   const res = await fetch('https://api.notion.com/v1' + pfad, {
+    signal: AbortSignal.timeout(ABRUF_MS),
     headers: {
       Authorization: 'Bearer ' + CFG.NOTION_TOKEN,
       'Notion-Version': NOTION_VERSION,
@@ -1746,7 +1793,7 @@ async function durchlauf() {
 
   const jemandOnline = members.some(m => m.online);
   const laeuft = jemandOnline && !f.paused;
-  updateTeamzeit(state, laeuft);
+  updateTeamzeit(state, laeuft ? 'laeuft' : jemandOnline ? 'pausiert' : 'niemand');
 
   // Den laufenden Spieltag ins Archiv schreiben. Der Zustand vergisst die
   // Zeiten um 04:00 – das Archiv behält sie, und alle Auswertungen lesen
@@ -2141,6 +2188,25 @@ function zeitraumText(tage) {
       a.slice(0, 8).map(p => `${p.name} ${zahl(p.prozent)} %`).join(' · ');
   }
   return t;
+}
+
+/**
+ * Wohin die Zeit dieses Spieltags gegangen ist. Für /watcher – die Frage
+ * „warum steht der Ausschüttungszähler so niedrig" lässt sich nur hiermit
+ * beantworten und nicht durch Nachdenken.
+ */
+function zeitkontoText(st) {
+  const k = st.zeitkonto;
+  if (!k) return '\n_Zeitkonto: noch kein Durchlauf seit dem Update._\n';
+  const gesamt = k.gezaehlt + k.pausiert + k.niemand + k.luecke;
+  if (!gesamt) return '\n_Zeitkonto: noch nichts erfasst._\n';
+  const teil = (x) => `${dauer(x)} (${Math.round(x / gesamt * 100)} %)`;
+  return `\n**Zeitkonto ${tagKurz(k.tag)}** – wohin jede Minute ging\n` +
+    `Gezählt: ${teil(k.gezaehlt)}\n` +
+    `Niemand online: ${teil(k.niemand)}\n` +
+    `Firma pausiert: ${teil(k.pausiert)}\n` +
+    `Watcher lief nicht: ${teil(k.luecke)}` +
+    (k.ausfaelle ? ` in ${k.ausfaelle} Lücke${k.ausfaelle === 1 ? '' : 'n'}` : '') + '\n';
 }
 
 /* ========================= SCHALTZENTRALE ========================= */
@@ -2608,7 +2674,8 @@ const BEFEHLE = {
         `Intervall: ${CFG.INTERVALL_MS / 1000}s\n` +
         `Token gültig bis: ${zugang.exp ? new Date(zugang.exp).toLocaleTimeString('de-DE') : 'unbekannt'}\n` +
         `UnicaCity erreichbar: ${st.apiWegSeit ? `nein, seit ${dauer(Date.now() - st.apiWegSeit)}` : 'ja'}\n` +
-        `Wiki-Artikel bekannt: ${Object.keys(st.wiki || {}).length}\n\n` +
+        `Wiki-Artikel bekannt: ${Object.keys(st.wiki || {}).length}\n` +
+        zeitkontoText(st) + '\n' +
 
         `**Rechenlast** (${r.kerne} ${r.kerne === 1 ? 'Kern' : 'Kerne'})\n` +
         `Der Watcher: ${zahl(r.anteilMaschine, 2)} % der Maschine ` +
@@ -3001,6 +3068,7 @@ if (args.includes('--betrieb-probe')) {
   // ob der Pfad falsch ist oder nur die Rechte fehlen.
   const roh = async (pfad) => {
     const res = await fetch(CFG.API + pfad, {
+    signal: AbortSignal.timeout(ABRUF_MS),
       headers: {
         Authorization: 'Bearer ' + zugang.token,
         Cookie: zugang.cookie || '',
@@ -3301,6 +3369,24 @@ if (args.includes('--einstellungen')) {
   console.log('  Spieltag:             ' + (st.tag || '—'));
   console.log('  Team-Onlinezeit:      ' + dauer(st.teamOnlineMs || 0));
   console.log('  Firma gelaufen heute: ' + dauer(st.firmaTagMs || 0));
+
+  const k = st.zeitkonto;
+  if (k) {
+    const gesamt = k.gezaehlt + k.pausiert + k.niemand + k.luecke;
+    const anteil = (x) => gesamt ? ` (${Math.round(x / gesamt * 100)} %)` : '';
+    console.log(`\n  Zeitkonto für ${k.tag} – wohin jede Minute ging:`);
+    console.log(`    gezählt:          ${dauer(k.gezaehlt).padStart(16)}${anteil(k.gezaehlt)}`);
+    console.log(`    niemand online:   ${dauer(k.niemand).padStart(16)}${anteil(k.niemand)}`);
+    console.log(`    Firma pausiert:   ${dauer(k.pausiert).padStart(16)}${anteil(k.pausiert)}`);
+    console.log(`    Watcher lief nicht: ${dauer(k.luecke).padStart(14)}${anteil(k.luecke)}` +
+                (k.ausfaelle ? `  in ${k.ausfaelle} Lücke(n)` : ''));
+    console.log(`    ────────────────────────────────`);
+    console.log(`    erfasst:          ${dauer(gesamt).padStart(16)}`);
+    console.log('  Passt „gezählt" nicht zum Spiel, sagt diese Aufstellung, wohin');
+    console.log('  der Rest gegangen ist.');
+  } else {
+    console.log('  Zeitkonto:            — (noch kein Durchlauf seit dem Update)');
+  }
   console.log('  Lager zuletzt:        ' + (st.lager ?? '—'));
   console.log('  Zoohandlung zuletzt:  ' + (st.betriebBestand ?? '— (noch nicht gelesen)'));
   console.log('  Letzter Einkauf:      ' +
@@ -3537,5 +3623,29 @@ for (const signal of ['SIGTERM', 'SIGINT']) {
   process.on(signal, () => { info('Beende …'); discordStop(); process.exit(0); });
 }
 
-await durchlauf();
-setInterval(() => durchlauf().catch(e => console.error('Fehler:', e)), CFG.INTERVALL_MS);
+/**
+ * Ein Durchlauf zur Zeit.
+ *
+ * setInterval feuert im Takt, ganz gleich ob der vorige Durchlauf fertig ist.
+ * Überlappen sich zwei, liest jeder den Zustand am Anfang und schreibt ihn am
+ * Ende zurück – der spätere Schreibvorgang verwirft, was der andere inzwischen
+ * gezählt hat. Bei einem langsamen Abruf gingen so ganze Minuten der
+ * Team-Onlinezeit verloren, und letzterTick konnte zurückspringen.
+ *
+ * Ein übersprungener Durchlauf kostet keine Zeit: letzterTick bleibt stehen,
+ * der nächste zählt die ganze Lücke auf einmal.
+ */
+let laeuftGerade = false;
+
+async function durchlaufEinzeln() {
+  if (laeuftGerade) {
+    info('Vorheriger Durchlauf läuft noch – dieser wird übersprungen');
+    return;
+  }
+  laeuftGerade = true;
+  try { await durchlauf(); } finally { laeuftGerade = false; }
+}
+
+await durchlaufEinzeln();
+setInterval(() => durchlaufEinzeln().catch(e => console.error('Fehler:', e)),
+            CFG.INTERVALL_MS);
