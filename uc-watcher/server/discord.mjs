@@ -298,11 +298,7 @@ function regelPasst(k, t) {
 
 export function empfaenger(thema, regeln = {}) {
   const t = String(thema || '');
-
-  const treffer = Object.keys(regeln || {})
-    .filter(k => regelPasst(k, t))
-    .sort((a, b) => b.length - a.length)[0];
-  const eigen = treffer ? regeln[treffer] : null;
+  const eigen = regelFuer(t, regeln);
 
   // Abgeschaltet heißt abgeschaltet – auch kein ntfy aufs Handy.
   if (eigen?.aus) return { ziel: 'aus' };
@@ -313,16 +309,37 @@ export function empfaenger(thema, regeln = {}) {
     ? ((eigen?.ping ?? PING_VON_SELBST.some(x => t.startsWith(x))) ? 'online' : undefined)
     : undefined;
 
+  // Das Nachfassen gehört mit in die wirksame Regel. Es steht hier nicht, weil
+  // die Zustellung es bräuchte – sie ignoriert das Feld –, sondern weil alle
+  // Aufrufer diese Funktion als „was gilt für dieses Thema" lesen. Ohne das
+  // Feld las jeder von ihnen „wird nicht nachgefasst", egal was eingestellt
+  // war, und es wurde tatsächlich nie nachgefasst.
+  const nachfassen = eigen?.erinnerung === undefined ? {} : { erinnerung: !!eigen.erinnerung };
+
   // Ein selbst gesetzter Kanal gilt vor allem anderen.
-  if (eigen?.kanal) return { ziel: 'kanal', kanal: eigen.kanal, ping };
+  if (eigen?.kanal) return { ziel: 'kanal', kanal: eigen.kanal, ping, ...nachfassen };
 
   // In einer DM erreicht ein Ping niemanden außer dem Inhaber selbst.
-  if (NUR_CHEF.some(x => t.startsWith(x))) return { ziel: 'chef' };
+  if (NUR_CHEF.some(x => t.startsWith(x))) return { ziel: 'chef', ...nachfassen };
 
   if (CFG.VORFALL_KANAL && VORFALL_THEMEN.some(x => t.startsWith(x))) {
-    return { ziel: 'kanal', kanal: CFG.VORFALL_KANAL, ping };
+    return { ziel: 'kanal', kanal: CFG.VORFALL_KANAL, ping, ...nachfassen };
   }
-  return { ziel: TEAM_LISTE.some(x => t.startsWith(x)) ? 'team' : 'chef', ping };
+  return { ziel: TEAM_LISTE.some(x => t.startsWith(x)) ? 'team' : 'chef',
+           ping, ...nachfassen };
+}
+
+/**
+ * Die Regel, die für dieses Thema gilt – roh, wie sie gespeichert ist.
+ * Längster passender Themenanfang gewinnt, damit 'event_ABWERBUNG' die
+ * allgemeine Regel 'event_' schlägt.
+ */
+export function regelFuer(thema, regeln = {}) {
+  const t = String(thema || '');
+  const treffer = Object.keys(regeln || {})
+    .filter(k => regelPasst(k, t))
+    .sort((a, b) => b.length - a.length)[0];
+  return treffer ? regeln[treffer] : null;
 }
 
 /** Pingt dieses Thema, wie es gerade eingestellt ist? Für /melden und /hilfe. */

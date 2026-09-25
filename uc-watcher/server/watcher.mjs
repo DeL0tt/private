@@ -201,7 +201,8 @@ const leer = () => ({
   auszahlungGestern: null,  // Schlussstand des Vortags für den Tagesbericht
   betriebBestand: null,   // zuletzt gesehener Bestand der Zoohandlung
   letzterEinkauf: 0,      // belegt, dass der Nachkauf läuft
-  offenerVorfall: null,   // { schluessel, seit, zuletzt, runde } fürs Nachfassen
+  offenerVorfall: null,   // { schluessel, art, frist, seit, zuletzt, runde }
+  vorfallLauf: 0,         // zählt hoch, wenn ein neuer Vorfall beginnt
   vorfallArten: {},       // gesehene Arten, für die Auswahl in /melden
   lagerVerlauf: [],       // { t, lager } für den gemessenen Absatz
   lastPush: {},
@@ -1027,14 +1028,11 @@ async function pruefeBetrieb(state) {
  * Wiederholungen sie verschlucken.
  */
 async function erinnereAnVorfall(state, ereignis) {
-  const schluessel = vorfallSchluessel(ereignis);
+  // Den Vorfall führt vorfallSchluessel(): ist er neu, steht dort danach ein
+  // frischer Eintrag mit runde 0 und zuletzt = jetzt – dann greift die
+  // Wartezeit unten und beim ersten Anblick wird nicht nachgefasst.
+  const schluessel = vorfallSchluessel(state, ereignis);
   const offen = state.offenerVorfall;
-
-  // Ein anderer Vorfall als zuletzt: von vorn zählen.
-  if (!offen || offen.schluessel !== schluessel) {
-    state.offenerVorfall = { schluessel, seit: Date.now(), zuletzt: Date.now(), runde: 0 };
-    return;
-  }
 
   // Hat jemand den Knopf gedrückt, ist die Sache erledigt – dann kein
   // Nachfassen mehr, weder im Discord noch aufs Handy.
@@ -1180,15 +1178,6 @@ async function pruefeAusschuettung(state) {
 // Kennungen und Flaggen. Der Rest wird benannt statt roh ausgegeben.
 const EREIGNIS_EGAL = ['type', 'interactive', 'id', 'eventid', 'key'];
 
-/**
- * Themenschlüssel eines Vorfalls, mit der Art im Namen: 'event_ABWERBUNG_…'.
- *
- * So lässt sich über /melden je Art einstellen, was passieren soll – der
- * Vergleich nach längstem Anfang lässt 'event_ABWERBUNG' die allgemeine Regel
- * 'event_' schlagen. Der angehängte Teil unterscheidet zwei Vorfälle
- * derselben Art voneinander, damit der zweite nicht als Wiederholung des
- * ersten gilt.
- */
 // Eine Vorfallsart als Schlüssel schreiben. An mehreren Stellen gebraucht –
 // getrennte Fassungen wären irgendwann auseinandergelaufen, und dann hätte
 // eine Regel für ABWERBUNG die Meldung nicht mehr getroffen.
@@ -1200,15 +1189,60 @@ function vorfallArt(ev) {
   return artSchluessel(sauber(ev?.type ?? ev?.name ?? ev?.title ?? '')) || 'UNBEKANNT';
 }
 
-function vorfallSchluessel(ev) {
-  // Kurze Quersumme über das ganze Ereignis statt der ersten Zeichen: zwei
-  // Abwerbungen unterscheiden sich erst in der Beschreibung, und ein
-  // abgeschnittener Anfang hätte die zweite als Wiederholung der ersten
-  // gelten lassen – sie wäre nie gemeldet worden.
-  const roh = JSON.stringify(ev) || '';
-  let summe = 0;
-  for (let i = 0; i < roh.length; i++) summe = (summe * 31 + roh.charCodeAt(i)) >>> 0;
-  return `event_${vorfallArt(ev)}_${summe.toString(36)}`;
+/**
+ * Themenschlüssel eines Vorfalls: 'event_<ART>_<Nummer>'.
+ *
+ * Er muss zwei Dinge gleichzeitig können: **gleich bleiben**, solange derselbe
+ * Vorfall offen ist, und **anders sein** beim nächsten. Vorher war er eine
+ * Quersumme über das ganze Ereignis – und darin steckt `minutesLeft`, das jede
+ * Minute kleiner wird. Damit bekam derselbe Vorfall jede Minute einen neuen
+ * Schlüssel: die Sperre gegen Wiederholungen griff nie, aus einem Vorfall
+ * wurden sechzig Meldungen, und der Erledigt-Knopf zeigte auf einen Schlüssel,
+ * den es in der nächsten Minute nicht mehr gab.
+ *
+ * Jetzt zählt eine Nummer, die nur hochgeht, wenn wirklich ein neuer Vorfall
+ * beginnt. Diese Funktion führt dabei `state.offenerVorfall` – sie ist die
+ * einzige Stelle, die entscheidet, ob ein Ereignis noch dasselbe ist.
+ *
+ * Woran ein neuer Vorfall erkannt wird:
+ *   • es ist gerade keiner offen
+ *   • die Art ist eine andere
+ *   • das Ereignis trägt eine eigene Kennung und die ist anders
+ *   • die Frist ist wieder gestiegen – ein Countdown, der hochspringt, gehört
+ *     zu einem frischen Vorfall derselben Art
+ */
+function vorfallFrist(ev) {
+  for (const feld of [ev?.minutesLeft, ev?.minutes, ev?.minutesRemaining]) {
+    if (Number.isFinite(feld)) return feld;
+  }
+  return null;
+}
+
+function vorfallSchluessel(state, ev) {
+  const art = vorfallArt(ev);
+  const kennung = ev?.id ?? ev?.eventId ?? ev?.eventID ?? null;
+  const frist = vorfallFrist(ev);
+  const offen = state.offenerVorfall;
+
+  const derselbe = !!offen && offen.art === art
+    && (kennung == null || offen.kennung == null || String(kennung) === offen.kennung)
+    && (frist == null || offen.frist == null || frist <= offen.frist);
+
+  if (derselbe) {
+    // Die kleinste gesehene Frist behalten, damit ein Anstieg auffällt.
+    if (frist != null) offen.frist = Math.min(offen.frist ?? frist, frist);
+    return offen.schluessel;
+  }
+
+  state.vorfallLauf = (state.vorfallLauf || 0) + 1;
+  const schluessel = `event_${art}_${state.vorfallLauf.toString(36)}`;
+  state.offenerVorfall = {
+    schluessel, art, frist,
+    kennung: kennung == null ? null : String(kennung),
+    seit: Date.now(), zuletzt: Date.now(), runde: 0,
+  };
+  info(`Neuer Vorfall: ${art} (${schluessel})`);
+  return schluessel;
 }
 
 /**
@@ -1857,7 +1891,7 @@ async function durchlauf() {
         name: sauber(f.event?.name || f.event?.title || art),
       } };
 
-    const vSchluessel = vorfallSchluessel(f.event);
+    const vSchluessel = vorfallSchluessel(state, f.event);
     await push(vSchluessel, '🚨 Vorfall im Unternehmen',
       ereignisText(f.event) + expressText(ex) +
       (bericht.length ? `\n\nOnline zum Zeitpunkt:\n${bericht.join('\n')}` : ''),
@@ -2688,8 +2722,32 @@ const BEFEHLE = {
         type: 3, required: false, autocomplete: true },
     ],
 
+    // Eigene Liste, seit /melden keine Optionen mehr hat: gesehene Arten mit
+    // der Zahl der Sichtungen, dann die, für die eine Regel besteht, dann die
+    // Startliste. Getipptes wird immer angeboten.
     vorschlaege(feld, eingabe) {
-      return feld === 'art' ? BEFEHLE.melden.vorschlaege('vorfallart', eingabe) : [];
+      if (feld !== 'art') return [];
+      const gesehen = load().vorfallArten || {};
+      const ausRegeln = Object.keys(ladeRegeln())
+        .filter(k => k.startsWith('event_') && k !== 'event_')
+        .map(k => k.slice('event_'.length));
+
+      const such = artSchluessel(eingabe || '');
+      const arten = [...new Set([...Object.keys(gesehen), ...ausRegeln, ...VORFALL_BEKANNT])]
+        .filter(a => !such || a.includes(such))
+        .sort((a, b) => (gesehen[b]?.zuletzt || 0) - (gesehen[a]?.zuletzt || 0));
+
+      const liste = arten.map(a => ({
+        name: (gesehen[a] ? `${a} (${gesehen[a].anzahl}× gesehen)`
+              : ausRegeln.includes(a) ? `${a} (eingestellt)`
+              : `${a} (Startliste)`).slice(0, 100),
+        value: a,
+      }));
+
+      // Der Watcher kennt nur Arten, die er selbst gesehen hat – ohne das wäre
+      // das Feld vor dem ersten Vorfall kaum brauchbar.
+      if (such && !arten.includes(such)) liste.unshift({ name: `${such} (eingetippt)`, value: such });
+      return liste.slice(0, 25);
     },
 
     async ausfuehren({ optionen }) {
@@ -2706,7 +2764,11 @@ const BEFEHLE = {
       };
 
       const state = load();
-      const schluessel = vorfallSchluessel(ereignis);
+      // Den Schlüssel auf einem eigenen, leeren Zustand bilden: sonst würde
+      // die Probe den gerade offenen echten Vorfall verdrängen und dessen
+      // Erinnerungen abreißen.
+      const schluessel = vorfallSchluessel({ offenerVorfall: null, vorfallLauf: 0 },
+                                           ereignis);
       const regel = empfaenger(schluessel, ladeRegeln());
 
       // Die Sperre gegen Wiederholungen darf eine Probe nicht verschlucken.
