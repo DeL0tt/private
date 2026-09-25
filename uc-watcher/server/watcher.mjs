@@ -252,9 +252,18 @@ const spieltag = (zeit = Date.now()) => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 };
 
+/**
+ * Eine Dauer lesbar machen.
+ *
+ * Erst auf Minuten runden, dann in Stunden und Minuten teilen. Umgekehrt –
+ * Stunden abschneiden, Minuten runden – ergab bei 8 Std. 59 Min. 42 Sek. die
+ * Ausgabe "8 Std. 60 Min.": der Rest wurde auf 60 gerundet, die Stunde aber
+ * nicht mitgezählt.
+ */
 function dauer(ms) {
   if (!ms || ms < MIN) return '<1 Min.';
-  const h = Math.floor(ms / 3_600_000), m = Math.round((ms % 3_600_000) / MIN);
+  const minuten = Math.round(ms / MIN);
+  const h = Math.floor(minuten / 60), m = minuten % 60;
   return h ? `${h} Std. ${m} Min.` : `${m} Min.`;
 }
 
