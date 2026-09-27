@@ -723,9 +723,10 @@ export async function schlageVor(interaktion, befehle) {
  * gewählten Einträge eines Menüs oder die Eingaben eines Fensters. Zurück
  * kommt eines von:
  *
- *   { text, fussnote?, knopfWeg? }  – Rückmeldung nur an den Drückenden; die
- *                                     Nachricht behält ihren Inhalt, der Knopf
- *                                     verschwindet (knopfWeg: false lässt ihn)
+ *   { text, fussnote?, knopfWeg?, inhaltWeg? }
+ *       – Rückmeldung nur an den Drückenden; die Nachricht behält ihren
+ *         Inhalt, der Knopf verschwindet (knopfWeg: false lässt ihn stehen,
+ *         inhaltWeg räumt die Erwähnungszeile darüber ab)
  *   { tafel: { titel, text, reihen } } – die Nachricht wird neu gezeichnet
  *   { fenster: { id, titel, felder } } – ein Eingabefenster geht auf
  *
@@ -811,7 +812,11 @@ export async function behandleKnopf(interaktion, handler) {
       type: 7,                                   // Nachricht bearbeiten
       data: {
         ...(embeds.length ? { embeds } : {}),
-        ...(alt.content !== undefined ? { content: alt.content } : {}),
+        // inhaltWeg räumt die Zeile über dem Embed ab – dort stehen die
+        // Erwähnungen. Ist die Sache übernommen, soll dort nichts mehr
+        // hervorgehoben sein.
+        ...(ergebnis.inhaltWeg ? { content: '' }
+            : alt.content !== undefined ? { content: alt.content } : {}),
         // Ein entfernter Knopf ist die einzige verlässliche Anzeige, dass es
         // schon jemand gemacht hat.
         components: ergebnis.knopfWeg === false ? (alt.components || []) : [],

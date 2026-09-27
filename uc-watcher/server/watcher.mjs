@@ -752,11 +752,19 @@ async function push(thema, titel, text, state, prio = 'high', extra = {}) {
   // Einstellung eine Halbwahrheit.
   if (regel.ziel === 'aus') return log('Abgeschaltet:', thema);
 
-  // Eine feste Ruhezeit für alles. Je Thema einstellbar war sie eine Frage,
-  // auf die es nur eine Antwort gab.
-  const ruhe = CFG.ERINNERUNG_MIN * MIN;
   const now = Date.now();
-  if (now - (state.lastPush[thema] || 0) < ruhe) return log('Cooldown:', thema);
+
+  // extra.einmal: dieses Thema wird genau einmal gemeldet, nie wieder – egal
+  // wie lange es anliegt. Für Vorfälle: ein Vorfall ist ein Ereignis, kein
+  // Zustand, der halbstündlich in Erinnerung gerufen werden will. Was danach
+  // noch kommt, ist die Erinnerung – und die schaltet der Knopf ab.
+  if (extra.einmal && state.lastPush[thema]) return log('Schon gemeldet:', thema);
+
+  // Sonst eine feste Ruhezeit für alles. Je Thema einstellbar war sie eine
+  // Frage, auf die es nur eine Antwort gab.
+  if (now - (state.lastPush[thema] || 0) < CFG.ERINNERUNG_MIN * MIN) {
+    return log('Cooldown:', thema);
+  }
   state.lastPush[thema] = now;
 
   raeumeSperren(state);
@@ -1167,28 +1175,22 @@ async function knopfGedrueckt(id, nutzer, werte = []) {
   const name = nutzer.anzeigename || nutzer.username || 'jemand';
   const { neu, eintrag } = merkeErledigt(schluessel, nutzer.id, name);
 
-  // Ob überhaupt nachgefasst wurde, entscheidet, was der Druck bewirkt hat.
-  // Ohne Erinnerung ist er ein Zeichen fürs Team, keine Abschaltung – dann
-  // soll die Rückmeldung nichts anderes behaupten.
-  const regel = empfaenger(schluessel, ladeRegeln());
-  const nachgefasst = !!regel.erinnerung;
-
   if (!neu) {
     const wann = eintrag?.zeit ? ` (vor ${dauer(Date.now() - eintrag.zeit)})` : '';
     return {
       text: `Das hatte **${eintrag?.name || 'jemand'}** schon übernommen${wann}.`,
       fussnote: `übernommen von ${eintrag?.name || 'jemand'}`,
+      inhaltWeg: true,
     };
   }
 
   return {
-    text: nachgefasst
-      ? '✅ Notiert – im Kanal steht jetzt, dass du dich kümmerst, und für ' +
-        'diesen Vorfall kommt keine Erinnerung mehr, auch nicht aufs Handy. ' +
-        'Die Meldung selbst bleibt stehen.'
-      : '✅ Notiert – im Kanal steht jetzt, dass du dich kümmerst. ' +
-        'Erinnerungen waren für diese Art ohnehin aus.',
+    text: '✅ Notiert – zu diesem Vorfall kommt **nichts mehr**: keine ' +
+      'Erinnerung, keine Wiederholung, auch nicht aufs Handy. Im Kanal steht ' +
+      'jetzt, dass du dich kümmerst; die Meldung selbst bleibt stehen.',
     fussnote: `✅ übernommen von ${name}`,
+    // Die Erwähnungen über dem Embed abräumen – die Sache ist vergeben.
+    inhaltWeg: true,
   };
 }
 
@@ -1948,10 +1950,17 @@ async function durchlauf() {
       } };
 
     const vSchluessel = vorfallSchluessel(state, f.event);
-    await push(vSchluessel, '🚨 Vorfall im Unternehmen',
-      ereignisText(f.event) + expressText(ex) +
-      (bericht.length ? `\n\nOnline zum Zeitpunkt:\n${bericht.join('\n')}` : ''),
-      state, 'urgent', { knopf: erledigtKnopf(vSchluessel) });
+
+    // Hat jemand den Knopf gedrückt, kommt zu diesem Vorfall nichts mehr –
+    // auch nicht die Meldung selbst. Vorher stoppte der Knopf nur die
+    // Erinnerungen, und nach der Ruhezeit stand derselbe Vorfall samt Ping
+    // wieder im Kanal.
+    if (!istErledigt(vSchluessel)) {
+      await push(vSchluessel, '🚨 Vorfall im Unternehmen',
+        ereignisText(f.event) + expressText(ex) +
+        (bericht.length ? `\n\nOnline zum Zeitpunkt:\n${bericht.join('\n')}` : ''),
+        state, 'urgent', { knopf: erledigtKnopf(vSchluessel), einmal: true });
+    }
 
     await erinnereAnVorfall(state, f.event);
   } else if (state.offenerVorfall) {

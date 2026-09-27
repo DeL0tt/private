@@ -506,24 +506,27 @@ sofort. Löschst du die Datei, gilt wieder die Voreinstellung.
 
 ### Der Knopf „Ich kümmere mich"
 
-Unter jeder Vorfallsmeldung hängt ein grüner Knopf. Er tut zwei Dinge:
+Unter jeder Vorfallsmeldung hängt ein grüner Knopf. Ein Druck bedeutet: **zu
+diesem Vorfall kommt nichts mehr.** Keine Erinnerung, keine Wiederholung,
+auch nicht aufs Handy. Und im Kanal steht, dass sich jemand kümmert – sonst
+fahren zwei Leute zum selben Vorfall, während ein dritter nichts tut, weil er
+jemanden dort vermutet.
 
-1. **Er sagt dem Team, dass jemand dran ist.** Das gilt immer, auch ohne
-   eingestellte Erinnerung – sonst fahren zwei Leute zum selben Vorfall,
-   während ein dritter nichts tut, weil er jemanden dort vermutet.
-2. **Er beendet die Erinnerungen** für diesen Vorfall, im Discord und aufs
-   Handy – falls welche eingestellt sind.
+Die Erwähnungen über der Meldung werden dabei abgeräumt: die Sache ist
+vergeben, da muss niemand mehr hervorgehoben sein.
 
 - **Jeder darf drücken.** Wer den Vorfall löst, ist der, der gerade spielt; er
   muss keinen Befehl kennen und kein Recht haben.
 - **Der Knopf verschwindet danach für alle**, und in der Fußnote der Meldung
   steht „✅ übernommen von …". Sonst drücken fünf Leute nacheinander, ohne
   voneinander zu wissen.
-- **Die Meldung selbst bleibt stehen.** Nur die Erinnerungen hören auf.
+- **Die Meldung selbst bleibt stehen** – nur kommt nichts Neues mehr dazu.
 - Drückt jemand ein zweites Mal – etwa im anderen Kanal –, sagt der Bot, wer es
   schon übernommen hatte. Nichts wird überschrieben.
-- Die Rückmeldung sagt nur, was zutrifft: ohne eingestellte Erinnerung
-  verspricht sie keine Abschaltung.
+
+**Auch ohne Knopfdruck** wird ein Vorfall nur **einmal** gemeldet. Er ist ein
+Ereignis, kein Zustand, der halbstündlich in Erinnerung gerufen werden will.
+Was danach noch kommen darf, ist die Erinnerung – und die ist von Haus aus aus.
 
 Der Klick landet in `uc-watcher-regeln.json`, nicht im Zustand des Watchers –
 sonst wäre er nach der nächsten Minute wieder weg. Nach zwölf Stunden wird der
