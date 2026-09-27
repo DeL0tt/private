@@ -413,6 +413,14 @@ weiß, dass es sie gibt. Der Inhaber sieht alles ohne Hinweis.
 ### Die Schaltzentrale: `/melden`
 
 `/melden` stellt **eine Nachricht** in den Kanal, in dem du den Befehl benutzt.
+
+> **„Der Bot darf in diesem Kanal nicht schreiben"?** Bei einem gesperrten
+> Kanal reicht die serverweite Rolle nicht – die Sperre des Kanals
+> überschreibt sie. Rechtsklick auf den Kanal → *Kanal bearbeiten* →
+> *Berechtigungen* → bei **Rollen/Mitglieder** auf **+**, die Rolle des Bots
+> wählen, und **Kanal ansehen**, **Nachrichten senden** und **Links einbetten**
+> auf ✓ stellen. Am Handy: Kanal lange drücken → *Bearbeiten* →
+> *Berechtigungen*.
 Diese Nachricht ist die Schaltzentrale: Sie zeigt alle Meldungen mit ihrem
 Zustand, und du stellst sie darin mit Menüs und Knöpfen um.
 

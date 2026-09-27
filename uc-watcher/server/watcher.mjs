@@ -2938,8 +2938,20 @@ const BEFEHLE = {
           'Neustart des Watchers.' +
           (m?.id ? `\n\n_Falls du sie doch verlierst: einfach nochmal /melden._` : '');
       } catch (e) {
-        return `❌ Die Schaltzentrale ließ sich nicht aufstellen: ${e.message}\n\n` +
-          'Meist fehlt dem Bot in diesem Kanal das Recht „Nachrichten senden".';
+        // 50013 heißt: der Kanal selbst verbietet es. Die serverweite Rolle
+        // reicht dann nicht – die Sperre des Kanals überschreibt sie.
+        if (/50013|403/.test(e.message)) {
+          return `❌ Der Bot darf in <#${kanal}> nicht schreiben.\n\n` +
+            '**So gibst du ihm das Recht:** Rechtsklick auf den Kanal → ' +
+            '*Kanal bearbeiten* → *Berechtigungen* → bei **Rollen/Mitglieder** ' +
+            'auf **+**, die Rolle des Bots wählen und diese drei auf ✓ stellen:\n' +
+            '• Kanal ansehen\n• Nachrichten senden\n• Links einbetten\n\n' +
+            'Am Handy: Kanal lange drücken → *Bearbeiten* → *Berechtigungen*.\n\n' +
+            '_Bei einem gesperrten Kanal reicht die serverweite Rolle nicht – ' +
+            'die Sperre des Kanals überschreibt sie._\n' +
+            'Oder du rufst `/melden` einfach in einem anderen Kanal auf.';
+        }
+        return `❌ Die Schaltzentrale ließ sich nicht aufstellen: ${e.message}`;
       }
     },
   },
