@@ -297,7 +297,18 @@ Seit der Balance-Änderung wird **stündlich** abgeschöpft: alles über
 ```
 
 Die Antwort nennt Summe, Anzahl, Schnitt und die größte – dazu, was die Firma
-in denselben Stunden behalten durfte und wie viel Prozent abgeflossen sind.
+behalten durfte, was insgesamt erwirtschaftet wurde und wie viel Prozent
+abgeflossen sind.
+
+**Der behaltene Betrag wird gemessen, nicht gerechnet.** Unter derselben
+Kategorie stehen zwei Richtungen im Kassenbuch: was zufließt (positiv) und was
+weggenommen wird (negativ). Beides wird mit Vorzeichen archiviert und getrennt
+ausgewertet – die Gutschriften fallen von Stunde zu Stunde verschieden aus, aus
+dem Deckel allein ließe sich die Zahl nicht gewinnen.
+
+Dazu kommt die Zeile **„über dem Soll"**: wie viel mehr erwirtschaftet wurde,
+als der Deckel vorsieht. Das ist der Teil der Produktion, der niemandem etwas
+bringt – Einkauf, Löhne und Lager kosten dafür trotzdem.
 
 **Zwei Dinge heißen „Ausschüttung", und sie haben nichts miteinander zu tun:**
 

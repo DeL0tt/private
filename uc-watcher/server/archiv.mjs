@@ -146,11 +146,26 @@ export function merkeZeiten(tag, spieler, firmaMs) {
 }
 
 /** Eine Ausschüttung vermerken. Doppelte Stempel werden übergangen. */
-export function merkeAusschuettung(tag, stamp, betrag) {
+/**
+ * Eine Ausschüttungsbuchung festhalten.
+ *
+ * Das Vorzeichen bleibt erhalten, und das ist der Kern: unter derselben
+ * Kategorie stehen zwei Richtungen im Kassenbuch. Was die Firma **bekommt**
+ * ist positiv, was ihr der Server **wegnimmt** negativ. Hier stand einmal
+ * `Math.abs()` – damit zählten beide Richtungen als Abfluss, und die
+ * Tagessumme war die Summe aus Haben und Soll. Genau deshalb kamen Beträge
+ * heraus, die mit keinem Deckel zusammenpassten.
+ *
+ * `behalten` ist optional: der Kassenstand nach der Buchung, falls das
+ * Kassenbuch ihn mitliefert. Er wird nur mitgeschrieben, nicht gedeutet.
+ */
+export function merkeAusschuettung(tag, stamp, betrag, kassenstand = null) {
   if (CFG.AUS || !tag) return;
   const eintrag = tagEintrag(tag);
   if (eintrag.ausschuettungen.some(a => a.stamp === stamp)) return;
-  eintrag.ausschuettungen.push({ stamp, betrag: Math.abs(betrag || 0) });
+  const eintragNeu = { stamp, betrag: betrag || 0 };
+  if (Number.isFinite(kassenstand)) eintragNeu.kassenstand = kassenstand;
+  eintrag.ausschuettungen.push(eintragNeu);
   setzeTag(tag, eintrag);
 }
 
@@ -230,15 +245,23 @@ export function summiere(tage) {
   const proSpieler = new Map();
   const summe = {
     tage: tage.length, firmaMs: 0, gesamtMs: 0,
-    ausschuettungen: 0, betrag: 0, auszahlung: 0, freibetrag: 0,
+    // `ausschuettungen`/`betrag` meinen die Abflussseite – danach wird am
+    // häufigsten gefragt. `behalten` und `erwirtschaftet` daneben, damit ein
+    // Wochenbericht beide Richtungen zeigen kann.
+    ausschuettungen: 0, betrag: 0, behalten: 0, erwirtschaftet: 0,
+    auszahlung: 0, freibetrag: 0,
     von: tage[0]?.tag || null, bis: tage[tage.length - 1]?.tag || null,
     spieler: [],
   };
 
   for (const t of tage) {
     summe.firmaMs += t.firmaMs || 0;
-    summe.ausschuettungen += (t.ausschuettungen || []).length;
-    summe.betrag += (t.ausschuettungen || []).reduce((a, x) => a + (x.betrag || 0), 0);
+    for (const x of t.ausschuettungen || []) {
+      const b = x.betrag || 0;
+      if (b < 0) { summe.ausschuettungen++; summe.betrag -= b; }
+      else summe.behalten += b;
+      summe.erwirtschaftet += Math.abs(b);
+    }
     summe.auszahlung += t.auszahlung?.summe || 0;
     summe.freibetrag += t.auszahlung?.freibetrag || 0;
 
@@ -304,17 +327,49 @@ export function ausschuettungenIm(von, bis) {
 }
 
 /** Summe, Anzahl, Schnitt und die größte – für die Berichte. */
+/**
+ * Die beiden Richtungen einer Ausschüttung getrennt auswerten.
+ *
+ * `behalten`    was der Firma zugeflossen ist (positive Buchungen)
+ * `abgefuehrt`  was ihr weggenommen wurde (negative Buchungen)
+ * `erwirtschaftet` beides zusammen – der Gewinn, der wirklich entstanden ist
+ * `summe`       bleibt der Abfluss, denn danach wird am häufigsten gefragt
+ *
+ * Die Einzelbeträge kommen mit, weil „wie viel durften wir behalten" je
+ * Abschöpfung verschieden ausfällt und sich nicht aus einem Deckel ableiten
+ * lässt. Gemessen statt angenommen.
+ */
 export function ausschuettungSumme(eintraege) {
-  const betraege = eintraege.map(a => a.betrag || 0);
-  const summe = betraege.reduce((a, b) => a + b, 0);
+  const zu  = eintraege.filter(a => (a.betrag || 0) > 0);
+  const ab  = eintraege.filter(a => (a.betrag || 0) < 0);
+
+  const behalten   = zu.reduce((n, a) => n + a.betrag, 0);
+  const abgefuehrt = ab.reduce((n, a) => n - a.betrag, 0);
+  const erwirtschaftet = behalten + abgefuehrt;
+
+  // Für die Abflussseite weiter die bisherigen Felder, damit die Anzeige
+  // nicht an zwei Stellen rechnen muss.
+  const betraege = ab.map(a => -a.betrag);
+
   return {
-    anzahl: eintraege.length,
+    anzahl: ab.length,
     betraege,
-    summe,
-    schnitt: eintraege.length ? Math.round(summe / eintraege.length) : 0,
+    summe: abgefuehrt,
+    schnitt: ab.length ? Math.round(abgefuehrt / ab.length) : 0,
     groesste: betraege.length ? Math.max(...betraege) : 0,
-    erste: eintraege[0] || null,
-    letzte: eintraege[eintraege.length - 1] || null,
+    erste: ab[0] || eintraege[0] || null,
+    letzte: ab[ab.length - 1] || eintraege[eintraege.length - 1] || null,
+
+    behalten,
+    behaltenAnzahl: zu.length,
+    behaltenJe: zu.map(a => a.betrag),
+    behaltenSchnitt: zu.length ? Math.round(behalten / zu.length) : 0,
+    erwirtschaftet,
+    // Wie viel vom Erwirtschafteten abgeflossen ist. Die Zahl, an der sich
+    // entscheidet, ob mehr Produktion überhaupt noch etwas bringt.
+    anteilAb: erwirtschaftet ? abgefuehrt / erwirtschaftet : 0,
+    // Alle Buchungen, beide Richtungen, in der Reihenfolge des Tages.
+    alle: eintraege,
   };
 }
 

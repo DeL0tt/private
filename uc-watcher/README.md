@@ -194,11 +194,12 @@ wieder weg — eine Meldung je Vorgang wären 24 am Tag. Stattdessen:
 58.400 $ sind gestern abgeflossen – in 24 Ausschüttungen.
 Im Schnitt 2.433 $, die größte 2.500 $.
 
-Erwirtschaftet wurden damit 118.400 $, behalten durfte die Firma 60.000 $ –
-51 % sind abgeflossen.
+Gestern erwirtschaftet: 247.832 $
+Behalten durfte die Firma 19.000 $ in 6 Gutschriften
+Abgeflossen 228.832 $ in 6 Abschöpfungen – 92 % vom Gewinn.
 
-Das ist Gewinn, den die Firma erwirtschaftet hat und der Server wieder
-weggenommen hat: alles über 2.500 $ je Stunde.
+⚠️ 232.832 $ über dem Soll. Vorgesehen sind 2.500 $ je Stunde, also 15.000 $ –
+erwirtschaftet wurde das 16,5-fache.
 ```
 
 **Auf Abruf** jederzeit, im Discord mit `/ausschuettung` oder auf dem Server:
@@ -208,10 +209,12 @@ node watcher.mjs --ausschuettung
 ```
 
 ```
-Heute                24.500 $ in 10
-Davon je Stunde       2.450 $
-Behalten durfte sie  25.000 $ (2.500 $/Std.)
-Abgeflossen          49 %
+Erwirtschaftet      247.832 $
+Behalten             19.000 $ in 6
+Abgeschoepft        228.832 $ in 6
+Abgeflossen              92 %
+Soll laut Deckel     15.000 $ (2.500 $/Std.)
+Ueber dem Soll      232.832 $
 Seit dem Neustart    91.200 $ in 38 (2 Tage)
 ```
 
