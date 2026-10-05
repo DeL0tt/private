@@ -1761,10 +1761,20 @@ async function werteBuchungenAus(state, buchungen) {
     // Zu sehen gibt es sie in /ausschuettung und im Bericht um 0 Uhr.
     if (kat.includes('ausschütt') || kat.includes('ausschuett')) {
       state.letzteAusschuettung = b.stamp;
-      // Vorzeichen und Kassenstand mitgeben, nicht nur den Betrag: unter
-      // derselben Kategorie steht beides im Buch – was zufließt und was
-      // weggenommen wird.
-      merkeAusschuettung(spieltag(b.stamp), b.stamp, b.amount, b.balance);
+
+      // Was die Firma behalten durfte, steht im Kassenbuch nicht – dort ist
+      // nur der Abfluss verbucht. Messbar ist es am Gewinnstand: nach der
+      // Abschöpfung bleibt genau der erlaubte Rest stehen. `state.gewinn`
+      // wurde in diesem Durchlauf gelesen, also kurz nach der Buchung.
+      //
+      // Nur für frische Buchungen: ist die Buchung älter als ein paar
+      // Durchläufe, gehört der Gewinnstand zu einem anderen Zeitpunkt und
+      // wäre eine erfundene Zahl. Dann bleibt das Feld leer, und die
+      // Auswertung weist die Lücke aus statt sie als Null zu zeigen.
+      const frisch = Date.now() - b.stamp < 3 * CFG.INTERVALL_MS;
+      const behalten = frisch && Number.isFinite(state.gewinn) ? state.gewinn : null;
+
+      merkeAusschuettung(spieltag(b.stamp), b.stamp, b.amount, b.balance, behalten);
       log(b.amount >= 0 ? 'Ausschüttung erhalten:' : 'Abgeschöpft:',
           fmt(Math.abs(b.amount)), detail);
       // Hier ist Schluss: abgeschöpfter Gewinn ist kein Geld, das sich jemand
@@ -2631,8 +2641,11 @@ const BEFEHLE = {
         if (!z.erwirtschaftet) return '';
         let b = `\n\n**Erwirtschaftet:** ${fmt(z.erwirtschaftet)}\n` +
           `Behalten durfte die Firma **${fmt(z.behalten)}**` +
-          (z.behaltenAnzahl > 1 ? ` in ${z.behaltenAnzahl} Gutschriften ` +
-            `(Schnitt ${fmt(z.behaltenSchnitt)})` : '') + '\n' +
+          (z.behaltenAnzahl > 1 ? ` (Schnitt ${fmt(z.behaltenSchnitt)})` : '') +
+          (z.ohneMessung
+            ? `\n_Für ${z.ohneMessung} von ${z.anzahl} Abschöpfungen fehlt die ` +
+              `Messung – das Erwirtschaftete ist also eher noch höher._`
+            : '') + '\n' +
           `Abgeflossen **${fmt(z.summe)}** – das sind ` +
           `**${Math.round(z.anteilAb * 100)} %** vom Gewinn.`;
 
@@ -3899,6 +3912,18 @@ if (args.includes('--test')) {
     process.exit(1);
   }
   process.exit(0);
+}
+
+// Einmalige Korrektur der Alt-Einträge beim Start. Bis zur Vorzeichen-
+// Korrektur hat jede Abschöpfung positiv im Archiv gestanden und zählte damit
+// als Gutschrift. Erkannt werden die Alt-Einträge daran, dass ihnen der
+// Kassenstand fehlt; wiederholte Starts finden nichts mehr.
+{
+  const k = vorzeichenKorrektur({ schreiben: true });
+  if (k.anzahl) {
+    info(`Archiv korrigiert: ${k.anzahl} Ausschüttungen ohne Vorzeichen ` +
+         `(${fmt(k.summe)}) zählen jetzt als Abfluss.`);
+  }
 }
 
 info(`UC-Watcher läuft – Intervall ${CFG.INTERVALL_MS / 1000}s, Zustand: ${CFG.STATE_FILE}`);

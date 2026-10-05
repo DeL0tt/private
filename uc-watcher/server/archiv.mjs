@@ -159,12 +159,17 @@ export function merkeZeiten(tag, spieler, firmaMs) {
  * `behalten` ist optional: der Kassenstand nach der Buchung, falls das
  * Kassenbuch ihn mitliefert. Er wird nur mitgeschrieben, nicht gedeutet.
  */
-export function merkeAusschuettung(tag, stamp, betrag, kassenstand = null) {
+export function merkeAusschuettung(tag, stamp, betrag, kassenstand = null,
+                                   behalten = null) {
   if (CFG.AUS || !tag) return;
   const eintrag = tagEintrag(tag);
   if (eintrag.ausschuettungen.some(a => a.stamp === stamp)) return;
   const eintragNeu = { stamp, betrag: betrag || 0 };
   if (Number.isFinite(kassenstand)) eintragNeu.kassenstand = kassenstand;
+  // Was nach der Abschöpfung an Gewinn stehen blieb – der Betrag, den die
+  // Firma behalten durfte. Im Kassenbuch steht er nicht, deshalb wird er beim
+  // Durchlauf unmittelbar danach gemessen und hier mitgeschrieben.
+  if (Number.isFinite(behalten)) eintragNeu.behalten = behalten;
   eintrag.ausschuettungen.push(eintragNeu);
   setzeTag(tag, eintrag);
 }
@@ -378,7 +383,20 @@ export function ausschuettungSumme(eintraege) {
   const zu  = eintraege.filter(a => (a.betrag || 0) > 0);
   const ab  = eintraege.filter(a => (a.betrag || 0) < 0);
 
-  const behalten   = zu.reduce((n, a) => n + a.betrag, 0);
+  // Was die Firma behalten durfte, kommt aus zwei möglichen Quellen:
+  //
+  //   • einer Gutschrift im Kassenbuch (positive Buchung) – gibt es bei der
+  //     reinen Abschöpfung nicht, das Kassenbuch kennt dort nur den Abfluss
+  //   • dem Gewinnstand unmittelbar nach der Abschöpfung, beim Durchlauf
+  //     danach gemessen und am Eintrag vermerkt
+  //
+  // Beides zählt, nie dasselbe doppelt: ein Eintrag mit gemessenem Wert zählt
+  // über diesen, eine Gutschrift über ihren Betrag.
+  const gemessen = ab.filter(a => Number.isFinite(a.behalten));
+  const behalten = zu.reduce((n, a) => n + a.betrag, 0) +
+                   gemessen.reduce((n, a) => n + a.behalten, 0);
+  const behaltenJe = [...zu.map(a => a.betrag), ...gemessen.map(a => a.behalten)];
+
   const abgefuehrt = ab.reduce((n, a) => n - a.betrag, 0);
   const erwirtschaftet = behalten + abgefuehrt;
 
@@ -396,9 +414,12 @@ export function ausschuettungSumme(eintraege) {
     letzte: ab[ab.length - 1] || eintraege[eintraege.length - 1] || null,
 
     behalten,
-    behaltenAnzahl: zu.length,
-    behaltenJe: zu.map(a => a.betrag),
-    behaltenSchnitt: zu.length ? Math.round(behalten / zu.length) : 0,
+    behaltenAnzahl: behaltenJe.length,
+    behaltenJe,
+    behaltenSchnitt: behaltenJe.length ? Math.round(behalten / behaltenJe.length) : 0,
+    // Für wie viele Abschöpfungen der behaltene Betrag fehlt – ohne das liest
+    // sich eine Lücke in der Messung wie ein Tag ohne Gewinn.
+    ohneMessung: ab.length - gemessen.length,
     erwirtschaftet,
     // Wie viel vom Erwirtschafteten abgeflossen ist. Die Zahl, an der sich
     // entscheidet, ob mehr Produktion überhaupt noch etwas bringt.

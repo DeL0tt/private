@@ -300,11 +300,16 @@ Die Antwort nennt Summe, Anzahl, Schnitt und die größte – dazu, was die Firm
 behalten durfte, was insgesamt erwirtschaftet wurde und wie viel Prozent
 abgeflossen sind.
 
-**Der behaltene Betrag wird gemessen, nicht gerechnet.** Unter derselben
-Kategorie stehen zwei Richtungen im Kassenbuch: was zufließt (positiv) und was
-weggenommen wird (negativ). Beides wird mit Vorzeichen archiviert und getrennt
-ausgewertet – die Gutschriften fallen von Stunde zu Stunde verschieden aus, aus
-dem Deckel allein ließe sich die Zahl nicht gewinnen.
+**Der behaltene Betrag wird gemessen, nicht gerechnet.** Im Kassenbuch steht
+er nicht – dort ist nur der Abfluss verbucht. Gemessen wird er am Gewinnstand
+unmittelbar nach der Abschöpfung: dort bleibt genau der erlaubte Rest stehen.
+Der Wert wird am Archiveintrag vermerkt, und er schwankt von Stunde zu Stunde –
+aus dem Deckel allein ließe sich die Zahl nicht gewinnen.
+
+Gemessen wird nur für frische Buchungen (bis zu drei Durchläufe alt). War der
+Watcher aus, als abgeschöpft wurde, fehlt die Messung; die Auswertung weist
+diese Lücke aus („für X von Y Abschöpfungen fehlt die Messung") statt sie als
+Null auszugeben. Das Erwirtschaftete ist dann eher noch höher als angezeigt.
 
 Dazu kommt die Zeile **„über dem Soll"**: wie viel mehr erwirtschaftet wurde,
 als der Deckel vorsieht. Das ist der Teil der Produktion, der niemandem etwas
