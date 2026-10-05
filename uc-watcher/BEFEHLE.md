@@ -112,8 +112,7 @@ cd ~/private/uc-watcher/server
 | `node --env-file=.env watcher.mjs --archiv` | Welche Spieltage im Archiv liegen |
 | `node --env-file=.env watcher.mjs --einstellungen` | Alle Werte, dazu das **Zeitkonto**: wohin jede Minute des Spieltags ging |
 | `node --env-file=.env watcher.mjs --freibetrag` | Welche Buchungen gegen die 35.000$ gezählt haben – und welche nicht, mit Grund |
-| `node --env-file=.env watcher.mjs --ausschuettung` | Stand des 12-Stunden-Zählers |
-| `node --env-file=.env watcher.mjs --ausschuettung-start` | Zähler **auf null** setzen – nach einer tatsächlichen Ausschüttung |
+| `node --env-file=.env watcher.mjs --ausschuettung` | Was heute und seit dem Neustart abgeschöpft wurde |
 | `node --env-file=.env watcher.mjs --notion` | Wiki-/Notion-Abgleich sofort, mit Titelliste |
 | `node --env-file=.env watcher.mjs --wiki-probe` | Wiki-API abklopfen (nur zum Erkunden) |
 | `node --env-file=.env watcher.mjs --discord-test` | Discord-Befehle registrieren und je eine Probemeldung schicken |
@@ -126,8 +125,6 @@ cd ~/private/uc-watcher/server
 
 Diese Befehle laufen **zusätzlich** zum Dienst und stören ihn nicht.
 
-> `--ausschuettung-start` verändert den gespeicherten Zustand. Nur benutzen, wenn
-> die Ausschüttung wirklich stattgefunden hat – sonst zählt der Watcher falsch.
 
 ---
 
@@ -150,8 +147,9 @@ Speichern mit `Strg+O`, `Enter`, schließen mit `Strg+X`. Danach **immer**
 | `UC_LAGER_SCHWELLE` | `500` | Warnung, wenn das Lager darunter fällt |
 | `UC_LAGER_EINBRUCH_PCT` | `15` | Ab wie viel Prozent plötzlichem Verlust gewarnt wird |
 | `UC_PREIS_SPRUNG_PCT` | `20` | Ab welchem Preissprung gemeldet wird |
-| `UC_AUSSCHUETTUNG_STD` | `12` | Zielzeit bis zur Ausschüttung |
-| `UC_AUSSCHUETTUNG_STUNDENMELDUNG` | an | Stündlicher Zwischenstand – `0` schaltet ihn ab |
+| `UC_GEWINN_DECKEL_STD` | `2500` | Gewinn je Stunde, darüber wird abgeschöpft |
+| `UC_AUSZAHLUNG_LIMIT` | `50000` | Tageslimit für Auszahlungen insgesamt |
+| `UC_AUSZAHLUNG_FREI` | `20000` | davon steuerfrei |
 | `UC_TAGESBERICHT` | an | Tagesbericht um 04:00 – `0` schaltet ihn ab |
 | `UC_TAGESWECHSEL_STD` | `4` | Wann der Spieltag umspringt |
 | `UC_API_WEG_MELDUNG_MIN` | `30` | Ab wie vielen Minuten eine nicht erreichbare Seite gemeldet wird |
@@ -232,7 +230,7 @@ Antworten sieht nur, wer den Befehl eingegeben hat.
 Zwei Kanäle im selben Server: `#firma-team` für alle (`UC_DISCORD_TEAM_KANAL`)
 und ein privater Kanal nur für dich (`UC_DISCORD_CHEF_KANAL`).
 
-**Was ins Team geht:** Lager, Lieferengpass, Firma pausiert, Ausschüttung,
+**Was ins Team geht:** Lager, Lieferengpass, Firma pausiert, Ausschüttungsbericht,
 Vorfälle. Alle sehen denselben Wortlaut; nur Diebstahlverdacht und Personal
 gehen von Haus aus allein an den Inhaber.
 **Was nur du bekommst:** Kasse, Buchungen, Personal, Arbeitszeiten,

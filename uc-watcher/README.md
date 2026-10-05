@@ -25,7 +25,7 @@ Server-Variante umziehen.
 | 2 | **Personal (NPCs)** | Änderung der `6/6`-Kachel, z. B. 6/6 → 5/6 |
 | 3a | **Vorfall** | Meldungen-Karte zeigt nicht mehr „Alles ruhig" |
 | 3b | **Ignorierte Steuerprüfung** | Firmenkasse sinkt um ≈ 8 % statt 4 % |
-| 4 | **Ausschüttung** | Buchung im Kassenbuch / 12 Std. Teamzeit erreicht |
+| 4 | **Ausschüttung** | Buchung im Kassenbuch, Tagesbericht um 0 Uhr |
 | 5 | **Tagesbericht** | täglich um 04:00: wer war wie lange online |
 | 6 | **Firma pausiert** | obwohl jemand aus dem Team online ist |
 | 7 | **Lieferengpass** | Ereignis der Firma oder Sprung der Einkaufspreise |
@@ -178,41 +178,41 @@ Spieltag 16.09.2026 (04:00 bis 04:00)
 • halo361 — 48 Min.
 
 Summe aller Spieler: 4 Std. 13 Min.
-Davon Firma gelaufen: 4 Std. 0 Min. von 12 Std. bis zur Ausschüttung
+Firma gelaufen: 4 Std. 0 Min.
 ```
 
 Den Zwischenstand des laufenden Tages gibt es jederzeit mit
 `node watcher.mjs --tagesbericht`. Abschalten mit `UC_TAGESBERICHT=0`.
 
-**Bei jeder vollen Online-Stunde** kommt eine Fortschrittsmeldung:
+**Abgeschöpft wird stündlich.** Alles über 2.500 $ Gewinn je Stunde geht
+wieder weg — eine Meldung je Vorgang wären 24 am Tag. Stattdessen:
+
+**Um 0 Uhr** ein Bericht für den abgelaufenen Tag:
 
 ```
-⏱️ 3 von 12 Std. bis zur Ausschüttung
-Team-Onlinezeit: 3 Std. 0 Min.
-Noch 9 Std. 0 Min. bis zur nächsten Ausschüttung.
-Gewinn bisher: 157.285 $
+💸 Ausschüttungen 05.10.
+58.400 $ sind gestern abgeflossen – in 24 Ausschüttungen.
+Im Schnitt 2.433 $, die größte 2.500 $.
 
-Gerade online: LottiMi, maaxxyyy
+Das ist Gewinn, den die Firma erwirtschaftet und wieder abgegeben hat.
+Abgeschöpft wird alles über 2.500 $ Gewinn je Stunde (60.000 $ am Tag).
 ```
 
-Bei 12 Std. kommt „Ausschüttung ist fällig" — **einmalig**, nicht stündlich
-wiederholt. Erst nach der nächsten Ausschüttung beginnt der Zähler von vorn.
-Abschalten lässt sich die Stundenmeldung mit
-`AUSSCHUETTUNG_STUNDENMELDUNG: false` bzw. `UC_AUSSCHUETTUNG_STUNDENMELDUNG=0`.
+**Auf Abruf** jederzeit, im Discord mit `/ausschuettung` oder auf dem Server:
 
-Den Zwischenstand siehst du jederzeit:
-
-```js
-ucWatcherAusschuettung()              // im Browser
-node watcher.mjs --ausschuettung      // auf dem Server
+```
+node watcher.mjs --ausschuettung
 ```
 
 ```
-Erreicht     7 Std. 20 Min.
-Ziel         12 Std.
-Fehlt        4 Std. 40 Min.
-Fortschritt  61 %
+Heute                24.500 $ in 10
+Davon je Stunde       2.450 $
+Möglich am Tag       60.000 $ (2.500 $/Std.)
+Seit dem Neustart    91.200 $ in 38 (2 Tage)
 ```
+
+Mit `/ausschuettung tag:…` auch für einen bestimmten Kalendertag, solange er
+im Archiv liegt.
 
 ### Online-Zeiten
 Ein Spieler gilt als online, wenn sein **Punkt in der Team-Leiste grün** ist
@@ -301,8 +301,8 @@ Was daraus direkt kommt — nichts davon muss geraten werden:
 | `event`, `wagesUnpaid`, `rentStrikes` | Vorfälle und Notlagen |
 
 Dazu das Kassenbuch (`/api/panel/company/ledger`). Dessen `category` macht die
-Erkennung exakt: Eine Buchung **„Ausschüttung"** setzt den 12-Stunden-Zähler
-zurück, eine Buchung mit einer Vorfall-Kategorie (Steuerprüfung, Razzia,
+Erkennung exakt: Eine Buchung **„Ausschüttung"** wird fürs Archiv
+festgehalten, eine Buchung mit einer Vorfall-Kategorie (Steuerprüfung, Razzia,
 Überfall …) löst sofort Alarm aus. Eine Kategorie, die der Watcher nicht kennt,
 wird einmalig gemeldet, damit nichts unbemerkt bleibt.
 
@@ -383,9 +383,7 @@ node --env-file=.env watcher.mjs --push-test           # Handy-Zustellung prüfe
 | `LAGER_SCHWELLE` | `UC_LAGER_SCHWELLE` | 500 | Alarmgrenze Lager |
 | `PERSONAL_SOLL` | `UC_PERSONAL_SOLL` | 6 | Rückfall, wenn kein `x/y` lesbar |
 | `SPIELER` | `UC_SPIELER` | 6 Namen | getrackte Spieler |
-| `AUSSCHUETTUNG_STD` | `UC_AUSSCHUETTUNG_STD` | 12 | Teamzeit bis zur Ausschüttung |
 | `AUSSCHUETTUNG_GEWINN_SCHWELLE` | `UC_AUSSCHUETTUNG_SCHWELLE` | 1000 | darunter = ausgeschüttet |
-| `AUSSCHUETTUNG_STUNDENMELDUNG` | `UC_AUSSCHUETTUNG_STUNDENMELDUNG` | an | Meldung bei jeder vollen Online-Stunde |
 | `TAGESWECHSEL_STD` | – | 4 | Tageszähler-Reset um 04:00 |
 | `LUECKE_MIN` | `UC_LUECKE_MIN` | 10 | Pause, ab der eine neue Sitzung zählt |
 | `ERINNERUNG_MIN` | `UC_ERINNERUNG_MIN` | 60 | Cooldown je Thema |

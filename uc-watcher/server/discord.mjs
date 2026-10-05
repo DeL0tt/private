@@ -190,13 +190,12 @@ export function merkeErledigt(schluessel, wer, name) {
  * davon geht die vollständige Fassung weiterhin per ntfy aufs Handy.
  *
  * Verglichen wird der Anfang des Themas, weil viele Themen eine laufende
- * Nummer anhängen ('event_...', 'ausschuettung_std_3').
+ * Nummer oder ein Datum anhängen ('event_…', 'ausschuettung_tag_2026-10-05').
  */
 const TEAM_THEMEN = [
   'lager',                   // Bestand niedrig – das Team kann nachfüllen
   'preissprung',             // Lieferengpass – betrifft den Einkauf
-  'ausschuettung_std_',      // Zwischenstand bis zur Ausschüttung
-  'ausschuettung_faellig',   // Ziel erreicht
+  'ausschuettung_tag_',      // was am Tag abgeschöpft wurde
   'event_',                  // Vorfall im Unternehmen
   'betrieb_',                // Zoohandlung leer oder knapp – da kann jeder ran
   'nachkauf_aus',            // ohne Nachkauf läuft das Lager leer
@@ -251,9 +250,7 @@ export const THEMEN = [
   ['betrieb_knapp',          'Betrieb wird knapp (Zoohandlung)'],
   ['preissprung',            'Lieferengpass, Einkauf teurer'],
   ['pausiert_trotz_online',  'Firma pausiert, obwohl jemand online ist'],
-  ['ausschuettung_std_',     'Ausschüttung: Zwischenstand (alle 3 Std.)'],
-  ['ausschuettung_faellig',  'Ausschüttung ist fällig'],
-  ['ausschuettung_',         'Ausschüttung erfolgt (mit Betrag)'],
+  ['ausschuettung_tag_',     'Ausschüttungen: Tagesbericht um 0 Uhr'],
   ['event_',                 'Vorfall im Unternehmen'],
   ['vorfall_',               'Kassenvorfall (mit Betrag und Namen)'],
   ['personal_',              'Personal abgeworben oder unvollständig'],
@@ -272,7 +269,7 @@ export const themaName = (schluessel) =>
  *
  * Reihenfolge: eine ausdrücklich über /melden gesetzte Regel gewinnt, sonst
  * gelten die Voreinstellungen. Beim Vergleich zählt der längste passende
- * Anfang, damit 'ausschuettung_faellig' nicht von 'ausschuettung_' verdeckt
+ * Anfang, damit ein genaueres Thema nicht von einem kürzeren verdeckt
  * wird.
  *
  * regeln: { '<themenanfang>': { ziel, kanal, ping } } – aus dem Zustand.
@@ -282,8 +279,8 @@ export const themaName = (schluessel) =>
  *
  * Gesucht wird über den Anfang, weil viele Themen eine laufende Nummer
  * anhängen ('vorfall_1758…'). Dabei fangen sich kurze Themen aber längere
- * mit ein: 'lagerverlust_' beginnt mit 'lager', 'ausschuettung_std_' mit
- * 'ausschuettung_'. Ohne diese Prüfung hätte eine Regel für den niedrigen
+ * mit ein: 'lagerverlust_' beginnt mit 'lager'. Ohne diese Prüfung hätte eine
+ * Regel für den niedrigen
  * Lagerbestand („ans Team") auch den Diebstahlverdacht samt Namensliste ins
  * Team geschickt – eine Meldung, die ausdrücklich nur den Inhaber angeht.
  *

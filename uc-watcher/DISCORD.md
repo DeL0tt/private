@@ -183,8 +183,9 @@ Jeder im Server kann benutzen:
 |---|---|
 | `/firma` | Status, Lager, Personal, wer online ist |
 | `/lager` | **Beide Bestände:** Firmenlager mit gemessener Reichweite und die Zoohandlung |
-| `/zeiten` | Wer gerade online ist, die eigene Zeit heute und der Fortschritt bis zur Ausschüttung |
-| `/kasse` | Tagesbudget (35.000$); mit dem Recht dazu auch Kasse, Gewinn und die letzten Buchungen |
+| `/zeiten` | Wer gerade online ist und die eigene Zeit heute |
+| `/kasse` | Tageslimit und Freibetrag, Kasse, Gewinn, letzte Buchungen |
+| `/ausschuettung` | Wie viel Gewinn abgeschöpft wurde – heute, seit dem Neustart, an einem bestimmten Tag |
 | `/hilfe` | Welche Befehle es gibt |
 
 ### Ein Kanal für Befehle
@@ -283,6 +284,27 @@ UC_BETRIEB=Zoohandlung
 UC_BETRIEB_ABZUG=100
 UC_BETRIEB_SCHWELLE=40
 ```
+
+### Die Abschöpfung: `/ausschuettung`
+
+Seit der Balance-Änderung wird **stündlich** abgeschöpft: alles über
+**2.500 $ Gewinn pro Stunde** geht wieder weg. Eine Meldung je Vorgang wären
+24 Nachrichten am Tag — deshalb gibt es sie auf Abruf und einmal als Bericht.
+
+```
+/ausschuettung              → heute und seit dem Neustart
+/ausschuettung tag:…        → ein bestimmter Kalendertag
+```
+
+Die Antwort nennt Summe, Anzahl, Schnitt und die größte, dazu einen Balken
+gegen den Tagesdeckel von 60.000 $ (2.500 × 24).
+
+**Um 0 Uhr** kommt der Tagesbericht nach `#benachrichtigung`: wie viel am
+abgelaufenen Tag abgeflossen ist. Das ist Gewinn, den die Firma erwirtschaftet
+und wieder abgegeben hat. Fällt der Tag auf null, bleibt es still.
+
+Abschalten oder verschieben wie jede andere Meldung — in der Schaltzentrale
+unter **Ausschüttungen: Tagesbericht um 0 Uhr**.
 
 ### Das Tagesbudget in `/kasse`
 
@@ -490,10 +512,10 @@ dieselbe Antwort gab:
 | **Ruhezeit** | Jede Meldung kommt höchstens **alle 30 Minuten**. |
 | **Ping** | Immer nur **wer gerade ingame online ist**, und nur bei Vorfällen. `@everyone`, `@here` und Rollen-Pings gibt es nicht mehr — sie erreichten verlässlich die Falschen: Leute, die Discord offen haben, aber nicht spielen. |
 | **Nachfassen** | Immer nach **5 Minuten**. Bei einer Frist von zehn Minuten ist alles andere zu früh oder zu spät. |
-| **Zwischenstand der Ausschüttung** | **Alle 3 Stunden**. Wer ihn gar nicht will, schaltet das Thema ab — dieselbe Wirkung, eine Einstellung weniger. |
+| **Ausschüttungsbericht** | Einmal **um 0 Uhr** für den abgelaufenen Tag. Abgeschöpft wird stündlich; 24 Meldungen am Tag will niemand. |
 
 Über die `.env` lassen sie sich verschieben (`UC_ERINNERUNG_MIN`,
-`UC_VORFALL_ERINNERUNG_MIN`, `UC_AUSSCHUETTUNG_TAKT`), aus dem Discord heraus
+`UC_VORFALL_ERINNERUNG_MIN`), aus dem Discord heraus
 nicht. Das ist Absicht: es sind Entscheidungen für die ganze Firma, nicht je
 Meldung.
 

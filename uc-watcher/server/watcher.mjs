@@ -13,7 +13,8 @@ import { discordAktiv, discordSende, discordStart, discordStop, empfaenger,
          istErledigt, merkeErledigt } from './discord.mjs';
 import { merkeZeiten, merkeAusschuettung, merkeAuszahlung, speichereArchiv,
          ladeArchiv, holeTag, holeTage, letzteTage, alleTage, tagMinus,
-         summiere, vergleich, anteile, archivDatei, archivAktiv } from './archiv.mjs';
+         summiere, vergleich, anteile, archivDatei, archivAktiv,
+         ausschuettungenIm, ausschuettungSumme } from './archiv.mjs';
 
 /* ========================= KONFIGURATION ========================= */
 
@@ -57,10 +58,6 @@ const CFG = {
   // jedes Thema dieselbe ist.
   ERINNERUNG_MIN: +(process.env.UC_ERINNERUNG_MIN || 30),
 
-  AUSSCHUETTUNG_STD:            +(process.env.UC_AUSSCHUETTUNG_STD || 12),
-  // Der Zwischenstand kommt alle drei Stunden. Ein einstellbarer Takt war eine
-  // Wahl zwischen Lärm und Nutzlosigkeit; drei Stunden sind beides nicht.
-  AUSSCHUETTUNG_TAKT: +(process.env.UC_AUSSCHUETTUNG_TAKT || 3),
   TAGESBERICHT:                  process.env.UC_TAGESBERICHT !== '0',
 
   // Ab wann eine nicht erreichbare Seite gemeldet wird. Kurze Aussetzer sind
@@ -202,7 +199,7 @@ const leer = () => ({
   lager: null, personal: null, kasse: null, gewinn: null,
   spieler: {},            // name -> { online, seit, sitzungMs, gesamtMs, zuletzt, tag }
   tag: null,                 // laufender Spieltag (wechselt um 04:00)
-  teamOnlineMs: 0, gemeldeteStunde: 0, faelligGemeldet: false,
+  ausschuettungTag: null,   // Kalendertag des letzten Ausschüttungsberichts
   firmaTagMs: 0, firmaTag: null,   // Laufzeit im aktuellen Spieltag (unabhängig von der Ausschüttung)
   letzteAusschuettung: null, letzterTick: null,
   wiki: null,              // { id: {titel, kategorie, updatedAt, laenge} }
@@ -636,10 +633,10 @@ function updateSpieler(state, members) {
 
 // Wandzeit, in der die Firma tatsächlich lief: mindestens ein Spieler online
 // UND nicht pausiert. Mehrere gleichzeitig zählen trotzdem nur einmal.
-// teamOnlineMs zählt bis zur Ausschüttung und wird dort auf 0 gesetzt;
-// firmaTagMs zählt den Spieltag und wird um 04:00 zurückgesetzt. Getrennt,
-// weil der Tagesbericht sonst nach einer Ausschüttung weniger Laufzeit
-// meldet als Stunden vorher.
+// firmaTagMs zählt die Laufzeit des Spieltags und wird um 04:00
+// zurückgesetzt. Ein zweiter Zähler bis zur Ausschüttung stand hier einmal
+// daneben – seit stündlich abgeschöpft wird, gibt es nichts mehr, worauf er
+// hinzählen könnte.
 /**
  * Die Zeit zwischen zwei Durchläufen verbuchen – und zwar jede, mit Grund.
  *
@@ -675,7 +672,6 @@ function updateTeamzeit(state, lage) {
   }
 
   if (lage === 'laeuft') {
-    state.teamOnlineMs += luecke;
     state.firmaTagMs += luecke;
     konto.gezaehlt += luecke;
   } else if (lage === 'pausiert') {
@@ -708,8 +704,7 @@ async function tagesabschluss(state) {
 
   await push(`tagesbericht_${vorbei}`, `📊 Onlinezeiten ${tagKurz(vorbei)}`,
     tagesText(vorbei) +
-    `\nTeam-Onlinezeit bis zur Ausschüttung: ${dauer(state.teamOnlineMs)} ` +
-    `von ${CFG.AUSSCHUETTUNG_STD} Std.` +
+
     freibetragText(state),
     state, 'low');
 }
@@ -1032,14 +1027,26 @@ function rechenlast() {
   };
 }
 
+/**
+ * Stand der Abschöpfung für die Kommandozeile.
+ *
+ * Der 12-Stunden-Zähler, der hier einmal stand, ist mit der Balance-Änderung
+ * bedeutungslos geworden: abgeschöpft wird stündlich, unabhängig von der
+ * Team-Onlinezeit.
+ */
 function ausschuettungStand(state) {
-  const ziel = CFG.AUSSCHUETTUNG_STD * 3_600_000;
-  const rest = Math.max(0, ziel - state.teamOnlineMs);
+  const heute = budgetTag();
+  const [j, m, t] = heute.split('-').map(Number);
+  const von = new Date(j, m - 1, t).getTime();
+  const z = ausschuettungSumme(ausschuettungenIm(von, von + 24 * 3_600_000));
+  const seit = Date.now() - process.uptime() * 1000;
+  const n = ausschuettungSumme(ausschuettungenIm(seit, Date.now()));
+  const moeglich = CFG.GEWINN_DECKEL_STD * 24;
   return {
-    Erreicht: dauer(state.teamOnlineMs),
-    Ziel: `${CFG.AUSSCHUETTUNG_STD} Std.`,
-    Fehlt: rest ? dauer(rest) : 'fällig',
-    Fortschritt: Math.min(100, Math.round(state.teamOnlineMs / ziel * 100)) + ' %',
+    Heute: `${fmt(z.summe)} in ${z.anzahl}`,
+    'Davon je Stunde': z.anzahl ? fmt(z.schnitt) : '–',
+    'Möglich am Tag': `${fmt(moeglich)} (${fmt(CFG.GEWINN_DECKEL_STD)}/Std.)`,
+    'Seit dem Neustart': `${fmt(n.summe)} in ${n.anzahl} (${dauer(Date.now() - seit)})`,
     Letzte: state.letzteAusschuettung
       ? new Date(state.letzteAusschuettung).toLocaleString('de-DE') : 'unbekannt',
     Gewinn: state.gewinn === null ? '–' : fmt(state.gewinn),
@@ -1204,34 +1211,47 @@ async function knopfGedrueckt(id, nutzer, werte = []) {
   };
 }
 
-async function pruefeAusschuettung(state) {
-  const ziel = CFG.AUSSCHUETTUNG_STD * 3_600_000;
+/**
+ * Der Tagesbericht über die Ausschüttungen, um 0 Uhr.
+ *
+ * Abgeschöpft wird seit der Balance-Änderung stündlich – jede einzelne davon
+ * zu melden wären 24 Nachrichten am Tag. Stattdessen einmal die Summe: so viel
+ * Gewinn hat die Firma erwirtschaftet und wieder abgegeben.
+ *
+ * Der Bericht hängt am Kalendertag, nicht am Spieltag: die Abschöpfung läuft
+ * nach der Uhr, nicht nach dem 04:00-Wechsel des Watchers.
+ */
+async function ausschuettungsBericht(state) {
+  const heute = budgetTag();
+  if (!state.ausschuettungTag) { state.ausschuettungTag = heute; return; }
+  if (state.ausschuettungTag === heute) return;
 
-  // Fester Takt. Wer den Zwischenstand gar nicht will, schaltet das Thema
-  // über /melden ab – das ist dieselbe Wirkung, eine Einstellung weniger.
-  const takt = CFG.AUSSCHUETTUNG_TAKT;
+  const vorbei = state.ausschuettungTag;
+  state.ausschuettungTag = heute;
 
-  const stunden = Math.floor(state.teamOnlineMs / 3_600_000);
-  if (takt > 0 && stunden % takt === 0
-      && stunden > (state.gemeldeteStunde || 0) && stunden < CFG.AUSSCHUETTUNG_STD) {
-    state.gemeldeteStunde = stunden;
-    const wer = Object.entries(state.spieler).filter(([, p]) => p.online).map(([n]) => n);
-    await push(`ausschuettung_std_${stunden}`,
-      `⏱️ ${stunden} von ${CFG.AUSSCHUETTUNG_STD} Std. bis zur Ausschüttung`,
-      `Team-Onlinezeit: ${dauer(state.teamOnlineMs)}\n` +
-      `Noch ${dauer(ziel - state.teamOnlineMs)} bis zur nächsten Ausschüttung.` +
-      (state.gewinn !== null ? `\nGewinn bisher: ${fmt(state.gewinn)}` : '') +
-      (wer.length ? `\n\nGerade online: ${wer.join(', ')}` : ''),
-      state, 'low');
-  }
+  // Das Fenster des abgelaufenen Kalendertags, 0 bis 24 Uhr.
+  const [j, m, t] = vorbei.split('-').map(Number);
+  const von = new Date(j, m - 1, t).getTime();
+  const bis = von + 24 * 3_600_000;
+  const z = ausschuettungSumme(ausschuettungenIm(von, bis));
 
-  if (state.teamOnlineMs >= ziel && !state.faelligGemeldet) {
-    state.faelligGemeldet = true;
-    await push('ausschuettung_faellig', '💰 Ausschüttung ist fällig',
-      `${CFG.AUSSCHUETTUNG_STD} Std. Team-Onlinezeit erreicht (${dauer(state.teamOnlineMs)}).` +
-      (state.gewinn !== null ? `\nAktueller Gewinn: ${fmt(state.gewinn)}` : ''),
-      state, 'high');
-  }
+  if (!z.anzahl) return log('Keine Ausschüttungen am', vorbei);
+
+  // Wie viel davon der Deckel geholt hat, lässt sich nicht trennen – wohl aber
+  // sagen, wie viele Stunden am Deckel gelaufen sein müssen.
+  const deckel = CFG.GEWINN_DECKEL_STD;
+  const amDeckel = deckel ? z.betraege?.filter?.(x => x >= deckel).length : 0;
+
+  await push(`ausschuettung_tag_${vorbei}`, `💸 Ausschüttungen ${tagKurz(vorbei)}`,
+    `**${fmt(z.summe)}** sind gestern abgeflossen – in ${z.anzahl} ` +
+    `${z.anzahl === 1 ? 'Ausschüttung' : 'Ausschüttungen'}.\n` +
+    `Im Schnitt ${fmt(z.schnitt)}, die größte ${fmt(z.groesste)}.\n\n` +
+    `_Das ist Gewinn, den die Firma erwirtschaftet und wieder abgegeben hat._` +
+    (deckel
+      ? `\n_Abgeschöpft wird alles über ${fmt(deckel)} Gewinn je Stunde ` +
+        `(${fmt(deckel * 24)} am Tag).${amDeckel ? ` ${amDeckel} Stunden lagen auf oder über der Grenze.` : ''}_`
+      : ''),
+    state, 'low');
 }
 
 /* ========================= VORFÄLLE ========================= */
@@ -1690,18 +1710,13 @@ async function werteBuchungenAus(state, buchungen) {
     const kat = sauber(b.category).toLowerCase();
     const detail = sauber(b.detail);
 
-    // Ausschüttung: Zähler exakt zurücksetzen
+    // Ausschüttung: nur festhalten, nicht melden. Seit der Balance-Änderung
+    // wird stündlich abgeschöpft – eine Meldung je Vorgang wären 24 am Tag.
+    // Zu sehen gibt es sie in /ausschuettung und im Bericht um 0 Uhr.
     if (kat.includes('ausschütt') || kat.includes('ausschuett')) {
       state.letzteAusschuettung = b.stamp;
       merkeAusschuettung(spieltag(b.stamp), b.stamp, b.amount);
-      state.teamOnlineMs = 0;
-      state.gemeldeteStunde = 0;
-      state.faelligGemeldet = false;
-      state.lastPush.ausschuettung_faellig = 0;
-      await push(`ausschuettung_${b.stamp}`, '💰 Ausschüttung erfolgt',
-        `Betrag: ${fmt(Math.abs(b.amount))}\n${detail}\n` +
-        `Zähler läuft neu: 0 von ${CFG.AUSSCHUETTUNG_STD} Std. Team-Onlinezeit.`,
-        state, 'default');
+      log('Ausschüttung erfasst:', fmt(Math.abs(b.amount)), detail);
       continue;
     }
 
@@ -2023,7 +2038,7 @@ async function durchlauf() {
   await pruefeBetrieb(state);
 
   // --- 6) Ausschüttung ---
-  await pruefeAusschuettung(state);
+  await ausschuettungsBericht(state);
 
   // --- 7) Wiki (höchstens einmal je Intervall) ---
   const wikiGeaendert = await pruefeWiki(state);
@@ -2035,7 +2050,7 @@ async function durchlauf() {
   save(state);
   speichereArchiv();              // schreibt nur, wenn sich ein Tag geändert hat
   log('geprüft', { lager: state.lager, personal: state.personal, kasse: state.kasse,
-                   gewinn: state.gewinn, laeuft, teamOnline: dauer(state.teamOnlineMs),
+                   gewinn: state.gewinn, laeuft, firmaHeute: dauer(state.firmaTagMs),
                    online: members.filter(m => m.online).map(m => m.name) });
 }
 
@@ -2480,7 +2495,7 @@ const BEFEHLE = {
     },
   },
   zeiten: {
-    beschreibung: 'Wer ist online, wie lange war ich da, wie weit ist die Ausschüttung',
+    beschreibung: 'Wer ist online, wie lange war ich heute da',
     oeffentlich: true,
     async ausfuehren({ nutzer }) {
       const st = load();
@@ -2493,18 +2508,10 @@ const BEFEHLE = {
         ? `🟢 **Gerade online (${online.length}):** ${online.join(', ')}`
         : '⚪ **Gerade ist niemand aus der Firma online.**';
 
-      // Der Fortschritt zur Ausschüttung hing früher an einem eigenen Befehl,
-      // stand aber immer schon auch hier. Es ist dieselbe Frage: wie weit ist
-      // das Team.
-      const ziel = CFG.AUSSCHUETTUNG_STD * 3_600_000;
-      const anteil = Math.min(100, Math.round(st.teamOnlineMs / ziel * 100));
-      t += `\n\n**Ausschüttung:** ${dauer(st.teamOnlineMs)} von ` +
-        `${CFG.AUSSCHUETTUNG_STD} Std. (${anteil} %)\n` + balken(anteil) + '\n' +
-        (st.teamOnlineMs >= ziel
-          ? '✅ Ziel erreicht – die Ausschüttung kann gemacht werden.'
-          : `Noch ${dauer(ziel - st.teamOnlineMs)}.`);
-
-      if (st.gewinn !== null) t += `\nGewinn bisher: ${fmt(st.gewinn)}`;
+      // Der 12-Stunden-Zähler ist mit der Balance-Änderung bedeutungslos
+      // geworden: abgeschöpft wird jetzt stündlich, unabhängig von der
+      // Team-Onlinezeit. Was abgeflossen ist, zeigt /ausschuettung.
+      if (st.gewinn !== null) t += `\n\nGewinn bisher: ${fmt(st.gewinn)}`;
       if (st.letzteAusschuettung) {
         t += `\nLetzte Ausschüttung: ` +
           new Date(st.letzteAusschuettung).toLocaleString('de-DE');
@@ -2531,6 +2538,86 @@ const BEFEHLE = {
 
 
 
+
+  ausschuettung: {
+    beschreibung: 'Wie viel Gewinn abgeschöpft wurde – heute, seit dem Neustart, an einem Tag',
+    oeffentlich: true,
+    optionen: [
+      { name: 'tag', description: 'Welcher Kalendertag? Leer = heute und seit dem Neustart',
+        type: 3, required: false, autocomplete: true },
+    ],
+
+    vorschlaege(feld, eingabe) {
+      if (feld !== 'tag') return [];
+      const e = String(eingabe || '').toLowerCase();
+      const heute = budgetTag();
+      const liste = [{ name: `heute (${tagKurz(heute)})`, value: heute }];
+      for (let i = 1; i <= 23; i++) {
+        const t = tagMinus(heute, i);
+        liste.push({ name: i === 1 ? `gestern (${tagKurz(t)})` : tagLang(t), value: t });
+      }
+      return liste
+        .filter(x => !e || x.name.toLowerCase().includes(e) || x.value.includes(e))
+        .slice(0, 25);
+    },
+
+    async ausfuehren({ optionen }) {
+      const deckel = CFG.GEWINN_DECKEL_STD;
+      const fenster = (tag) => {
+        const [j, m, t] = tag.split('-').map(Number);
+        const von = new Date(j, m - 1, t).getTime();
+        return [von, von + 24 * 3_600_000];
+      };
+      const zeile = (z) => `**${fmt(z.summe)}** in ${z.anzahl} ` +
+        `${z.anzahl === 1 ? 'Ausschüttung' : 'Ausschüttungen'}` +
+        (z.anzahl > 1 ? ` · Schnitt ${fmt(z.schnitt)} · größte ${fmt(z.groesste)}` : '');
+
+      // Ein bestimmter Tag
+      if (optionen.tag) {
+        const tag = String(optionen.tag).trim();
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(tag)) {
+          return `❌ \`${tag}\` ist kein Datum. Erwartet wird JJJJ-MM-TT, ` +
+                 'oder du nimmst einen Vorschlag aus der Liste.';
+        }
+        const z = ausschuettungSumme(ausschuettungenIm(...fenster(tag)));
+        if (!z.anzahl) return `_Am ${tagLang(tag)} wurde nichts abgeschöpft._`;
+        return `💸 **Ausschüttungen am ${tagLang(tag)}**\n${zeile(z)}` +
+          (deckel ? `\n\n_Möglich wären höchstens ${fmt(deckel * 24)} am Tag ` +
+                    `(${fmt(deckel)} je Stunde)._` : '');
+      }
+
+      // Ohne Angabe: heute und seit dem Neustart
+      const heute = budgetTag();
+      const h = ausschuettungSumme(ausschuettungenIm(...fenster(heute)));
+      const seit = Date.now() - process.uptime() * 1000;
+      const n = ausschuettungSumme(ausschuettungenIm(seit, Date.now()));
+
+      let t = `💸 **Ausschüttungen**\n\n` +
+        `**Heute** (seit 0 Uhr): ${h.anzahl ? zeile(h) : '_noch nichts_'}\n` +
+        `**Seit dem Neustart** (vor ${dauer(Date.now() - seit)}): ` +
+        (n.anzahl ? zeile(n) : '_noch nichts_');
+
+      if (n.letzte) {
+        t += `\n\nZuletzt ${fmt(n.letzte.betrag)} um ` +
+          `${new Date(n.letzte.stamp).toLocaleTimeString('de-DE').slice(0, 5)} Uhr.`;
+      }
+
+      // Der Deckel ist die Zahl, an der sich alles entscheidet – also dazusagen,
+      // wie weit der Tag von ihm entfernt liegt.
+      if (deckel && h.anzahl) {
+        const moeglich = deckel * 24;
+        t += `\n\n${balken(Math.round(h.summe / moeglich * 100))}\n` +
+          `${fmt(h.summe)} von höchstens ${fmt(moeglich)} am Tag ` +
+          `(${fmt(deckel)} Gewinn je Stunde wird abgeschöpft).`;
+      }
+
+      const archiv = alleTage();
+      if (!archiv.length) {
+        t += '\n\n_Das Archiv ist noch leer – gezählt wird ab jetzt._';
+      }
+      return t;
+    },
+  },
 
   kasse: {
     beschreibung: 'Kasse, Gewinn, Tagesbudget und die letzten Buchungen',
@@ -3096,14 +3183,6 @@ if (args.includes('--archiv')) {
 
 if (args.includes('--ausschuettung')) { console.table(ausschuettungStand(load())); process.exit(0); }
 
-if (args.includes('--ausschuettung-start')) {
-  const s = load();
-  s.teamOnlineMs = 0; s.gemeldeteStunde = 0; s.faelligGemeldet = false;
-  s.firmaTagMs = 0; s.firmaTag = null;
-  s.letzteAusschuettung = Date.now();
-  save(s); console.log('Zähler neu gestartet.'); console.table(ausschuettungStand(s));
-  process.exit(0);
-}
 
 if (args.includes('--betrieb-probe')) {
   const s0 = load(); ladeZugang(s0);
@@ -3338,7 +3417,7 @@ if (args.includes('--einstellungen')) {
   const VORGABEN = [
     ['UC_LAGER_SCHWELLE', '500'], ['UC_LAGER_EINBRUCH_PCT', '15'],
     ['UC_PREIS_SPRUNG_PCT', '20'], ['UC_ERINNERUNG_MIN', '60'],
-    ['UC_AUSSCHUETTUNG_STD', '12'], ['UC_TAGESWECHSEL_STD', '4'],
+    ['UC_GEWINN_DECKEL_STD', '2500'], ['UC_TAGESWECHSEL_STD', '4'],
     ['UC_INTERVALL_MS', '60000'], ['UC_LUECKE_MIN', '10'],
     ['UC_API_WEG_MELDUNG_MIN', '30'], ['UC_WIKI_INTERVALL_STD', '24'],
     ['UC_NOTION_INTERVALL_STD', '168'], ['UC_AUSZAHLUNG_LIMIT', '35000'],
@@ -3416,7 +3495,6 @@ if (args.includes('--einstellungen')) {
 
   console.log('\n═══ Laufender Zustand ═══');
   console.log('  Spieltag:             ' + (st.tag || '—'));
-  console.log('  Team-Onlinezeit:      ' + dauer(st.teamOnlineMs || 0));
   console.log('  Firma gelaufen heute: ' + dauer(st.firmaTagMs || 0));
 
   const k = st.zeitkonto;

@@ -309,6 +309,7 @@ export function ausschuettungSumme(eintraege) {
   const summe = betraege.reduce((a, b) => a + b, 0);
   return {
     anzahl: eintraege.length,
+    betraege,
     summe,
     schnitt: eintraege.length ? Math.round(summe / eintraege.length) : 0,
     groesste: betraege.length ? Math.max(...betraege) : 0,
