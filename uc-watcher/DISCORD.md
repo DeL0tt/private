@@ -181,7 +181,7 @@ Jeder im Server kann benutzen:
 
 | Befehl | Zeigt |
 |---|---|
-| `/firma` | Status, Lager, Personal, wer online ist |
+| `/firma` | Status, Lager, Personal, wer online ist, Kasse und Tagesgewinn |
 | `/lager` | **Beide Bestände:** Firmenlager mit gemessener Reichweite und die Zoohandlung |
 | `/zeiten` | Wer gerade online ist und die eigene Zeit heute |
 | `/kasse` | Tageslimit und Freibetrag, Kasse, Gewinn, letzte Buchungen |
@@ -299,6 +299,14 @@ Seit der Balance-Änderung wird **stündlich** abgeschöpft: alles über
 Die Antwort nennt Summe, Anzahl, Schnitt und die größte – dazu, was die Firma
 behalten durfte, was insgesamt erwirtschaftet wurde und wie viel Prozent
 abgeflossen sind.
+
+**Der Gewinn zählt seit 0 Uhr.** `/firma` und `/kasse` zeigten einmal
+`profitSincePayout` – „Gewinn seit der letzten Ausschüttung". Seit stündlich
+abgeschöpft wird, steht dort nur noch die angebrochene Stunde, und die Zahl war
+als Gewinnanzeige wertlos. Der Tagesgewinn wird stattdessen aus dem Archiv
+zusammengesetzt: was bei jeder Abschöpfung angesammelt war, plus das, was seit
+der letzten dazugekommen ist. Fehlt für eine Abschöpfung die Messung, steht
+„mind." davor.
 
 **Gerechnet wird aus Gemessenem, nicht aus dem Deckel.** Das Kassenbuch kennt
 nur den Abfluss. Der Gewinn, der bis zur Abschöpfung angesammelt war, wird

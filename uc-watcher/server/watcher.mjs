@@ -1086,6 +1086,35 @@ function ausschuettungBilanz(z) {
   };
 }
 
+/**
+ * Der Gewinn des laufenden Kalendertags.
+ *
+ * `profitSincePayout` taugt als Gewinnanzeige nicht mehr: seit stündlich
+ * abgeschöpft wird, steht dort der Gewinn der angebrochenen Stunde, nie mehr.
+ * Der Tagesgewinn ist die Summe aus dem, was bei jeder Abschöpfung angesammelt
+ * war, plus dem, was seit der letzten dazugekommen ist.
+ *
+ * `aktuell` ist der gerade gelesene Stand – aus /firma der frische Wert, sonst
+ * der im Zustand vermerkte.
+ */
+function gewinnHeute(aktuell) {
+  const tag = budgetTag();
+  const [j, m, t] = tag.split('-').map(Number);
+  const von = new Date(j, m - 1, t).getTime();
+  const z = ausschuettungSumme(ausschuettungenIm(von, von + 24 * 3_600_000));
+  const laufend = Number.isFinite(aktuell) ? aktuell : 0;
+  return {
+    summe: z.erwirtschaftet + laufend,
+    laufend,
+    abgeflossen: z.summe,
+    behalten: z.behalten,
+    abschoepfungen: z.anzahl,
+    // Fehlt für eine Abschöpfung die Messung, ist die Summe eine Untergrenze.
+    ohneMessung: z.ohneMessung,
+    tag,
+  };
+}
+
 function ausschuettungStand(state) {
   const heute = budgetTag();
   const [j, m, t] = heute.split('-').map(Number);
@@ -1098,7 +1127,8 @@ function ausschuettungStand(state) {
     'Seit dem Neustart': `${fmt(n.summe)} in ${n.anzahl} (${dauer(Date.now() - seit)})`,
     Letzte: state.letzteAusschuettung
       ? new Date(state.letzteAusschuettung).toLocaleString('de-DE') : 'unbekannt',
-    Gewinn: state.gewinn === null ? '–' : fmt(state.gewinn),
+    'Gewinn dieser Stunde': state.gewinn === null ? '–' : fmt(state.gewinn),
+    'Gewinn heute': fmt(gewinnHeute(state.gewinn).summe),
   };
 }
 
@@ -2582,7 +2612,17 @@ const BEFEHLE = {
         (online.length ? ` (${online.map(m => m.name).join(', ')})` : '');
       if (f.wagesUnpaid) t += '\n⚠️ Die Löhne konnten nicht gezahlt werden.';
       if (f.rentStrikes > 0) t += `\n⚠️ Mietmahnungen: ${f.rentStrikes} von ${f.rentStrikesMax}`;
-      t += `\n\nKasse: ${fmt(f.kasse?.balance)} · Gewinn: ${fmt(f.kasse?.profitSincePayout)}`;
+      // Gewinn seit 0 Uhr, nicht seit der letzten Ausschüttung: abgeschöpft
+      // wird stündlich, dort stünde also immer nur die angebrochene Stunde.
+      const g = gewinnHeute(f.kasse?.profitSincePayout);
+      t += `\n\nKasse: ${fmt(f.kasse?.balance)}\n` +
+        `Gewinn heute (seit 0 Uhr): **${g.ohneMessung ? 'mind. ' : ''}${fmt(g.summe)}**`;
+      if (g.abschoepfungen) {
+        t += `\n_Davon ${fmt(g.abgeflossen)} abgeschöpft, ${fmt(g.behalten)} geblieben` +
+          `${g.laufend ? ` · ${fmt(g.laufend)} in dieser Stunde` : ''}._`;
+      } else if (g.laufend) {
+        t += `\n_Noch nichts abgeschöpft._`;
+      }
       return t;
     },
   },
@@ -2820,7 +2860,12 @@ const BEFEHLE = {
       try {
         const f = await firmaFrisch();
         t += `\n\n**Kasse:** ${fmt(f.kasse?.balance)}\n` +
-          `Gewinn seit der letzten Ausschüttung: ${fmt(f.kasse?.profitSincePayout)}`;
+          `Gewinn heute (seit 0 Uhr): ${(() => {
+            const g = gewinnHeute(f.kasse?.profitSincePayout);
+            return `${g.ohneMessung ? 'mind. ' : ''}${fmt(g.summe)}` +
+              (g.abschoepfungen ? ` · davon ${fmt(g.abgeflossen)} abgeschöpft` : '') +
+              (g.laufend ? ` · ${fmt(g.laufend)} in dieser Stunde` : '');
+          })()}`;
         try {
           const l = await ledgerFrisch(f.id);
           const letzte = (l.entries || []).slice(-5).reverse()
@@ -3945,7 +3990,8 @@ if (args.includes('--test')) {
     console.log('Lager:      ', f.stock.total, '/', f.stock.capacity);
     console.log('Personal:   ', f.employees.length, '/', f.maxEmployees);
     console.log('Firmenkasse:', fmt(f.kasse.balance));
-    console.log('Gewinn:     ', fmt(f.kasse.profitSincePayout));
+    console.log('Gewinn Std.:', fmt(f.kasse.profitSincePayout));
+    console.log('Gewinn heute:', fmt(gewinnHeute(f.kasse.profitSincePayout).summe));
     console.log('Team:       ', f.members.length, '/', f.maxMembers);
     console.table(f.members.map(m => ({ Name: m.name, Rolle: m.roleName, Online: m.online ? '🟢' : '⚪' })));
     const l = await holeLedger(f.id);

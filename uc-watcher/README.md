@@ -304,7 +304,7 @@ Was daraus direkt kommt — nichts davon muss geraten werden:
 | `employees[]` / `maxEmployees` | Personal (NPCs) |
 | `members[].online` | welcher **Spieler** gerade online ist |
 | `kasse.balance` | Firmenkasse |
-| `kasse.profitSincePayout` | Gewinn seit Ausschüttung |
+| `kasse.profitSincePayout` | Gewinn seit der letzten Abschöpfung – also nur die angebrochene Stunde |
 | `event`, `wagesUnpaid`, `rentStrikes` | Vorfälle und Notlagen |
 
 Dazu das Kassenbuch (`/api/panel/company/ledger`). Dessen `category` macht die
