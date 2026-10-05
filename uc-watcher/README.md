@@ -194,8 +194,10 @@ wieder weg — eine Meldung je Vorgang wären 24 am Tag. Stattdessen:
 58.400 $ sind gestern abgeflossen – in 24 Ausschüttungen.
 Im Schnitt 2.433 $, die größte 2.500 $.
 
+Vom Tageslimit von 50.000 $ sind damit 100 % gelaufen.
+
 Das ist Gewinn, den die Firma erwirtschaftet und wieder abgegeben hat.
-Abgeschöpft wird alles über 2.500 $ Gewinn je Stunde (60.000 $ am Tag).
+Nachkommen kann höchstens 2.500 $ Gewinn je Stunde.
 ```
 
 **Auf Abruf** jederzeit, im Discord mit `/ausschuettung` oder auf dem Server:
@@ -207,7 +209,8 @@ node watcher.mjs --ausschuettung
 ```
 Heute                24.500 $ in 10
 Davon je Stunde       2.450 $
-Möglich am Tag       60.000 $ (2.500 $/Std.)
+Tageslimit           50.000 $ (noch 25.500 $)
+Gewinn-Deckel         2.500 $/Std.
 Seit dem Neustart    91.200 $ in 38 (2 Tage)
 ```
 

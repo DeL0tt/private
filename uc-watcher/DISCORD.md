@@ -297,7 +297,11 @@ Seit der Balance-Änderung wird **stündlich** abgeschöpft: alles über
 ```
 
 Die Antwort nennt Summe, Anzahl, Schnitt und die größte, dazu einen Balken
-gegen den Tagesdeckel von 60.000 $ (2.500 × 24).
+gegen das **Tageslimit von 50.000 $**. Gemessen wird die Ausschüttung selbst –
+brutto, also was die Kasse verlässt, nicht was nach Steuer und Gebühr ankommt.
+
+Der Gewinn-Deckel von 2.500 $ je Stunde ist eine andere Achse: er sagt, wie
+schnell oben nachwächst, was unten raus darf, und ist keine Tagesgrenze.
 
 **Um 0 Uhr** kommt der Tagesbericht nach `#benachrichtigung`: wie viel am
 abgelaufenen Tag abgeflossen ist. Das ist Gewinn, den die Firma erwirtschaftet
@@ -308,7 +312,8 @@ unter **Ausschüttungen: Tagesbericht um 0 Uhr**.
 
 ### Das Tagesbudget in `/kasse`
 
-Gehälter und Auszahlungen zehren an einem gemeinsamen Topf von 35.000$ je Tag.
+Ausschüttungen, Gehälter und Auszahlungen zehren an einem gemeinsamen Topf von
+50.000 $ je Tag; die ersten 20.000 $ davon sind steuerfrei.
 `/kasse` zeigt, wie viel davon noch frei ist – und zwar allen. Die
 Firmenzahlen im selben Befehl (Kassenstand, Gewinn, Buchungen) hängen weiter am
 Zahlen-Schalter, es geht also niemandem etwas verloren, wenn du ihn zudrehst.
@@ -316,19 +321,20 @@ Zahlen-Schalter, es geht also niemandem etwas verloren, wenn du ihn zudrehst.
 Der Topf setzt sich **um Mitternacht** zurück. Das ist bewusst etwas anderes
 als der Spieltag des Watchers, der um 04:00 wechselt – Onlinezeiten und
 Tagesbericht richten sich nach dem, das Budget nicht. Deshalb nennt der
-Tagesbericht beim Freibetrag ausdrücklich das Datum und „0–24 Uhr": die Zahl
+Tagesbericht beim Tageslimit ausdrücklich das Datum und „0–24 Uhr": die Zahl
 gehört zum Kalendertag, nicht zum Spieltag des Berichts.
 
-Gezählt wird eine Buchung, deren **Kategorie** `auszahlung` oder `gehalt`
-enthält. Sie wird übergangen, wenn **Kategorie oder Buchungstext** eines der
-Ausnahmewörter enthält. Voreingestellt sind:
+Gezählt wird eine Buchung, deren **Kategorie** `auszahlung`, `gehalt`,
+`ausschütt` oder `ausschuett` enthält. Sie wird übergangen, wenn **Kategorie
+oder Buchungstext** eines der Ausnahmewörter enthält. Voreingestellt sind nur:
 
-- `ausschütt`, `ausschuett` – eine Ausschüttung wird an die Mitglieder
-  verteilt und kann als „Auszahlung" im Kassenbuch stehen, mit der
-  Ausschüttung nur im Text. Sie ist ein eigenes Verfahren und zehrt nicht am
-  Freibetrag.
 - `löhne`, `loehne`, `lohn`, `npc` – die Kosten der NPCs, kein Geld, das sich
   jemand auszahlt.
+
+Die Ausschüttung stand hier einmal als Ausnahme. Das war falsch: sie ist genau
+das, was das Tageslimit misst, und fehlte damit als größter Posten in der
+Summe. Steht sie als „Auszahlung" im Kassenbuch mit der Ausschüttung nur im
+Text, zählt sie trotzdem – geprüft wird auch der Buchungstext.
 
 ### Wenn die Summe nicht stimmt
 

@@ -111,7 +111,7 @@ cd ~/private/uc-watcher/server
 | `node --env-file=.env watcher.mjs --woche` | Letzte 7 Spieltage je Spieler, mit Vergleich zur Woche davor (`--woche 30` für 30 Tage) |
 | `node --env-file=.env watcher.mjs --archiv` | Welche Spieltage im Archiv liegen |
 | `node --env-file=.env watcher.mjs --einstellungen` | Alle Werte, dazu das **Zeitkonto**: wohin jede Minute des Spieltags ging |
-| `node --env-file=.env watcher.mjs --freibetrag` | Welche Buchungen gegen die 35.000$ gezählt haben – und welche nicht, mit Grund |
+| `node --env-file=.env watcher.mjs --freibetrag` | Welche Buchungen gegen das Tageslimit gezählt haben – und welche nicht, mit Grund |
 | `node --env-file=.env watcher.mjs --ausschuettung` | Was heute und seit dem Neustart abgeschöpft wurde |
 | `node --env-file=.env watcher.mjs --notion` | Wiki-/Notion-Abgleich sofort, mit Titelliste |
 | `node --env-file=.env watcher.mjs --wiki-probe` | Wiki-API abklopfen (nur zum Erkunden) |

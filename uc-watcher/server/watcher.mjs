@@ -143,27 +143,32 @@ const VORFALL_KATEGORIEN = [
   'einbruch', 'diebstahl', 'strafe', 'bußgeld', 'bussgeld', 'sabotage',
 ];
 
-// Was aus dem 35.000$-Topf für Auszahlungen und Gehälter genommen wird.
-// Löhne stehen bewusst nicht dabei: das sind die NPC-Kosten der Firma, kein
-// Geld, das sich ein Mitarbeiter auszahlt.
+// Was gegen das Tageslimit zählt. Gemessen wird am ausgezahlten Betrag –
+// brutto, also an dem, was die Kasse verlässt, nicht an dem, was nach Steuer
+// und Gebühr beim Empfänger ankommt.
+//
+// Ausschüttungen gehören dazu: sie sind der Hauptweg, auf dem Geld die Firma
+// verlässt, und zehren am selben Limit. Löhne stehen bewusst nicht dabei –
+// das sind die NPC-Kosten der Firma, kein Geld, das sich jemand auszahlt.
 const AUSZAHLUNG_KATEGORIEN =
-  (process.env.UC_AUSZAHLUNG_KATEGORIEN || 'auszahlung,gehalt')
+  (process.env.UC_AUSZAHLUNG_KATEGORIEN || 'auszahlung,gehalt,ausschütt,ausschuett')
     .split(',').map(w => w.trim().toLowerCase()).filter(Boolean);
 
 // Was trotz passender Kategorie NICHT gegen den Freibetrag zählt.
 //
-// Eine Ausschüttung wird an die Mitglieder verteilt, und je nachdem, wie das
-// Spiel das verbucht, steht dann eine Zeile mit der Kategorie „Auszahlung" im
-// Kassenbuch – mit der Ausschüttung nur im Text. Ebenso sind Löhne die Kosten
-// der NPCs, kein Geld, das sich jemand auszahlt. Geprüft wird deshalb auch der
-// Buchungstext, nicht nur die Kategorie.
+// Löhne sind die Kosten der NPCs, kein Geld, das sich jemand auszahlt – die
+// zählen nicht mit. Geprüft wird auch der Buchungstext, nicht nur die
+// Kategorie: das Spiel verbucht manches als „Auszahlung" und sagt erst im
+// Text, worum es ging.
+//
+// „ausschütt" stand hier einmal drin. Das war falsch: die Ausschüttung ist
+// genau das, was das Tageslimit misst.
 const AUSZAHLUNG_AUSNAHMEN =
-  (process.env.UC_AUSZAHLUNG_AUSNAHMEN ||
-   'ausschütt,ausschuett,löhne,loehne,lohn,npc')
+  (process.env.UC_AUSZAHLUNG_AUSNAHMEN || 'löhne,loehne,lohn,npc')
     .split(',').map(w => w.trim().toLowerCase()).filter(Boolean);
 
 /**
- * Zählt diese Buchung gegen den Freibetrag von 35.000$?
+ * Zählt diese Buchung gegen das Tageslimit?
  * Gibt den Grund mit zurück, damit /gehalt und der Tagesbericht belegen
  * können, was gezählt wurde – und was nicht.
  */
@@ -850,14 +855,26 @@ function freibetragText(state) {
   // von 04:00 bis 04:00 – ohne das Datum liest man die Zahl als die des
   // Spieltags und vergleicht Äpfel mit Birnen.
   const wann = g.tag ? ` (${tagKurz(g.tag)} 0–24 Uhr)` : '';
-  let t = `\n\n**Freibetrag${wann}:** ${fmt(g.genutzt)} von ${fmt(limit)} genutzt`;
+  // Zwei verschiedene Grenzen, und sie hießen hier einmal beide „Freibetrag".
+  // Das Tageslimit sagt, wie viel überhaupt raus darf; der Freibetrag, wie
+  // viel davon steuerfrei bleibt. Beide messen die Ausschüttung selbst –
+  // brutto, nicht das, was nach Steuer und Gebühr ankommt.
+  let t = `\n\n**Tageslimit${wann}:** ${fmt(g.genutzt)} von ${fmt(limit)} genutzt`;
 
   if (rest > 0) {
     t += `\n💸 ${fmt(rest)} nicht ausgezahlt – für diesen Tag verfallen.`;
   } else if (rest < 0) {
-    t += `\n⚠️ ${fmt(-rest)} über dem Freibetrag.`;
+    t += `\n⚠️ ${fmt(-rest)} über dem Tageslimit.`;
   } else {
     t += '\n✅ Genau ausgeschöpft.';
+  }
+
+  const frei = CFG.AUSZAHLUNG_FREI;
+  if (frei) {
+    t += g.genutzt <= frei
+      ? `\n💶 Freibetrag: ${fmt(g.genutzt)} von ${fmt(frei)} – alles steuerfrei.`
+      : `\n💶 Freibetrag: ${fmt(frei)} ausgeschöpft, ` +
+        `${fmt(g.genutzt - frei)} davon versteuert.`;
   }
   return t;
 }
@@ -1041,11 +1058,13 @@ function ausschuettungStand(state) {
   const z = ausschuettungSumme(ausschuettungenIm(von, von + 24 * 3_600_000));
   const seit = Date.now() - process.uptime() * 1000;
   const n = ausschuettungSumme(ausschuettungenIm(seit, Date.now()));
-  const moeglich = CFG.GEWINN_DECKEL_STD * 24;
   return {
     Heute: `${fmt(z.summe)} in ${z.anzahl}`,
     'Davon je Stunde': z.anzahl ? fmt(z.schnitt) : '–',
-    'Möglich am Tag': `${fmt(moeglich)} (${fmt(CFG.GEWINN_DECKEL_STD)}/Std.)`,
+    // Die Grenze ist das Tageslimit, nicht der Stundendeckel × 24. Der Deckel
+    // sagt nur, wie schnell oben nachkommt, was unten raus darf.
+    Tageslimit: `${fmt(CFG.AUSZAHLUNG_LIMIT)} (noch ${fmt(Math.max(0, CFG.AUSZAHLUNG_LIMIT - z.summe))})`,
+    'Gewinn-Deckel': `${fmt(CFG.GEWINN_DECKEL_STD)}/Std.`,
     'Seit dem Neustart': `${fmt(n.summe)} in ${n.anzahl} (${dauer(Date.now() - seit)})`,
     Letzte: state.letzteAusschuettung
       ? new Date(state.letzteAusschuettung).toLocaleString('de-DE') : 'unbekannt',
@@ -1241,15 +1260,21 @@ async function ausschuettungsBericht(state) {
   // sagen, wie viele Stunden am Deckel gelaufen sein müssen.
   const deckel = CFG.GEWINN_DECKEL_STD;
   const amDeckel = deckel ? z.betraege?.filter?.(x => x >= deckel).length : 0;
+  const limit = CFG.AUSZAHLUNG_LIMIT;
 
   await push(`ausschuettung_tag_${vorbei}`, `💸 Ausschüttungen ${tagKurz(vorbei)}`,
     `**${fmt(z.summe)}** sind gestern abgeflossen – in ${z.anzahl} ` +
     `${z.anzahl === 1 ? 'Ausschüttung' : 'Ausschüttungen'}.\n` +
     `Im Schnitt ${fmt(z.schnitt)}, die größte ${fmt(z.groesste)}.\n\n` +
-    `_Das ist Gewinn, den die Firma erwirtschaftet und wieder abgegeben hat._` +
+    (limit
+      ? `Vom Tageslimit von ${fmt(limit)} sind damit ` +
+        `${Math.round(z.summe / limit * 100)} % gelaufen` +
+        (z.summe < limit ? ` – ${fmt(limit - z.summe)} blieben ungenutzt und sind verfallen.` : '.') + '\n'
+      : '') +
+    `\n_Das ist Gewinn, den die Firma erwirtschaftet und wieder abgegeben hat._` +
     (deckel
-      ? `\n_Abgeschöpft wird alles über ${fmt(deckel)} Gewinn je Stunde ` +
-        `(${fmt(deckel * 24)} am Tag).${amDeckel ? ` ${amDeckel} Stunden lagen auf oder über der Grenze.` : ''}_`
+      ? `\n_Nachkommen kann höchstens ${fmt(deckel)} Gewinn je Stunde.` +
+        `${amDeckel ? ` ${amDeckel} Ausschüttungen lagen auf oder über dieser Grenze.` : ''}_`
       : ''),
     state, 'low');
 }
@@ -1717,7 +1742,8 @@ async function werteBuchungenAus(state, buchungen) {
       state.letzteAusschuettung = b.stamp;
       merkeAusschuettung(spieltag(b.stamp), b.stamp, b.amount);
       log('Ausschüttung erfasst:', fmt(Math.abs(b.amount)), detail);
-      continue;
+      // Kein `continue`: die Ausschüttung zehrt am Tageslimit wie jede andere
+      // Auszahlung. Die Zählung weiter unten übernimmt sie.
     }
 
     // Eindeutige Vorfälle
@@ -1736,8 +1762,8 @@ async function werteBuchungenAus(state, buchungen) {
       log('Einkauf gesehen:', fmt(b.amount));
     }
 
-    // Gehälter und Auszahlungen zehren am 35k-Topf – mitzählen, solange die
-    // Buchung vorbeikommt. Das Kassenbuch liefert nur die letzten Einträge,
+    // Ausschüttungen, Gehälter und Auszahlungen zehren am Tageslimit –
+    // mitzählen, solange die Buchung vorbeikommt. Das Kassenbuch liefert nur die letzten Einträge,
     // deshalb wird summiert statt später nachgerechnet.
     const wertung = zaehltGegenFreibetrag(kat, detail);
     if (wertung.grund !== 'andere Kategorie') {
@@ -2563,6 +2589,7 @@ const BEFEHLE = {
 
     async ausfuehren({ optionen }) {
       const deckel = CFG.GEWINN_DECKEL_STD;
+      const limit = CFG.AUSZAHLUNG_LIMIT;
       const fenster = (tag) => {
         const [j, m, t] = tag.split('-').map(Number);
         const von = new Date(j, m - 1, t).getTime();
@@ -2582,8 +2609,11 @@ const BEFEHLE = {
         const z = ausschuettungSumme(ausschuettungenIm(...fenster(tag)));
         if (!z.anzahl) return `_Am ${tagLang(tag)} wurde nichts abgeschöpft._`;
         return `💸 **Ausschüttungen am ${tagLang(tag)}**\n${zeile(z)}` +
-          (deckel ? `\n\n_Möglich wären höchstens ${fmt(deckel * 24)} am Tag ` +
-                    `(${fmt(deckel)} je Stunde)._` : '');
+          (limit
+            ? `\n\n${balken(Math.round(z.summe / limit * 100))}\n` +
+              `${fmt(z.summe)} von ${fmt(limit)} Tageslimit` +
+              (z.summe < limit ? ` – ${fmt(limit - z.summe)} verfallen.` : '.')
+            : '');
       }
 
       // Ohne Angabe: heute und seit dem Neustart
@@ -2602,13 +2632,17 @@ const BEFEHLE = {
           `${new Date(n.letzte.stamp).toLocaleTimeString('de-DE').slice(0, 5)} Uhr.`;
       }
 
-      // Der Deckel ist die Zahl, an der sich alles entscheidet – also dazusagen,
-      // wie weit der Tag von ihm entfernt liegt.
-      if (deckel && h.anzahl) {
-        const moeglich = deckel * 24;
-        t += `\n\n${balken(Math.round(h.summe / moeglich * 100))}\n` +
-          `${fmt(h.summe)} von höchstens ${fmt(moeglich)} am Tag ` +
-          `(${fmt(deckel)} Gewinn je Stunde wird abgeschöpft).`;
+      // Die Grenze, an der sich alles entscheidet, ist das Tageslimit: es
+      // misst die Ausschüttung selbst – brutto, nicht was nach Steuer und
+      // Gebühr übrig bleibt. Der Stundendeckel ist eine andere Achse: er sagt,
+      // wie schnell oben nachwächst, was unten raus darf.
+      if (limit) {
+        t += `\n\n${balken(Math.round(h.summe / limit * 100))}\n` +
+          `${fmt(h.summe)} von ${fmt(limit)} Tageslimit – noch ` +
+          `${fmt(Math.max(0, limit - h.summe))} frei.`;
+        if (deckel) {
+          t += `\n_Nachkommen kann höchstens ${fmt(deckel)} Gewinn je Stunde._`;
+        }
       }
 
       const archiv = alleTage();
