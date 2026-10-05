@@ -328,6 +328,41 @@ export function ausschuettungenIm(von, bis) {
 
 /** Summe, Anzahl, Schnitt und die größte – für die Berichte. */
 /**
+ * Einmalige Korrektur der Alt-Einträge.
+ *
+ * Bis zur Vorzeichen-Korrektur hat merkeAusschuettung() jeden Betrag mit
+ * Math.abs() positiv gespeichert. Diese Einträge sehen nun wie Gutschriften
+ * aus, waren aber Abflüsse. Erkennbar sind sie daran, dass ihnen der
+ * Kassenstand fehlt – den schreibt erst die neue Fassung mit.
+ *
+ * `schreiben: false` rechnet nur durch und ändert nichts.
+ */
+export function vorzeichenKorrektur({ schreiben = false } = {}) {
+  const archiv = ladeArchiv();
+  const betroffen = [];
+
+  for (const [tag, eintrag] of Object.entries(archiv.tage || {})) {
+    for (const a of eintrag.ausschuettungen || []) {
+      // Nur Alt-Einträge: positiv und ohne Kassenstand.
+      if ((a.betrag || 0) > 0 && !Number.isFinite(a.kassenstand)) {
+        betroffen.push({ tag, stamp: a.stamp, vorher: a.betrag });
+        if (schreiben) a.betrag = -a.betrag;
+      }
+    }
+  }
+
+  // ladeArchiv() gibt den gehaltenen Stand selbst zurück – oben wurde also
+  // bereits darin geändert, speichereArchiv() schreibt genau das.
+  if (schreiben && betroffen.length) speichereArchiv();
+  return {
+    anzahl: betroffen.length,
+    summe: betroffen.reduce((n, x) => n + x.vorher, 0),
+    eintraege: betroffen,
+    geschrieben: schreiben && betroffen.length > 0,
+  };
+}
+
+/**
  * Die beiden Richtungen einer Ausschüttung getrennt auswerten.
  *
  * `behalten`    was der Firma zugeflossen ist (positive Buchungen)

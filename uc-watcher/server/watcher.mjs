@@ -14,7 +14,7 @@ import { discordAktiv, discordSende, discordStart, discordStop, empfaenger,
 import { merkeZeiten, merkeAusschuettung, merkeAuszahlung, speichereArchiv,
          ladeArchiv, holeTag, holeTage, letzteTage, alleTage, tagMinus,
          summiere, vergleich, anteile, archivDatei, archivAktiv,
-         ausschuettungenIm, ausschuettungSumme } from './archiv.mjs';
+         ausschuettungenIm, ausschuettungSumme, vorzeichenKorrektur } from './archiv.mjs';
 
 /* ========================= KONFIGURATION ========================= */
 
@@ -3285,9 +3285,39 @@ if (args.includes('--ausschuettung-liste')) {
 // Das rohe Kassenbuch, nach Kategorie gruppiert. Zeigt, unter welchem Namen
 // das Spiel die stündliche Abschöpfung wirklich verbucht – und was der
 // Watcher daraus macht.
+// Einmalige Korrektur der Alt-Einträge: bis zur Vorzeichen-Korrektur wurde
+// jeder Betrag positiv gespeichert. Ohne --ja wird nur gerechnet.
+if (args.includes('--archiv-vorzeichen')) {
+  const schreiben = args.includes('--ja');
+  const r = vorzeichenKorrektur({ schreiben });
+  if (!r.anzahl) {
+    console.log('Keine Alt-Einträge gefunden – es gibt nichts zu korrigieren.');
+    process.exit(0);
+  }
+  console.log(`${r.anzahl} Einträge aus der Zeit vor der Korrektur ` +
+              `(positiv gespeichert, ohne Kassenstand), zusammen ${fmt(r.summe)}:`);
+  console.table(r.eintraege.map(x => ({
+    Tag: x.tag,
+    Uhrzeit: new Date(x.stamp).toLocaleTimeString('de-DE'),
+    Bisher: fmt(x.vorher),
+    Neu: fmt(-x.vorher),
+  })));
+  console.log(r.geschrieben
+    ? '\n✅ Geschrieben. Die Einträge zählen jetzt als Abfluss.'
+    : '\nNichts geändert. Mit --ja wird geschrieben:\n' +
+      '  node --env-file=.env watcher.mjs --archiv-vorzeichen --ja');
+  process.exit(0);
+}
+
 if (args.includes('--buchungen')) {
   try {
+    // Den gespeicherten Zugang laden, nicht nur die Umgebung lesen: der Dienst
+    // bekommt sein Cookie aus der Unit, nicht aus .env – ohne das hier scheitert
+    // jeder Abruf von der Kommandozeile mit KEIN_COOKIE, obwohl der Watcher
+    // läuft.
+    const s0 = load(); ladeZugang(s0);
     const f = (await holeFirma()).company;
+    sichereZugang(s0); save(s0);
     const l = await holeLedger(f.id);
     const alle = (l.entries || []).slice().sort((a, b) => a.stamp - b.stamp);
     console.log(`Kassenbuch der Firma ${f.name}: ${alle.length} Buchungen\n`);
