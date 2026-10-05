@@ -160,16 +160,16 @@ export function merkeZeiten(tag, spieler, firmaMs) {
  * Kassenbuch ihn mitliefert. Er wird nur mitgeschrieben, nicht gedeutet.
  */
 export function merkeAusschuettung(tag, stamp, betrag, kassenstand = null,
-                                   behalten = null) {
+                                   gewinnVorher = null) {
   if (CFG.AUS || !tag) return;
   const eintrag = tagEintrag(tag);
   if (eintrag.ausschuettungen.some(a => a.stamp === stamp)) return;
   const eintragNeu = { stamp, betrag: betrag || 0 };
   if (Number.isFinite(kassenstand)) eintragNeu.kassenstand = kassenstand;
-  // Was nach der Abschöpfung an Gewinn stehen blieb – der Betrag, den die
-  // Firma behalten durfte. Im Kassenbuch steht er nicht, deshalb wird er beim
-  // Durchlauf unmittelbar danach gemessen und hier mitgeschrieben.
-  if (Number.isFinite(behalten)) eintragNeu.behalten = behalten;
+  // Der Gewinn, der bis zur Abschöpfung angesammelt war. Gemessen vor der
+  // Buchung, nicht danach: der Stand danach verrät nur den Rest, und aus ihm
+  // auf den Deckel zu schließen war falsch – angesammelt war mehr.
+  if (Number.isFinite(gewinnVorher)) eintragNeu.gewinnVorher = gewinnVorher;
   eintrag.ausschuettungen.push(eintragNeu);
   setzeTag(tag, eintrag);
 }
@@ -383,22 +383,29 @@ export function ausschuettungSumme(eintraege) {
   const zu  = eintraege.filter(a => (a.betrag || 0) > 0);
   const ab  = eintraege.filter(a => (a.betrag || 0) < 0);
 
-  // Was die Firma behalten durfte, kommt aus zwei möglichen Quellen:
-  //
-  //   • einer Gutschrift im Kassenbuch (positive Buchung) – gibt es bei der
-  //     reinen Abschöpfung nicht, das Kassenbuch kennt dort nur den Abfluss
-  //   • dem Gewinnstand unmittelbar nach der Abschöpfung, beim Durchlauf
-  //     danach gemessen und am Eintrag vermerkt
-  //
-  // Beides zählt, nie dasselbe doppelt: ein Eintrag mit gemessenem Wert zählt
-  // über diesen, eine Gutschrift über ihren Betrag.
-  const gemessen = ab.filter(a => Number.isFinite(a.behalten));
-  const behalten = zu.reduce((n, a) => n + a.betrag, 0) +
-                   gemessen.reduce((n, a) => n + a.behalten, 0);
-  const behaltenJe = [...zu.map(a => a.betrag), ...gemessen.map(a => a.behalten)];
-
   const abgefuehrt = ab.reduce((n, a) => n - a.betrag, 0);
-  const erwirtschaftet = behalten + abgefuehrt;
+
+  // Gerechnet wird aus dem, was gemessen wurde, nicht aus dem Deckel:
+  //
+  //   gewinnVorher  der Gewinn, der bis zur Abschöpfung angesammelt war
+  //   betrag        was davon abgeschöpft wurde (steht im Kassenbuch)
+  //   behalten      die Differenz – was der Firma geblieben ist
+  //
+  // Sie fällt je Abschöpfung verschieden aus, und sie ist nicht der Deckel:
+  // angesammelt war regelmäßig mehr. Deshalb wird nichts unterstellt.
+  const gemessen = ab.filter(a => Number.isFinite(a.gewinnVorher));
+  const behaltenJe = [
+    ...zu.map(a => a.betrag),
+    ...gemessen.map(a => Math.max(0, a.gewinnVorher + a.betrag)),  // betrag < 0
+  ];
+  const behalten = behaltenJe.reduce((n, x) => n + x, 0);
+
+  // Das Erwirtschaftete aus den Messungen, für die nicht gemessenen
+  // Abschöpfungen mindestens ihr Abfluss. Damit ist die Zahl eine Untergrenze
+  // und nie zu hoch.
+  const erwirtschaftet = gemessen.reduce((n, a) => n + a.gewinnVorher, 0) +
+    ab.filter(a => !Number.isFinite(a.gewinnVorher)).reduce((n, a) => n - a.betrag, 0) +
+    zu.reduce((n, a) => n + a.betrag, 0);
 
   // Für die Abflussseite weiter die bisherigen Felder, damit die Anzeige
   // nicht an zwei Stellen rechnen muss.
@@ -417,9 +424,14 @@ export function ausschuettungSumme(eintraege) {
     behaltenAnzahl: behaltenJe.length,
     behaltenJe,
     behaltenSchnitt: behaltenJe.length ? Math.round(behalten / behaltenJe.length) : 0,
-    // Für wie viele Abschöpfungen der behaltene Betrag fehlt – ohne das liest
-    // sich eine Lücke in der Messung wie ein Tag ohne Gewinn.
+    // Für wie viele Abschöpfungen die Messung fehlt. Ohne diese Angabe liest
+    // sich eine Lücke wie ein Tag ohne Gewinn – dabei fehlt nur die Zahl.
     ohneMessung: ab.length - gemessen.length,
+    gemessenAnzahl: gemessen.length,
+    // Der höchste angesammelte Gewinn einer einzelnen Abschöpfung. Die Zahl,
+    // an der sich ablesen lässt, wie weit über dem Deckel produziert wurde.
+    gewinnHoechst: gemessen.length ? Math.max(...gemessen.map(a => a.gewinnVorher)) : 0,
+    gewinnNiedrigst: gemessen.length ? Math.min(...gemessen.map(a => a.gewinnVorher)) : 0,
     erwirtschaftet,
     // Wie viel vom Erwirtschafteten abgeflossen ist. Die Zahl, an der sich
     // entscheidet, ob mehr Produktion überhaupt noch etwas bringt.

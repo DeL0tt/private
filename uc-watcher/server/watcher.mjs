@@ -211,6 +211,11 @@ const info = (...a) => console.log(new Date().toISOString(), ...a);
 const leer = () => ({
   token: null, tokenExp: 0, cookie: null,   // Zugang, überlebt Neustarts
   lager: null, personal: null, kasse: null, gewinn: null,
+  // Die letzten Gewinnstände mit Zeitstempel. Gebraucht, um bei einer
+  // Abschöpfung den Stand von *vorher* zu kennen: das ist der Gewinn, der
+  // wirklich angesammelt war. Der Stand danach sagt es nicht – er verrät nur
+  // den Rest, und die Annahme „der Rest ist der Deckel" war falsch.
+  gewinnVerlauf: [],
   spieler: {},            // name -> { online, seit, sitzungMs, gesamtMs, zuletzt, tag }
   tag: null,                 // laufender Spieltag (wechselt um 04:00)
   ausschuettungTag: null,   // Kalendertag des letzten Ausschüttungsberichts
@@ -1067,14 +1072,17 @@ function rechenlast() {
  */
 function ausschuettungBilanz(z) {
   const deckel = CFG.GEWINN_DECKEL_STD;
-  const soll = deckel ? z.anzahl * deckel : 0;
   return {
-    Erwirtschaftet: fmt(z.erwirtschaftet),
+    Erwirtschaftet: (z.ohneMessung ? 'min. ' : '') + fmt(z.erwirtschaftet),
     Behalten: `${fmt(z.behalten)} in ${z.behaltenAnzahl}`,
     Abgeschoepft: `${fmt(z.summe)} in ${z.anzahl}`,
     Abgeflossen: z.erwirtschaftet ? `${Math.round(z.anteilAb * 100)} %` : '–',
-    'Soll laut Deckel': soll ? `${fmt(soll)} (${fmt(deckel)}/Std.)` : '–',
-    'Ueber dem Soll': soll ? fmt(z.erwirtschaftet - soll) : '–',
+    'Gewinn je Stunde': z.gemessenAnzahl
+      ? `${fmt(z.gewinnNiedrigst)} bis ${fmt(z.gewinnHoechst)}` : 'nicht gemessen',
+    'Deckel': `${fmt(deckel)}/Std.`,
+    'Schwaechste vs. Deckel': z.gemessenAnzahl
+      ? `${(z.gewinnNiedrigst / deckel).toFixed(1)}x` : '–',
+    'Ohne Messung': z.ohneMessung || '–',
   };
 }
 
@@ -1280,23 +1288,28 @@ async function ausschuettungsBericht(state) {
 
   const deckel = CFG.GEWINN_DECKEL_STD;
 
-  const soll = deckel ? z.anzahl * deckel : 0;
-  const ueber = soll ? z.erwirtschaftet - soll : 0;
-
   await push(`ausschuettung_tag_${vorbei}`, `💸 Ausschüttungen ${tagKurz(vorbei)}`,
-    `Gestern erwirtschaftet: **${fmt(z.erwirtschaftet)}**\n` +
-    `Behalten durfte die Firma **${fmt(z.behalten)}**` +
-    (z.behaltenAnzahl ? ` in ${z.behaltenAnzahl} Gutschriften` : '') + '\n' +
+    `Gestern erwirtschaftet: **${z.ohneMessung ? 'mindestens ' : ''}` +
+    `${fmt(z.erwirtschaftet)}**\n` +
+    `Behalten durfte die Firma **${fmt(z.behalten)}**\n` +
     `Abgeflossen **${fmt(z.summe)}** in ${z.anzahl} ` +
     `${z.anzahl === 1 ? 'Abschöpfung' : 'Abschöpfungen'} – ` +
     `**${Math.round(z.anteilAb * 100)} %** vom Gewinn.\n` +
     (z.anzahl > 1 ? `Im Schnitt ${fmt(z.schnitt)}, die größte ${fmt(z.groesste)}.\n` : '') +
-    (ueber > 0
-      ? `\n⚠️ **${fmt(ueber)} über dem Soll.** Vorgesehen sind ${fmt(deckel)} ` +
-        `je Stunde, also ${fmt(soll)} – erwirtschaftet wurde das ` +
-        `${(z.erwirtschaftet / soll).toFixed(1).replace('.', ',')}-fache.\n` +
-        `_Dieser Teil der Produktion bringt niemandem etwas._`
-      : soll ? `\n_Vorgesehen wären ${fmt(soll)} – nicht ausgereizt._` : ''),
+    (z.ohneMessung
+      ? `_Für ${z.ohneMessung} von ${z.anzahl} Abschöpfungen fehlt der ` +
+        `gemessene Gewinn – tatsächlich war es mehr._\n`
+      : '') +
+    (deckel && z.gemessenAnzahl
+      ? `\n**Gewinn je Abschöpfung:** ${fmt(z.gewinnNiedrigst)} bis ` +
+        `${fmt(z.gewinnHoechst)}, erlaubt sind ${fmt(deckel)}.\n` +
+        (z.gewinnNiedrigst > deckel
+          ? `⚠️ Auch die schwächste Abschöpfung lag beim ` +
+            `${String(Math.round(z.gewinnNiedrigst / deckel * 10) / 10).replace('.', ',')}-fachen ` +
+            `des Deckels. ${Math.round((1 - deckel / z.gewinnNiedrigst) * 100)} % der ` +
+            `Produktion bringen niemandem etwas.`
+          : `_Die schwächste lag unter dem Deckel._`)
+      : ''),
     state, 'low');
 }
 
@@ -1745,6 +1758,29 @@ function neueBuchungen(state, ledger) {
   return alle;
 }
 
+/**
+ * Der Gewinnstand, wie er unmittelbar **vor** einem Zeitpunkt gemessen wurde.
+ *
+ * Das ist die Zahl, die zählt: der Gewinn, der bis zur Abschöpfung wirklich
+ * angesammelt war. Daraus ergibt sich alles andere – abgeschöpft steht im
+ * Kassenbuch, behalten ist die Differenz.
+ *
+ * Gesucht wird der jüngste Messpunkt vor `stamp`, und nur wenn er nicht zu
+ * alt ist. War der Watcher aus oder hing ein Abruf, gibt es keinen brauchbaren
+ * Messpunkt – dann lieber nichts zurückgeben als eine Zahl erfinden, die zu
+ * einem anderen Zeitpunkt gehört.
+ */
+function gewinnVorDem(state, stamp) {
+  const spanne = 3 * CFG.INTERVALL_MS;
+  let treffer = null;
+  for (const m of state.gewinnVerlauf || []) {
+    if (m.stamp >= stamp) continue;                 // liegt schon danach
+    if (stamp - m.stamp > spanne) continue;         // zu weit weg
+    if (!treffer || m.stamp > treffer.stamp) treffer = m;
+  }
+  return treffer && Number.isFinite(treffer.wert) ? treffer.wert : null;
+}
+
 async function werteBuchungenAus(state, buchungen) {
   for (const b of buchungen) {
     // Vor der Verarbeitung vormerken, nicht danach: bricht die Meldung ab,
@@ -1762,19 +1798,16 @@ async function werteBuchungenAus(state, buchungen) {
     if (kat.includes('ausschütt') || kat.includes('ausschuett')) {
       state.letzteAusschuettung = b.stamp;
 
-      // Was die Firma behalten durfte, steht im Kassenbuch nicht – dort ist
-      // nur der Abfluss verbucht. Messbar ist es am Gewinnstand: nach der
-      // Abschöpfung bleibt genau der erlaubte Rest stehen. `state.gewinn`
-      // wurde in diesem Durchlauf gelesen, also kurz nach der Buchung.
+      // Was die Firma erwirtschaftet hat, steht im Kassenbuch nicht – dort ist
+      // nur der Abfluss verbucht. Gemessen wird es am Gewinnstand **vor** der
+      // Abschöpfung: das ist der Gewinn, der wirklich angesammelt war.
       //
-      // Nur für frische Buchungen: ist die Buchung älter als ein paar
-      // Durchläufe, gehört der Gewinnstand zu einem anderen Zeitpunkt und
-      // wäre eine erfundene Zahl. Dann bleibt das Feld leer, und die
-      // Auswertung weist die Lücke aus statt sie als Null zu zeigen.
-      const frisch = Date.now() - b.stamp < 3 * CFG.INTERVALL_MS;
-      const behalten = frisch && Number.isFinite(state.gewinn) ? state.gewinn : null;
-
-      merkeAusschuettung(spieltag(b.stamp), b.stamp, b.amount, b.balance, behalten);
+      // Der Stand danach taugt dafür nicht. Daraus „behalten" zu lesen setzt
+      // voraus, dass die Abschöpfung bis auf den Deckel herunterräumt – und
+      // genau das trifft nicht zu, wenn mehr als der Deckel angesammelt war.
+      // Deshalb: vorher messen, behalten = vorher − abgeschöpft.
+      const vorher = gewinnVorDem(state, b.stamp);
+      merkeAusschuettung(spieltag(b.stamp), b.stamp, b.amount, b.balance, vorher);
       log(b.amount >= 0 ? 'Ausschüttung erhalten:' : 'Abgeschöpft:',
           fmt(Math.abs(b.amount)), detail);
       // Hier ist Schluss: abgeschöpfter Gewinn ist kein Geld, das sich jemand
@@ -2081,7 +2114,15 @@ async function durchlauf() {
 
   // --- 4) Kasse & Gewinn ---
   state.kasse  = f.kasse?.balance ?? state.kasse;
-  state.gewinn = f.kasse?.profitSincePayout ?? state.gewinn;
+  // Erst den neuen Stand in den Verlauf schieben, dann setzen: die Auswertung
+  // der Buchungen greift danach auf den Verlauf zu und braucht dort beides –
+  // den Stand vor der Abschöpfung und den danach.
+  const gewinnJetzt = f.kasse?.profitSincePayout;
+  if (Number.isFinite(gewinnJetzt)) {
+    state.gewinnVerlauf = [...(state.gewinnVerlauf || []),
+      { stamp: Date.now(), wert: gewinnJetzt }].slice(-10);
+  }
+  state.gewinn = gewinnJetzt ?? state.gewinn;
 
   // --- 5) Kassenbuch (oben bereits geholt) ---
   try {
@@ -2639,30 +2680,35 @@ const BEFEHLE = {
       // gerechnet: es fällt je Abschöpfung verschieden aus.
       const bilanz = (z) => {
         if (!z.erwirtschaftet) return '';
-        let b = `\n\n**Erwirtschaftet:** ${fmt(z.erwirtschaftet)}\n` +
+        const untergrenze = z.ohneMessung > 0;
+        let b = `\n\n**Erwirtschaftet:** ${untergrenze ? 'mindestens ' : ''}` +
+          `${fmt(z.erwirtschaftet)}\n` +
           `Behalten durfte die Firma **${fmt(z.behalten)}**` +
-          (z.behaltenAnzahl > 1 ? ` (Schnitt ${fmt(z.behaltenSchnitt)})` : '') +
-          (z.ohneMessung
-            ? `\n_Für ${z.ohneMessung} von ${z.anzahl} Abschöpfungen fehlt die ` +
-              `Messung – das Erwirtschaftete ist also eher noch höher._`
-            : '') + '\n' +
-          `Abgeflossen **${fmt(z.summe)}** – das sind ` +
-          `**${Math.round(z.anteilAb * 100)} %** vom Gewinn.`;
+          (z.behaltenAnzahl > 1 ? ` (Schnitt ${fmt(z.behaltenSchnitt)})` : '') + '\n' +
+          `Abgeflossen **${fmt(z.summe)}** – ` +
+          `**${Math.round(z.anteilAb * 100)} %** vom Gewinn.` +
+          (untergrenze
+            ? `\n_Für ${z.ohneMessung} von ${z.anzahl} Abschöpfungen fehlt der ` +
+              `gemessene Gewinn – dort ist nur der Abfluss bekannt. Das ` +
+              `Erwirtschaftete ist also höher als hier steht._`
+            : '');
 
-        // Mehr Gewinn als der Deckel vorsieht ist die eigentliche Nachricht:
-        // dieser Teil der Produktion bringt niemandem etwas.
-        if (deckel && z.anzahl) {
-          const soll = z.anzahl * deckel;
-          const ueber = z.erwirtschaftet - soll;
-          b += ueber > 0
-            ? `\n\n⚠️ **${fmt(ueber)} über dem Soll.** Vorgesehen sind ` +
-              `${fmt(deckel)} je Stunde, also ${fmt(soll)} in ${z.anzahl} ` +
-              `${z.anzahl === 1 ? 'Stunde' : 'Stunden'} – erwirtschaftet wurde ` +
-              `das ${(z.erwirtschaftet / soll).toFixed(1).replace('.', ',')}-fache.\n` +
-              `_Jeder Dollar darüber ist verloren. Produktion zurückfahren ` +
-              `kostet nichts und spart Einkauf, Löhne und Lager._`
-            : `\n\n_Vorgesehen sind ${fmt(soll)} in ${z.anzahl} ` +
-              `${z.anzahl === 1 ? 'Stunde' : 'Stunden'} – das ist nicht ausgereizt._`;
+        // Die Zahl, an der die Entscheidung hängt: wie weit über dem Deckel
+        // produziert wird. Gerechnet wird aus dem gemessenen Gewinn je
+        // Abschöpfung, nicht aus einer Annahme über den Rest.
+        if (deckel && z.gemessenAnzahl) {
+          const luft = Math.round(z.gewinnNiedrigst / deckel * 10) / 10;
+          b += `\n\n**Gewinn je Abschöpfung:** ${fmt(z.gewinnNiedrigst)} bis ` +
+            `${fmt(z.gewinnHoechst)} · erlaubt sind ${fmt(deckel)}\n` +
+            (z.gewinnNiedrigst > deckel
+              ? `⚠️ Selbst die **schwächste** gemessene Abschöpfung lag beim ` +
+                `**${String(luft).replace('.', ',')}-fachen** des Deckels.\n` +
+                `_Die Produktion könnte um ` +
+                `${Math.round((1 - deckel / z.gewinnNiedrigst) * 100)} % einbrechen, ` +
+                `bevor weniger übrig bleibt. Löhne, Einkauf und Lager kosten für ` +
+                `diesen Teil trotzdem voll._`
+              : `_Die schwächste Abschöpfung lag unter dem Deckel – hier geht ` +
+                `Ertrag verloren, wenn die Produktion weiter sinkt._`);
         }
         return b;
       };
@@ -3286,8 +3332,12 @@ if (args.includes('--ausschuettung-liste')) {
     Nr: n + 1,
     Uhrzeit: new Date(a.stamp).toLocaleTimeString('de-DE'),
     Richtung: a.betrag >= 0 ? 'erhalten' : 'abgeschöpft',
-    Betrag: fmt(Math.abs(a.betrag)),
-    Kassenstand: Number.isFinite(a.kassenstand) ? fmt(a.kassenstand) : '?',
+    Gewinn: Number.isFinite(a.gewinnVorher) ? fmt(a.gewinnVorher) : 'nicht gemessen',
+    Abgeschoepft: fmt(Math.abs(a.betrag)),
+    Behalten: Number.isFinite(a.gewinnVorher)
+      ? fmt(Math.max(0, a.gewinnVorher + a.betrag)) : '?',
+    'x Deckel': Number.isFinite(a.gewinnVorher) && CFG.GEWINN_DECKEL_STD
+      ? (a.gewinnVorher / CFG.GEWINN_DECKEL_STD).toFixed(1) : '?',
   })));
   const z = ausschuettungSumme(liste);
   console.log('');

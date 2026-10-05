@@ -300,16 +300,36 @@ Die Antwort nennt Summe, Anzahl, Schnitt und die größte – dazu, was die Firm
 behalten durfte, was insgesamt erwirtschaftet wurde und wie viel Prozent
 abgeflossen sind.
 
-**Der behaltene Betrag wird gemessen, nicht gerechnet.** Im Kassenbuch steht
-er nicht – dort ist nur der Abfluss verbucht. Gemessen wird er am Gewinnstand
-unmittelbar nach der Abschöpfung: dort bleibt genau der erlaubte Rest stehen.
-Der Wert wird am Archiveintrag vermerkt, und er schwankt von Stunde zu Stunde –
-aus dem Deckel allein ließe sich die Zahl nicht gewinnen.
+**Gerechnet wird aus Gemessenem, nicht aus dem Deckel.** Das Kassenbuch kennt
+nur den Abfluss. Der Gewinn, der bis zur Abschöpfung angesammelt war, wird
+**vor** der Buchung gemessen und am Archiveintrag vermerkt:
 
-Gemessen wird nur für frische Buchungen (bis zu drei Durchläufe alt). War der
-Watcher aus, als abgeschöpft wurde, fehlt die Messung; die Auswertung weist
-diese Lücke aus („für X von Y Abschöpfungen fehlt die Messung") statt sie als
-Null auszugeben. Das Erwirtschaftete ist dann eher noch höher als angezeigt.
+```
+gewinnVorher   der angesammelte Gewinn    (gemessen)
+betrag         was abgeschöpft wurde      (Kassenbuch)
+behalten       die Differenz              (gerechnet)
+```
+
+Gemessen wird *vorher*, nicht nachher. Der Stand danach verrät nur den Rest,
+und daraus auf den Deckel zu schließen war falsch: angesammelt war regelmäßig
+mehr als der Deckel vorsieht, und genau das soll die Zahl ja zeigen.
+
+Gemessen wird nur, wenn ein Messpunkt aus den letzten drei Durchläufen vor der
+Buchung vorliegt. War der Watcher aus, fehlt er; die Auswertung weist die Lücke
+aus („für X von Y Abschöpfungen fehlt der gemessene Gewinn") und zählt dort nur
+den Abfluss. Das Erwirtschaftete ist dann eine **Untergrenze** und entsprechend
+mit „mindestens" beschriftet.
+
+Die Zeile, an der die Entscheidung über Personal und Produktion hängt:
+
+```
+Gewinn je Abschöpfung: 10.278$ bis 27.358$ · erlaubt sind 2.500$
+⚠️ Selbst die schwächste gemessene Abschöpfung lag beim 4,1-fachen des Deckels.
+Die Produktion könnte um 76 % einbrechen, bevor weniger übrig bleibt.
+```
+
+Maßgeblich ist die **schwächste** Stunde, nicht der Durchschnitt: so weit kann
+man herunter, ohne in irgendeiner Stunde unter den Deckel zu fallen.
 
 Dazu kommt die Zeile **„über dem Soll"**: wie viel mehr erwirtschaftet wurde,
 als der Deckel vorsieht. Das ist der Teil der Produktion, der niemandem etwas
