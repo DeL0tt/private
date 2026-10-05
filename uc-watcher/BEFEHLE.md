@@ -113,6 +113,8 @@ cd ~/private/uc-watcher/server
 | `node --env-file=.env watcher.mjs --einstellungen` | Alle Werte, dazu das **Zeitkonto**: wohin jede Minute des Spieltags ging |
 | `node --env-file=.env watcher.mjs --freibetrag` | Welche Buchungen gegen das Tageslimit gezählt haben – und welche nicht, mit Grund |
 | `node --env-file=.env watcher.mjs --ausschuettung` | Was heute und seit dem Neustart abgeschöpft wurde |
+| `node --env-file=.env watcher.mjs --ausschuettung-liste [JJJJ-MM-TT]` | Jede einzelne Abschöpfung des Tages mit Uhrzeit und Betrag |
+| `node --env-file=.env watcher.mjs --buchungen` | Das rohe Kassenbuch nach Kategorie – zeigt, was das Spiel wie verbucht |
 | `node --env-file=.env watcher.mjs --notion` | Wiki-/Notion-Abgleich sofort, mit Titelliste |
 | `node --env-file=.env watcher.mjs --wiki-probe` | Wiki-API abklopfen (nur zum Erkunden) |
 | `node --env-file=.env watcher.mjs --discord-test` | Discord-Befehle registrieren und je eine Probemeldung schicken |

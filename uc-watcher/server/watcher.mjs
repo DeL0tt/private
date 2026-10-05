@@ -147,11 +147,20 @@ const VORFALL_KATEGORIEN = [
 // brutto, also an dem, was die Kasse verlässt, nicht an dem, was nach Steuer
 // und Gebühr beim Empfänger ankommt.
 //
-// Ausschüttungen gehören dazu: sie sind der Hauptweg, auf dem Geld die Firma
-// verlässt, und zehren am selben Limit. Löhne stehen bewusst nicht dabei –
-// das sind die NPC-Kosten der Firma, kein Geld, das sich jemand auszahlt.
+// Zwei Dinge heißen „Ausschüttung" und sind streng zu trennen:
+//
+//   • die **Abschöpfung** – der Server nimmt stündlich jeden Gewinn über
+//     UC_GEWINN_DECKEL_STD weg. Nach oben offen, hat mit dem Tageslimit
+//     nichts zu tun, steht deshalb NICHT in dieser Liste. Sie kommt als
+//     eigene Kategorie und wird nur ins Archiv geschrieben.
+//   • die **Auszahlung** an Mitglieder – die zehrt am Limit, auch wenn das
+//     Spiel sie als „Auszahlung" verbucht und erst im Text „Ausschüttung an
+//     …" nennt. Deshalb steht „ausschütt" auch nicht mehr in den Ausnahmen.
+//
+// Löhne stehen bewusst nicht dabei – das sind die NPC-Kosten der Firma, kein
+// Geld, das sich jemand auszahlt.
 const AUSZAHLUNG_KATEGORIEN =
-  (process.env.UC_AUSZAHLUNG_KATEGORIEN || 'auszahlung,gehalt,ausschütt,ausschuett')
+  (process.env.UC_AUSZAHLUNG_KATEGORIEN || 'auszahlung,gehalt')
     .split(',').map(w => w.trim().toLowerCase()).filter(Boolean);
 
 // Was trotz passender Kategorie NICHT gegen den Freibetrag zählt.
@@ -1061,10 +1070,11 @@ function ausschuettungStand(state) {
   return {
     Heute: `${fmt(z.summe)} in ${z.anzahl}`,
     'Davon je Stunde': z.anzahl ? fmt(z.schnitt) : '–',
-    // Die Grenze ist das Tageslimit, nicht der Stundendeckel × 24. Der Deckel
-    // sagt nur, wie schnell oben nachkommt, was unten raus darf.
-    Tageslimit: `${fmt(CFG.AUSZAHLUNG_LIMIT)} (noch ${fmt(Math.max(0, CFG.AUSZAHLUNG_LIMIT - z.summe))})`,
-    'Gewinn-Deckel': `${fmt(CFG.GEWINN_DECKEL_STD)}/Std.`,
+    // Keine Obergrenze zum Vergleichen: abgeschöpft wird alles über dem
+    // Stundendeckel, nach oben offen. Aussagekräftig ist, was die Firma in
+    // denselben Stunden behalten durfte.
+    'Behalten durfte sie': `${fmt(z.anzahl * CFG.GEWINN_DECKEL_STD)} (${fmt(CFG.GEWINN_DECKEL_STD)}/Std.)`,
+    Abgeflossen: z.summe ? `${Math.round(z.summe / (z.summe + z.anzahl * CFG.GEWINN_DECKEL_STD) * 100)} %` : '–',
     'Seit dem Neustart': `${fmt(n.summe)} in ${n.anzahl} (${dauer(Date.now() - seit)})`,
     Letzte: state.letzteAusschuettung
       ? new Date(state.letzteAusschuettung).toLocaleString('de-DE') : 'unbekannt',
@@ -1260,22 +1270,18 @@ async function ausschuettungsBericht(state) {
   // sagen, wie viele Stunden am Deckel gelaufen sein müssen.
   const deckel = CFG.GEWINN_DECKEL_STD;
   const amDeckel = deckel ? z.betraege?.filter?.(x => x >= deckel).length : 0;
-  const limit = CFG.AUSZAHLUNG_LIMIT;
 
-  await push(`ausschuettung_tag_${vorbei}`, `💸 Ausschüttungen ${tagKurz(vorbei)}`,
+  await push(`ausschuettung_tag_${vorbei}`, `💸 Abgeschöpft ${tagKurz(vorbei)}`,
     `**${fmt(z.summe)}** sind gestern abgeflossen – in ${z.anzahl} ` +
-    `${z.anzahl === 1 ? 'Ausschüttung' : 'Ausschüttungen'}.\n` +
+    `${z.anzahl === 1 ? 'Abschöpfung' : 'Abschöpfungen'}.\n` +
     `Im Schnitt ${fmt(z.schnitt)}, die größte ${fmt(z.groesste)}.\n\n` +
-    (limit
-      ? `Vom Tageslimit von ${fmt(limit)} sind damit ` +
-        `${Math.round(z.summe / limit * 100)} % gelaufen` +
-        (z.summe < limit ? ` – ${fmt(limit - z.summe)} blieben ungenutzt und sind verfallen.` : '.') + '\n'
-      : '') +
-    `\n_Das ist Gewinn, den die Firma erwirtschaftet und wieder abgegeben hat._` +
     (deckel
-      ? `\n_Nachkommen kann höchstens ${fmt(deckel)} Gewinn je Stunde.` +
-        `${amDeckel ? ` ${amDeckel} Ausschüttungen lagen auf oder über dieser Grenze.` : ''}_`
-      : ''),
+      ? `\nErwirtschaftet wurden damit ${fmt(z.summe + z.anzahl * deckel)}, ` +
+        `behalten durfte die Firma ${fmt(z.anzahl * deckel)} – ` +
+        `**${Math.round(z.summe / (z.summe + z.anzahl * deckel) * 100)} % sind abgeflossen.**\n`
+      : '') +
+    `\n_Das ist Gewinn, den die Firma erwirtschaftet hat und der Server ` +
+    `wieder weggenommen hat: alles über ${fmt(deckel)} je Stunde._`,
     state, 'low');
 }
 
@@ -1741,9 +1747,11 @@ async function werteBuchungenAus(state, buchungen) {
     if (kat.includes('ausschütt') || kat.includes('ausschuett')) {
       state.letzteAusschuettung = b.stamp;
       merkeAusschuettung(spieltag(b.stamp), b.stamp, b.amount);
-      log('Ausschüttung erfasst:', fmt(Math.abs(b.amount)), detail);
-      // Kein `continue`: die Ausschüttung zehrt am Tageslimit wie jede andere
-      // Auszahlung. Die Zählung weiter unten übernimmt sie.
+      log('Abschöpfung erfasst:', fmt(Math.abs(b.amount)), detail);
+      // Hier ist Schluss: abgeschöpfter Gewinn ist kein Geld, das sich jemand
+      // auszahlt, und zehrt am Tageslimit nicht. Zählte er mit, stünde das
+      // Budget nach der ersten guten Stunde dauerhaft auf „aufgebraucht".
+      continue;
     }
 
     // Eindeutige Vorfälle
@@ -2566,7 +2574,7 @@ const BEFEHLE = {
 
 
   ausschuettung: {
-    beschreibung: 'Wie viel Gewinn abgeschöpft wurde – heute, seit dem Neustart, an einem Tag',
+    beschreibung: 'Wie viel Gewinn der Server abgeschöpft hat – heute, seit dem Neustart, an einem Tag',
     oeffentlich: true,
     optionen: [
       { name: 'tag', description: 'Welcher Kalendertag? Leer = heute und seit dem Neustart',
@@ -2589,14 +2597,13 @@ const BEFEHLE = {
 
     async ausfuehren({ optionen }) {
       const deckel = CFG.GEWINN_DECKEL_STD;
-      const limit = CFG.AUSZAHLUNG_LIMIT;
       const fenster = (tag) => {
         const [j, m, t] = tag.split('-').map(Number);
         const von = new Date(j, m - 1, t).getTime();
         return [von, von + 24 * 3_600_000];
       };
       const zeile = (z) => `**${fmt(z.summe)}** in ${z.anzahl} ` +
-        `${z.anzahl === 1 ? 'Ausschüttung' : 'Ausschüttungen'}` +
+        `${z.anzahl === 1 ? 'Abschöpfung' : 'Abschöpfungen'}` +
         (z.anzahl > 1 ? ` · Schnitt ${fmt(z.schnitt)} · größte ${fmt(z.groesste)}` : '');
 
       // Ein bestimmter Tag
@@ -2608,11 +2615,10 @@ const BEFEHLE = {
         }
         const z = ausschuettungSumme(ausschuettungenIm(...fenster(tag)));
         if (!z.anzahl) return `_Am ${tagLang(tag)} wurde nichts abgeschöpft._`;
-        return `💸 **Ausschüttungen am ${tagLang(tag)}**\n${zeile(z)}` +
-          (limit
-            ? `\n\n${balken(Math.round(z.summe / limit * 100))}\n` +
-              `${fmt(z.summe)} von ${fmt(limit)} Tageslimit` +
-              (z.summe < limit ? ` – ${fmt(limit - z.summe)} verfallen.` : '.')
+        return `💸 **Abgeschöpft am ${tagLang(tag)}**\n${zeile(z)}` +
+          (deckel
+            ? `\n\n_Behalten durfte die Firma ${fmt(z.anzahl * deckel)} ` +
+              `(${fmt(deckel)} je Stunde) – alles darüber nimmt der Server._`
             : '');
       }
 
@@ -2622,7 +2628,7 @@ const BEFEHLE = {
       const seit = Date.now() - process.uptime() * 1000;
       const n = ausschuettungSumme(ausschuettungenIm(seit, Date.now()));
 
-      let t = `💸 **Ausschüttungen**\n\n` +
+      let t = `💸 **Abgeschöpfter Gewinn**\n\n` +
         `**Heute** (seit 0 Uhr): ${h.anzahl ? zeile(h) : '_noch nichts_'}\n` +
         `**Seit dem Neustart** (vor ${dauer(Date.now() - seit)}): ` +
         (n.anzahl ? zeile(n) : '_noch nichts_');
@@ -2632,17 +2638,23 @@ const BEFEHLE = {
           `${new Date(n.letzte.stamp).toLocaleTimeString('de-DE').slice(0, 5)} Uhr.`;
       }
 
-      // Die Grenze, an der sich alles entscheidet, ist das Tageslimit: es
-      // misst die Ausschüttung selbst – brutto, nicht was nach Steuer und
-      // Gebühr übrig bleibt. Der Stundendeckel ist eine andere Achse: er sagt,
-      // wie schnell oben nachwächst, was unten raus darf.
-      if (limit) {
-        t += `\n\n${balken(Math.round(h.summe / limit * 100))}\n` +
-          `${fmt(h.summe)} von ${fmt(limit)} Tageslimit – noch ` +
-          `${fmt(Math.max(0, limit - h.summe))} frei.`;
-        if (deckel) {
-          t += `\n_Nachkommen kann höchstens ${fmt(deckel)} Gewinn je Stunde._`;
-        }
+      // Kein Balken gegen eine Obergrenze: die Abschöpfung hat keine. Der
+      // Server nimmt alles über dem Stundendeckel – wer gut verdient, verliert
+      // entsprechend mehr. Ein Balken gegen das Tageslimit stand hier einmal
+      // und war Unsinn: das Limit gilt für Auszahlungen an Mitglieder, nicht
+      // für den Gewinn, den der Server wegnimmt.
+      //
+      // Aussagekräftig ist das Gegenteil: was die Firma in denselben Stunden
+      // behalten durfte, und wie viel davon verloren ging.
+      if (deckel && h.anzahl) {
+        const behalten = h.anzahl * deckel;
+        const erwirtschaftet = h.summe + behalten;
+        t += `\n\n**Dafür erwirtschaftet:** ${fmt(erwirtschaftet)} in ${h.anzahl} ` +
+          `${h.anzahl === 1 ? 'Stunde' : 'Stunden'}\n` +
+          `Behalten durfte die Firma ${fmt(behalten)} (${fmt(deckel)} je Stunde) – ` +
+          `**${Math.round(h.summe / erwirtschaftet * 100)} % sind abgeflossen.**\n` +
+          `_Jeder Dollar Gewinn über ${fmt(deckel)} je Stunde ist verloren. ` +
+          `Mehr Umsatz bringt ab da nichts mehr._`;
       }
 
       const archiv = alleTage();
@@ -3216,6 +3228,72 @@ if (args.includes('--archiv')) {
 }
 
 if (args.includes('--ausschuettung')) { console.table(ausschuettungStand(load())); process.exit(0); }
+
+// Die einzelnen erfassten Ausschüttungen eines Tages, mit Uhrzeit und Betrag.
+// Gebaut, weil die Tagessumme nicht zum Stundendeckel passte: an der Summe
+// allein lässt sich nicht erkennen, ob zu viele Einträge drinstehen oder zu
+// große.
+if (args.includes('--ausschuettung-liste')) {
+  const i = args.indexOf('--ausschuettung-liste');
+  const tag = (args[i + 1] && !args[i + 1].startsWith('--')) ? args[i + 1] : budgetTag();
+  const [j, m, t] = tag.split('-').map(Number);
+  const von = new Date(j, m - 1, t).getTime();
+  const liste = ausschuettungenIm(von, von + 24 * 3_600_000);
+  console.log(`Erfasste Ausschüttungen am ${tag} (0–24 Uhr):`);
+  if (!liste.length) { console.log('keine'); process.exit(0); }
+  let summe = 0;
+  console.table(liste.map((a, n) => {
+    summe += a.betrag;
+    return {
+      Nr: n + 1,
+      Uhrzeit: new Date(a.stamp).toLocaleTimeString('de-DE'),
+      Betrag: fmt(a.betrag),
+      'Über dem Stundendeckel': a.betrag > CFG.GEWINN_DECKEL_STD ? 'JA' : '',
+      Laufsumme: fmt(summe),
+    };
+  }));
+  console.log('Summe:', fmt(summe), '· Stundendeckel:', fmt(CFG.GEWINN_DECKEL_STD));
+  process.exit(0);
+}
+
+// Das rohe Kassenbuch, nach Kategorie gruppiert. Zeigt, unter welchem Namen
+// das Spiel die stündliche Abschöpfung wirklich verbucht – und was der
+// Watcher daraus macht.
+if (args.includes('--buchungen')) {
+  try {
+    const f = (await holeFirma()).company;
+    const l = await holeLedger(f.id);
+    const alle = (l.entries || []).slice().sort((a, b) => a.stamp - b.stamp);
+    console.log(`Kassenbuch der Firma ${f.name}: ${alle.length} Buchungen\n`);
+    console.table(alle.map(b => {
+      const kat = sauber(b.category).toLowerCase();
+      const ausschuettung = kat.includes('ausschütt') || kat.includes('ausschuett');
+      const w = zaehltGegenFreibetrag(kat, sauber(b.detail));
+      return {
+        Uhrzeit: new Date(b.stamp).toLocaleString('de-DE'),
+        Kategorie: sauber(b.category),
+        Text: sauber(b.detail).slice(0, 30),
+        Betrag: fmt(b.amount),
+        'Als Ausschüttung': ausschuettung ? 'JA' : '',
+        'Zählt am Limit': w.zaehlt ? 'JA' : (w.grund || ''),
+      };
+    }));
+    const je = {};
+    for (const b of alle) {
+      const k = sauber(b.category) || '(leer)';
+      je[k] = je[k] || { Anzahl: 0, Summe: 0 };
+      je[k].Anzahl++;
+      je[k].Summe += Math.abs(b.amount || 0);
+    }
+    console.log('\nNach Kategorie:');
+    console.table(Object.fromEntries(Object.entries(je)
+      .map(([k, v]) => [k, { Anzahl: v.Anzahl, Summe: fmt(v.Summe) }])));
+  } catch (e) {
+    console.error('❌ Kassenbuch nicht abrufbar:', e.message);
+    process.exit(1);
+  }
+  process.exit(0);
+}
 
 
 if (args.includes('--betrieb-probe')) {

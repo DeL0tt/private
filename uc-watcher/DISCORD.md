@@ -296,12 +296,20 @@ Seit der Balance-Änderung wird **stündlich** abgeschöpft: alles über
 /ausschuettung tag:…        → ein bestimmter Kalendertag
 ```
 
-Die Antwort nennt Summe, Anzahl, Schnitt und die größte, dazu einen Balken
-gegen das **Tageslimit von 50.000 $**. Gemessen wird die Ausschüttung selbst –
-brutto, also was die Kasse verlässt, nicht was nach Steuer und Gebühr ankommt.
+Die Antwort nennt Summe, Anzahl, Schnitt und die größte – dazu, was die Firma
+in denselben Stunden behalten durfte und wie viel Prozent abgeflossen sind.
 
-Der Gewinn-Deckel von 2.500 $ je Stunde ist eine andere Achse: er sagt, wie
-schnell oben nachwächst, was unten raus darf, und ist keine Tagesgrenze.
+**Zwei Dinge heißen „Ausschüttung", und sie haben nichts miteinander zu tun:**
+
+| | was es ist | Grenze |
+|---|---|---|
+| **Abschöpfung** (stündlich) | der Server nimmt jeden Gewinn über 2.500 $/Std. weg | keine, nach oben offen |
+| **Auszahlung** an Mitglieder | ihr holt Geld aus der Firma | 50.000 $/Tag, 20.000 $ steuerfrei |
+
+`/ausschuettung` zeigt die **Abschöpfung**. Einen Balken gegen eine
+Obergrenze gibt es dort nicht, weil es keine gibt: wer gut verdient, verliert
+entsprechend mehr. Das Tageslimit steht in `/kasse` und zählt nur
+Auszahlungen.
 
 **Um 0 Uhr** kommt der Tagesbericht nach `#benachrichtigung`: wie viel am
 abgelaufenen Tag abgeflossen ist. Das ist Gewinn, den die Firma erwirtschaftet
@@ -324,17 +332,26 @@ Tagesbericht richten sich nach dem, das Budget nicht. Deshalb nennt der
 Tagesbericht beim Tageslimit ausdrücklich das Datum und „0–24 Uhr": die Zahl
 gehört zum Kalendertag, nicht zum Spieltag des Berichts.
 
-Gezählt wird eine Buchung, deren **Kategorie** `auszahlung`, `gehalt`,
-`ausschütt` oder `ausschuett` enthält. Sie wird übergangen, wenn **Kategorie
-oder Buchungstext** eines der Ausnahmewörter enthält. Voreingestellt sind nur:
+Gezählt wird eine Buchung, deren **Kategorie** `auszahlung` oder `gehalt`
+enthält. Sie wird übergangen, wenn **Kategorie oder Buchungstext** eines der
+Ausnahmewörter enthält. Voreingestellt sind nur:
 
 - `löhne`, `loehne`, `lohn`, `npc` – die Kosten der NPCs, kein Geld, das sich
   jemand auszahlt.
 
-Die Ausschüttung stand hier einmal als Ausnahme. Das war falsch: sie ist genau
-das, was das Tageslimit misst, und fehlte damit als größter Posten in der
-Summe. Steht sie als „Auszahlung" im Kassenbuch mit der Ausschüttung nur im
-Text, zählt sie trotzdem – geprüft wird auch der Buchungstext.
+`ausschütt` stand hier einmal als Ausnahme. Das war falsch und ließ den
+Freibetrag zu niedrig aussehen: holt sich ein Mitglied seinen Anteil, steht im
+Kassenbuch „Auszahlung" und erst im Text „Ausschüttung an …" – das ist eine
+Auszahlung und zählt. Die **stündliche Abschöpfung** zählt dagegen nicht; sie
+kommt als eigene Kategorie `Ausschüttung` und fällt damit ohnehin nicht unter
+die Auszahlungskategorien.
+
+Nachsehen, was das Spiel wirklich verbucht:
+
+```
+node --env-file=.env watcher.mjs --buchungen
+node --env-file=.env watcher.mjs --ausschuettung-liste [JJJJ-MM-TT]
+```
 
 ### Wenn die Summe nicht stimmt
 
