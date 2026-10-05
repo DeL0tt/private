@@ -92,7 +92,17 @@ const CFG = {
   BETRIEB_SCHWELLE: +(process.env.UC_BETRIEB_SCHWELLE || 40),
 
   // Obergrenze für Auszahlungen und Gehälter je Tag
-  AUSZAHLUNG_LIMIT: +(process.env.UC_AUSZAHLUNG_LIMIT || 35_000),
+  // Zwei verschiedene Grenzen, die vorher als eine behandelt wurden:
+  //   LIMIT      – wie viel am Tag ueberhaupt rausgehen darf (Firmenkasse,
+  //                Betriebskasse und Gehaelter zusammen)
+  //   FREIBETRAG – wie viel davon steuerfrei ist; darueber 35 % Steuer
+  // Dazu auf alles 15 % Auszahlungsgebuehr.
+  AUSZAHLUNG_LIMIT:     +(process.env.UC_AUSZAHLUNG_LIMIT || 50_000),
+  AUSZAHLUNG_FREI:      +(process.env.UC_AUSZAHLUNG_FREI || 20_000),
+  AUSZAHLUNG_STEUER:    +(process.env.UC_AUSZAHLUNG_STEUER || 35) / 100,
+  AUSZAHLUNG_GEBUEHR:   +(process.env.UC_AUSZAHLUNG_GEBUEHR || 15) / 100,
+  // Gewinn ueber dieser Grenze wird stuendlich abgeschoepft.
+  GEWINN_DECKEL_STD:    +(process.env.UC_GEWINN_DECKEL_STD || 2_500),
   // Wann der Topf zurückgesetzt wird. Das ist Mitternacht und damit etwas
   // anderes als der Spieltag, der um 04:00 wechselt – die beiden nicht
   // verwechseln, sonst zeigt der Befehl nachts einen falschen Stand.
@@ -2539,6 +2549,9 @@ const BEFEHLE = {
       let t = '';
 
       // --- Tagesbudget: für alle ---
+      // Zwei Grenzen, nicht eine: 50.000 duerfen am Tag ueberhaupt raus,
+      // davon sind 20.000 steuerfrei. Wer nur die eine kennt, zahlt ueber dem
+      // Freibetrag 45 % drauf, ohne es zu merken.
       if (!topf.limit) {
         t += `**Heute ausgezahlt: ${fmt(topf.genutzt)}**\n` +
           '_Es ist kein Tagesbudget eingestellt (`UC_AUSZAHLUNG_LIMIT`)._';
@@ -2548,7 +2561,22 @@ const BEFEHLE = {
           `${fmt(topf.genutzt)} von ${fmt(topf.limit)} sind heute raus (${anteil} %).`;
         if (!topf.frei) t += '\n🔴 Aufgebraucht.';
         else if (anteil >= 80) t += '\n⚠️ Es wird knapp.';
-        t += `\n_Setzt sich täglich um ` +
+
+        // Der Freibetrag ist die Grenze, die wirklich Geld kostet.
+        const steuerfrei = Math.max(0, CFG.AUSZAHLUNG_FREI - topf.genutzt);
+        const g = Math.round(CFG.AUSZAHLUNG_GEBUEHR * 100);
+        const st = Math.round(CFG.AUSZAHLUNG_STEUER * 100);
+        t += steuerfrei
+          ? `\n\n💶 **Steuerfrei noch ${fmt(steuerfrei)}** von ${fmt(CFG.AUSZAHLUNG_FREI)}.\n` +
+            `_Davon gehen ${g} % Gebühr ab – du bekommst ${100 - g} %. ` +
+            `Darüber kommen ${st} % Steuer dazu, dann nur noch ` +
+            `${Math.round((1 - CFG.AUSZAHLUNG_STEUER) * (1 - CFG.AUSZAHLUNG_GEBUEHR) * 100)} %._`
+          : `\n\n⚠️ **Der Freibetrag von ${fmt(CFG.AUSZAHLUNG_FREI)} ist ausgeschöpft.**\n` +
+            `_Jeder weitere Dollar bringt nur noch ` +
+            `${Math.round((1 - CFG.AUSZAHLUNG_STEUER) * (1 - CFG.AUSZAHLUNG_GEBUEHR) * 100)} Cent ` +
+            `(${st} % Steuer, ${g} % Gebühr). Morgen auszahlen lohnt sich mehr._`;
+
+        t += `\n_Beides setzt sich täglich um ` +
           `${String(CFG.AUSZAHLUNG_RESET_STD).padStart(2, '0')}:00 Uhr zurück._`;
       }
 

@@ -284,6 +284,40 @@ export function vergleich(n, bis) {
 }
 
 /**
+ * Alle Ausschüttungen in einem Zeitfenster, älteste zuerst.
+ *
+ * Die Einträge liegen je Spieltag (04:00 bis 04:00), gefragt ist aber oft ein
+ * Kalendertag oder „seit dem Neustart". Weil jeder Eintrag seinen Zeitstempel
+ * mitführt, lässt sich jedes Fenster daraus beantworten – gesucht wird in den
+ * Spieltagen, die es überhaupt berühren können.
+ *
+ * @param {number} von  Zeitstempel, einschließlich
+ * @param {number} bis  Zeitstempel, ausschließlich
+ */
+export function ausschuettungenIm(von, bis) {
+  const tagVon = tagMinus(new Date(von).toISOString().slice(0, 10), 1);
+  const tagBis = new Date(bis).toISOString().slice(0, 10);
+  return holeTage(tagVon, tagBis)
+    .flatMap(t => t.ausschuettungen || [])
+    .filter(a => a.stamp >= von && a.stamp < bis)
+    .sort((a, b) => a.stamp - b.stamp);
+}
+
+/** Summe, Anzahl, Schnitt und die größte – für die Berichte. */
+export function ausschuettungSumme(eintraege) {
+  const betraege = eintraege.map(a => a.betrag || 0);
+  const summe = betraege.reduce((a, b) => a + b, 0);
+  return {
+    anzahl: eintraege.length,
+    summe,
+    schnitt: eintraege.length ? Math.round(summe / eintraege.length) : 0,
+    groesste: betraege.length ? Math.max(...betraege) : 0,
+    erste: eintraege[0] || null,
+    letzte: eintraege[eintraege.length - 1] || null,
+  };
+}
+
+/**
  * Anteil eines Spielers an der Gesamtzeit einer Spanne, in Prozent.
  * Grundlage für eine spätere Ausschüttungsrechnung nach Anwesenheit: die
  * Zahlen liegen im Archiv, die Verteilung entscheidet der Inhaber.
