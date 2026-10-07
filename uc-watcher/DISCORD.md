@@ -307,39 +307,57 @@ als Gewinnanzeige wertlos. Der Tagesgewinn kommt stattdessen aus dem
 Gewinnzähler, wie er vor jeder Abschöpfung gemessen wurde, plus der laufenden
 Stunde.
 
-**Zwei Quellen, die getrennt bleiben.** Das war der teuerste Irrtum in diesem
-Teil, deshalb steht er hier:
+**Die Ausschüttung ist ein Geldsink.** Alles über dem Stundendeckel (Vorgabe
+3.005 $, einstellbar über `UC_GEWINN_DECKEL_STD`) verlässt das System – das
+Geld ist weg, nicht umgebucht. Was darunter bleibt, ist der Betrag, um den die
+Firmenkasse in dieser Stunde wachsen **sollte**. Gehälter und Miete ziehen
+davon wieder ab.
 
-| Quelle | was sie sagt | was sie nicht sagt |
-|---|---|---|
-| **Kassenbuch** | dass Geld zu- oder abfließt, und wie viel | *warum* – ob ein Zufluss bleibt oder durchläuft, ob ein Abfluss Gebühr, Steuer oder Abschöpfung ist |
-| **Gewinnzähler** | wie viel Gewinn bis zur Abschöpfung angesammelt war | nichts über die Verwendung |
-
-Unter der Kategorie „Ausschüttung" stehen **beide Richtungen**: große Zuflüsse
-und kleinere Abflüsse, oft im selben Zeitpunkt. Der Bericht nennt sie
-nebeneinander und deutet sie nicht:
+Daraus die **Kassenprobe**, die beantwortet, ob mehr Geld in der Firma ist, als
+daraus folgen kann:
 
 ```
-Im Kassenbuch verbucht
-Zugeflossen 1.285.471$ in 11 Buchungen (Schnitt 116.861$)
-Abgeflossen 168.899$ in 11 Buchungen
-Unterm Strich 1.116.572$ · 13 % des Zuflusses gehen wieder ab
+Ausgeschüttet: 156.014$ in 11 Ausschüttungen
+Alles über 3.005$ je Stunde – das Geld verlässt das System.
 
-Gemessener Gewinn je Abschöpfung: 6.252$ bis 28.162$ · Deckel 2.500$
-Aus dem Gewinnzähler der Firma gelesen, nicht aus dem Kassenbuch.
+Behalten: 33.055$ in 11 Stunden
+So viel sollte die Kasse dadurch gewachsen sein.
+
+Kasse zu den Ausschüttungen
+07:00 Uhr: 498.000$
+17:00 Uhr: 523.250$
+Dazugekommen: 25.250$ · erwartet 30.050$ aus 10 Stunden
+
+📉 4.800$ weniger als erwartet.
+Das ist der normale Fall: Gehälter und Miete zehren am Behaltenen.
 ```
 
-Hier stand einmal „behalten durfte die Firma", „abgeflossen – X % vom Gewinn"
-und „bringt niemandem etwas". Das waren Deutungen, die aus einem einzigen
-beobachteten Eintrag abgeleitet waren, und sie waren falsch: der Abfluss ist
-rund ein Achtel des Zuflusses, nicht neun Zehntel des Gewinns. Die Felder
-`behalten`, `erwirtschaftet` und `anteilAb` im Archiv sind deshalb entfernt.
+Ein **Plus** heißt: es kam Geld aus einer Quelle, die in dieser Rechnung nicht
+steht – und das, obwohl Gehälter und Miete dagegen arbeiten. Ein **Minus** ist
+der Normalfall und beziffert ungefähr deren Höhe.
+
+Drei Dinge daran sind wichtig:
+
+- **Gemessen wird nur zu den Ausschüttungszeitpunkten.** Ein Kassenstand
+  zwischendurch enthält den Gewinn, der gleich wieder abgeschöpft wird, und
+  würde den Zuwachs grob zu hoch ausweisen.
+- **Der erste Stand ist die Grundlinie**, kein Zuwachs. Zum Soll zählt deshalb
+  nur das Behaltene der Stunden *nach* der ersten Ausschüttung – genau die, die
+  zwischen erstem und letztem Stand liegen.
+- **Behalten wird gemessen, nicht aus dem Deckel gerechnet** (Gewinn vor der
+  Ausschüttung minus dem, was abfloss). Es fällt je Stunde verschieden aus.
+  Fehlt eine Messung, tritt der Deckel als Ersatz ein und die Auswertung sagt
+  es.
+
+Hier stand einmal „behalten durfte die Firma", „X % vom Gewinn abgeflossen" und
+„bringt niemandem etwas" – abgeleitet aus einem einzigen beobachteten Eintrag
+und falsch. Die Felder `behalten`, `erwirtschaftet` und `anteilAb` im Archiv
+sind entfernt.
 
 **Gemessen wird vor der Buchung.** Der Zustand führt einen kurzen Gewinnverlauf
-mit Zeitstempeln; zu einer Abschöpfung wird der jüngste Messpunkt aus den
+mit Zeitstempeln; zu einer Ausschüttung wird der jüngste Messpunkt aus den
 letzten drei Durchläufen davor gesucht. Gibt es keinen – der Watcher war aus –,
-fehlt die Messung, und die Auswertung sagt das („für X von Y Abschöpfungen
-fehlt die Messung") statt eine Null auszugeben.
+fehlt die Messung, und die Auswertung sagt das statt eine Null auszugeben.
 
 **Um 0 Uhr** kommt der Tagesbericht nach `#benachrichtigung`: wie viel am
 abgelaufenen Tag abgeflossen ist. Das ist Gewinn, den die Firma erwirtschaftet

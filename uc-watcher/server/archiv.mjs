@@ -338,6 +338,80 @@ export function ausschuettungenIm(von, bis) {
 
 /** Summe, Anzahl, Schnitt und die größte – für die Berichte. */
 /**
+ * Die Kassenbilanz einer Reihe von Ausschüttungen.
+ *
+ * Die Frage, die sie beantwortet: **ist mehr Geld in der Firma, als aus dem
+ * Behaltenen folgen kann?**
+ *
+ * Die Mechanik dahinter: eine Ausschüttung nimmt alles über dem Stundendeckel
+ * aus dem System – das Geld ist weg, es ist ein Geldsink. Was unter dem Deckel
+ * bleibt, ist der Betrag, um den die Firmenkasse in dieser Stunde wachsen
+ * *sollte*. Gehälter und Miete ziehen davon wieder ab. Kommt am Ende mehr
+ * heraus, kam Geld aus einer Quelle, die hier nicht verbucht ist.
+ *
+ * Gemessen wird **nur zu den Ausschüttungszeitpunkten**. Ein Kassenstand
+ * zwischendurch taugt nicht: der enthält den Gewinn, der gleich wieder
+ * abgeschöpft wird, und würde den Zuwachs grob zu hoch ausweisen.
+ *
+ * Der erste Stand ist die Grundlinie, kein Zuwachs. Deshalb zählt zum Soll das
+ * Behaltene der Ausschüttungen *nach* der ersten – das sind genau die Stunden,
+ * die zwischen erstem und letztem Stand liegen.
+ */
+export function kassenBilanz(eintraege, deckel = 0) {
+  const ab = (eintraege || [])
+    .filter(a => (a.betrag || 0) < 0)
+    .sort((a, b) => a.stamp - b.stamp);
+
+  const ausgeschuettet = ab.reduce((n, a) => n - a.betrag, 0);
+
+  // Behalten je Ausschüttung: der gemessene Gewinn davor minus dem, was
+  // abgeflossen ist. Gemessen, nicht aus dem Deckel gerechnet – er fällt
+  // verschieden aus.
+  const behaltenVon = (a) => Number.isFinite(a.gewinnVorher)
+    ? Math.max(0, a.gewinnVorher + a.betrag)      // betrag ist negativ
+    : null;
+
+  const mitStand = ab.filter(a => Number.isFinite(a.kassenstand));
+  const erster = mitStand[0] || null;
+  const letzter = mitStand.length > 1 ? mitStand[mitStand.length - 1] : null;
+
+  // Das Soll deckt die Stunden zwischen erstem und letztem Stand ab.
+  const dazwischen = erster && letzter
+    ? ab.filter(a => a.stamp > erster.stamp && a.stamp <= letzter.stamp)
+    : [];
+  const sollJe = dazwischen.map(behaltenVon);
+  const sollGemessen = sollJe.filter(x => x !== null);
+  const soll = sollGemessen.reduce((n, x) => n + x, 0) +
+    // Für Stunden ohne Messung der Deckel als Ersatz, sonst fehlt der Posten
+    // ganz und die Abweichung sähe größer aus, als sie ist.
+    (deckel ? sollJe.filter(x => x === null).length * deckel : 0);
+
+  const ist = erster && letzter ? letzter.kassenstand - erster.kassenstand : null;
+
+  return {
+    anzahl: ab.length,
+    ausgeschuettet,
+    // Das Behaltene über alle Ausschüttungen, nicht nur die dazwischen.
+    behalten: ab.map(behaltenVon).filter(x => x !== null).reduce((n, x) => n + x, 0),
+    behaltenAnzahl: ab.map(behaltenVon).filter(x => x !== null).length,
+
+    ersterStand: erster ? erster.kassenstand : null,
+    ersterStamp: erster ? erster.stamp : null,
+    letzterStand: letzter ? letzter.kassenstand : null,
+    letzterStamp: letzter ? letzter.stamp : null,
+
+    stunden: dazwischen.length,
+    soll,
+    ist,
+    // Positiv heißt: mehr in der Kasse, als aus dem Behaltenen folgen kann –
+    // und das, obwohl Gehälter und Miete dagegen arbeiten.
+    differenz: ist === null ? null : ist - soll,
+    ohneMessung: sollJe.filter(x => x === null).length,
+    vollstaendig: erster !== null && letzter !== null,
+  };
+}
+
+/**
  * Einmalige Korrektur der Alt-Einträge.
  *
  * Bis zur Vorzeichen-Korrektur hat merkeAusschuettung() jeden Betrag mit

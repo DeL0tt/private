@@ -14,7 +14,8 @@ import { discordAktiv, discordSende, discordStart, discordStop, empfaenger,
 import { merkeZeiten, merkeAusschuettung, merkeAuszahlung, speichereArchiv,
          ladeArchiv, holeTag, holeTage, letzteTage, alleTage, tagMinus,
          summiere, vergleich, anteile, archivDatei, archivAktiv,
-         ausschuettungenIm, ausschuettungSumme, vorzeichenKorrektur } from './archiv.mjs';
+         ausschuettungenIm, ausschuettungSumme, kassenBilanz,
+         vorzeichenKorrektur } from './archiv.mjs';
 
 /* ========================= KONFIGURATION ========================= */
 
@@ -99,7 +100,12 @@ const CFG = {
   AUSZAHLUNG_STEUER:    +(process.env.UC_AUSZAHLUNG_STEUER || 35) / 100,
   AUSZAHLUNG_GEBUEHR:   +(process.env.UC_AUSZAHLUNG_GEBUEHR || 15) / 100,
   // Gewinn ueber dieser Grenze wird stuendlich abgeschoepft.
-  GEWINN_DECKEL_STD:    +(process.env.UC_GEWINN_DECKEL_STD || 2_500),
+  // Was die Firma je Stunde behalten darf. Alles darüber nimmt die
+  // Ausschüttung aus dem System – ein Geldsink, das Geld ist weg.
+  // Die Grenze ist nicht fest: sie fällt je Stunde verschieden aus, deshalb
+  // wird sie je Ausschüttung gemessen. Dieser Wert dient als Vergleich und
+  // als Ersatz, wenn eine Messung fehlt.
+  GEWINN_DECKEL_STD:    +(process.env.UC_GEWINN_DECKEL_STD || 3_005),
   // Wann der Topf zurückgesetzt wird. Das ist Mitternacht und damit etwas
   // anderes als der Spieltag, der um 04:00 wechselt – die beiden nicht
   // verwechseln, sonst zeigt der Befehl nachts einen falschen Stand.
@@ -291,6 +297,10 @@ const spieltag = (zeit = Date.now()) => {
  * Ausgabe "8 Std. 60 Min.": der Rest wurde auf 60 gerundet, die Stunde aber
  * nicht mitgezählt.
  */
+// Uhrzeit ohne Sekunden. An mehreren Stellen gebraucht, seit die Kassenprobe
+// sagt, zu welchem Zeitpunkt ein Stand gilt.
+const uhr = (stamp) => new Date(stamp).toLocaleTimeString('de-DE').slice(0, 5);
+
 function dauer(ms) {
   if (!ms || ms < MIN) return '<1 Min.';
   const minuten = Math.round(ms / MIN);
@@ -1070,18 +1080,22 @@ function rechenlast() {
  * durfte, wird gemessen – je Abschöpfung fällt es verschieden aus, aus dem
  * Deckel allein ließe sich die Zahl nicht gewinnen.
  */
-function ausschuettungBilanz(z) {
+function ausschuettungBilanz(eintraege) {
   const deckel = CFG.GEWINN_DECKEL_STD;
+  const k = kassenBilanz(eintraege, deckel);
   return {
-    Zugeflossen: `${fmt(z.zugeflossen)} in ${z.zuAnzahl}`,
-    Abgeflossen: `${fmt(z.summe)} in ${z.anzahl}`,
-    'Unterm Strich': fmt(z.zugeflossen - z.summe),
-    'Abfluss vom Zufluss': z.zugeflossen
-      ? `${Math.round(z.summe / z.zugeflossen * 100)} %` : '–',
-    'Gewinn gemessen': z.gemessenAnzahl
-      ? `${fmt(z.gewinnNiedrigst)} bis ${fmt(z.gewinnHoechst)}` : 'nicht gemessen',
+    Ausgeschuettet: `${fmt(k.ausgeschuettet)} in ${k.anzahl}`,
+    Behalten: `${fmt(k.behalten)} in ${k.behaltenAnzahl}`,
     Deckel: `${fmt(deckel)}/Std.`,
-    'Ohne Messung': z.ohneMessung || '–',
+    'Kasse zuerst': k.ersterStand === null
+      ? '–' : `${fmt(k.ersterStand)} (${uhr(k.ersterStamp)})`,
+    'Kasse zuletzt': k.letzterStand === null
+      ? '–' : `${fmt(k.letzterStand)} (${uhr(k.letzterStamp)})`,
+    Dazugekommen: k.ist === null ? '–' : fmt(k.ist),
+    Erwartet: k.vollstaendig ? `${fmt(k.soll)} aus ${k.stunden} Std.` : '–',
+    Abweichung: k.differenz === null ? '–'
+      : `${k.differenz > 0 ? '+' : ''}${fmt(k.differenz)}`,
+    'Ohne Messung': k.ohneMessung || '–',
   };
 }
 
@@ -1107,8 +1121,7 @@ function gewinnHeute(aktuell) {
     // Abschöpfung angesammelt war, plus die laufende Stunde.
     summe: z.gewinnGemessen + laufend,
     laufend,
-    abgeflossen: z.summe,
-    zugeflossen: z.zugeflossen,
+    ausgeschuettet: z.summe,
     abschoepfungen: z.anzahl,
     // Fehlt für eine Abschöpfung die Messung, ist die Summe eine Untergrenze.
     ohneMessung: z.ohneMessung,
@@ -1120,11 +1133,11 @@ function ausschuettungStand(state) {
   const heute = budgetTag();
   const [j, m, t] = heute.split('-').map(Number);
   const von = new Date(j, m - 1, t).getTime();
-  const z = ausschuettungSumme(ausschuettungenIm(von, von + 24 * 3_600_000));
+  const eintraege = ausschuettungenIm(von, von + 24 * 3_600_000);
   const seit = Date.now() - process.uptime() * 1000;
   const n = ausschuettungSumme(ausschuettungenIm(seit, Date.now()));
   return {
-    ...ausschuettungBilanz(z),
+    ...ausschuettungBilanz(eintraege),
     'Seit dem Neustart': `${fmt(n.summe)} in ${n.anzahl} (${dauer(Date.now() - seit)})`,
     Letzte: state.letzteAusschuettung
       ? new Date(state.letzteAusschuettung).toLocaleString('de-DE') : 'unbekannt',
@@ -1313,35 +1326,38 @@ async function ausschuettungsBericht(state) {
   const [j, m, t] = vorbei.split('-').map(Number);
   const von = new Date(j, m - 1, t).getTime();
   const bis = von + 24 * 3_600_000;
-  const z = ausschuettungSumme(ausschuettungenIm(von, bis));
+  const eintraege = ausschuettungenIm(von, bis);
+  const z = ausschuettungSumme(eintraege);
 
-  if (!z.zugeflossen && !z.summe) return log('Keine Ausschüttungen am', vorbei);
+  if (!z.anzahl) return log('Keine Ausschüttungen am', vorbei);
 
   const deckel = CFG.GEWINN_DECKEL_STD;
 
-  // Nur, was im Kassenbuch steht, und der gemessene Gewinn daneben. Was ein
-  // Zufluss oder Abfluss bedeutet, sagt das Buch nicht – also sagt der Bericht
-  // es auch nicht.
+  const k = kassenBilanz(eintraege, deckel);
+
   await push(`ausschuettung_tag_${vorbei}`, `💸 Ausschüttungen ${tagKurz(vorbei)}`,
-    `Zugeflossen **${fmt(z.zugeflossen)}**` +
-    (z.zuAnzahl ? ` in ${z.zuAnzahl} ${z.zuAnzahl === 1 ? 'Buchung' : 'Buchungen'}` : '') + '\n' +
-    `Abgeflossen **${fmt(z.summe)}**` +
-    (z.anzahl ? ` in ${z.anzahl} ${z.anzahl === 1 ? 'Buchung' : 'Buchungen'}` : '') + '\n' +
-    `**Unterm Strich ${fmt(z.zugeflossen - z.summe)}**` +
-    (z.zugeflossen
-      ? ` · ${Math.round(z.summe / z.zugeflossen * 100)} % des Zuflusses gehen wieder ab`
-      : '') + '\n' +
-    (z.anzahl > 1
-      ? `\nAbflüsse im Schnitt ${fmt(z.schnitt)}, der größte ${fmt(z.groesste)}.\n`
+    `**Ausgeschüttet: ${fmt(k.ausgeschuettet)}** in ${k.anzahl} ` +
+    `${k.anzahl === 1 ? 'Ausschüttung' : 'Ausschüttungen'}\n` +
+    `_Alles über ${fmt(deckel)} je Stunde – das Geld verlässt das System._\n` +
+    (z.anzahl > 1 ? `Im Schnitt ${fmt(z.schnitt)}, die größte ${fmt(z.groesste)}.\n` : '') +
+    (k.behaltenAnzahl
+      ? `\n**Behalten: ${fmt(k.behalten)}** in ${k.behaltenAnzahl} ` +
+        `${k.behaltenAnzahl === 1 ? 'Stunde' : 'Stunden'}\n`
       : '') +
-    (z.gemessenAnzahl
-      ? `\n**Gemessener Gewinn je Abschöpfung:** ${fmt(z.gewinnNiedrigst)} bis ` +
-        `${fmt(z.gewinnHoechst)}${deckel ? ` · Deckel ${fmt(deckel)}` : ''}\n` +
-        '_Aus dem Gewinnzähler der Firma, nicht aus dem Kassenbuch._'
-      : '') +
-    (z.ohneMessung
-      ? `\n_Für ${z.ohneMessung} von ${z.anzahl} Abschöpfungen fehlt die Messung._`
-      : ''),
+    (k.vollstaendig
+      ? `\n**Kasse zu den Ausschüttungen**\n` +
+        `${uhr(k.ersterStamp)} Uhr: ${fmt(k.ersterStand)} → ` +
+        `${uhr(k.letzterStamp)} Uhr: ${fmt(k.letzterStand)}\n` +
+        `Dazugekommen ${fmt(k.ist)}, erwartet ${fmt(k.soll)} aus ${k.stunden} ` +
+        `${k.stunden === 1 ? 'Stunde' : 'Stunden'}.\n\n` +
+        (k.differenz > 0
+          ? `✅ **${fmt(k.differenz)} mehr als erwartet** – und das trotz ` +
+            `Gehältern und Miete.`
+          : k.differenz < 0
+            ? `📉 **${fmt(-k.differenz)} weniger als erwartet** – ungefähr die ` +
+              `Höhe von Gehältern und Miete.`
+            : '_Punktgenau._')
+      : '_Für die Kassenprobe fehlen Kassenstände._'),
     state, 'low');
 }
 
@@ -2620,8 +2636,8 @@ const BEFEHLE = {
       t += `\n\nKasse: ${fmt(f.kasse?.balance)}\n` +
         `Gewinn heute (seit 0 Uhr): **${g.ohneMessung ? 'mind. ' : ''}${fmt(g.summe)}**`;
       if (g.abschoepfungen) {
-        t += `\n_${fmt(g.abgeflossen)} abgeflossen, ${fmt(g.zugeflossen)} zugeflossen` +
-          `${g.laufend ? ` · ${fmt(g.laufend)} in dieser Stunde` : ''}._`;
+        t += `\n_Davon ${fmt(g.ausgeschuettet)} ausgeschüttet (aus dem System ` +
+          `heraus)${g.laufend ? ` · ${fmt(g.laufend)} in dieser Stunde` : ''}._`;
       } else if (g.laufend) {
         t += `\n_Noch nichts abgeschöpft._`;
       }
@@ -2715,46 +2731,58 @@ const BEFEHLE = {
         return [von, von + 24 * 3_600_000];
       };
       const zeile = (z) => `**${fmt(z.summe)}** in ${z.anzahl} ` +
-        `${z.anzahl === 1 ? 'Abschöpfung' : 'Abschöpfungen'}` +
+        `${z.anzahl === 1 ? 'Ausschüttung' : 'Ausschüttungen'}` +
         (z.anzahl > 1 ? ` · Schnitt ${fmt(z.schnitt)} · größte ${fmt(z.groesste)}` : '');
 
       // Was die Firma behalten durfte, wird gemessen, nicht aus dem Deckel
       // gerechnet: es fällt je Abschöpfung verschieden aus.
-      // Beschrieben wird, was im Kassenbuch steht, und nichts darüber hinaus.
+      // Die Ausschüttung ist ein Geldsink: alles über dem Stundendeckel
+      // verlässt das System. Was darunter bleibt, ist der Betrag, um den die
+      // Kasse in dieser Stunde wachsen *sollte* – davon ziehen Gehälter und
+      // Miete wieder ab.
       //
-      // Unter „Ausschüttung" stehen zwei Richtungen, und was sie bedeuten,
-      // steht nicht dabei: ob ein Zufluss das Geld der Firma ist oder nur
-      // durchläuft, und ob ein Abfluss eine Gebühr, eine Steuer oder eine
-      // Abschöpfung ist. Hier stand einmal „behalten", „verloren" und „bringt
-      // niemandem etwas" – gedeutet, nicht gemessen, und die Deutung war
-      // falsch. Jetzt stehen die Richtungen nebeneinander, benannt nach dem,
-      // was belegt ist.
-      const bilanz = (z) => {
-        if (!z.zugeflossen && !z.summe) return '';
-        let b = '\n\n**Im Kassenbuch verbucht**\n' +
-          `Zugeflossen **${fmt(z.zugeflossen)}**` +
-          (z.zuAnzahl ? ` in ${z.zuAnzahl} ${z.zuAnzahl === 1 ? 'Buchung' : 'Buchungen'}` +
-            (z.zuAnzahl > 1 ? ` (Schnitt ${fmt(Math.round(z.zugeflossen / z.zuAnzahl))})` : '')
-            : '') + '\n' +
-          `Abgeflossen **${fmt(z.summe)}**` +
-          (z.anzahl ? ` in ${z.anzahl} ${z.anzahl === 1 ? 'Buchung' : 'Buchungen'}` : '') + '\n' +
-          `**Unterm Strich ${fmt(z.zugeflossen - z.summe)}**` +
-          (z.zugeflossen
-            ? ` · ${Math.round(z.summe / z.zugeflossen * 100)} % des Zuflusses ` +
-              `gehen wieder ab`
-            : '');
+      // Daraus die Probe: Soll-Zuwachs aus dem Behaltenen gegen den
+      // Ist-Zuwachs der Kasse. Gemessen wird dabei **nur** zu den
+      // Ausschüttungszeitpunkten; ein Stand zwischendurch enthält den Gewinn,
+      // der gleich wieder abgeschöpft wird, und wäre grob zu hoch.
+      const bilanz = (eintraege) => {
+        const k = kassenBilanz(eintraege, deckel);
+        if (!k.anzahl) return '';
 
-        // Der gemessene Gewinn ist unabhängig davon, wie das Spiel bucht: er
-        // kommt aus dem Gewinnzähler der Firma, nicht aus dem Kassenbuch.
-        if (z.gemessenAnzahl) {
-          b += `\n\n**Gemessener Gewinn je Abschöpfung:** ` +
-            `${fmt(z.gewinnNiedrigst)} bis ${fmt(z.gewinnHoechst)}` +
-            (deckel ? ` · Deckel ${fmt(deckel)}` : '') + '\n' +
-            '_Aus dem Gewinnzähler der Firma gelesen, nicht aus dem Kassenbuch._';
+        let b = `\n\n**Ausgeschüttet: ${fmt(k.ausgeschuettet)}** in ${k.anzahl} ` +
+          `${k.anzahl === 1 ? 'Ausschüttung' : 'Ausschüttungen'}\n` +
+          `_Alles über ${fmt(deckel)} je Stunde – das Geld verlässt das System._`;
+
+        if (k.behaltenAnzahl) {
+          b += `\n\n**Behalten: ${fmt(k.behalten)}** in ${k.behaltenAnzahl} ` +
+            `${k.behaltenAnzahl === 1 ? 'Stunde' : 'Stunden'}\n` +
+            '_So viel sollte die Kasse dadurch gewachsen sein._';
         }
-        if (z.ohneMessung) {
-          b += `\n_Für ${z.ohneMessung} von ${z.anzahl} Abschöpfungen fehlt die ` +
-            `Messung._`;
+
+        if (k.vollstaendig) {
+          const d = k.differenz;
+          b += `\n\n**Kasse zu den Ausschüttungen**\n` +
+            `${uhr(k.ersterStamp)} Uhr: ${fmt(k.ersterStand)}\n` +
+            `${uhr(k.letzterStamp)} Uhr: ${fmt(k.letzterStand)}\n` +
+            `Dazugekommen: **${d >= 0 && k.ist >= 0 ? '+' : ''}${fmt(k.ist)}** · ` +
+            `erwartet ${fmt(k.soll)} aus ${k.stunden} ` +
+            `${k.stunden === 1 ? 'Stunde' : 'Stunden'}\n\n` +
+            (d > 0
+              ? `✅ **${fmt(d)} mehr als erwartet.**\n` +
+                `_Und das, obwohl Gehälter und Miete dagegen arbeiten – es kam ` +
+                `also Geld aus einer Quelle, die in dieser Rechnung nicht steht._`
+              : d < 0
+                ? `📉 **${fmt(-d)} weniger als erwartet.**\n` +
+                  `_Das ist der normale Fall: Gehälter und Miete zehren am ` +
+                  `Behaltenen. Die Zahl ist damit ungefähr ihre Höhe._`
+                : '_Punktgenau – keine Kosten, keine zusätzlichen Einnahmen._');
+          if (k.ohneMessung) {
+            b += `\n_Für ${k.ohneMessung} ${k.ohneMessung === 1 ? 'Stunde' : 'Stunden'} ` +
+              `fehlt die Messung, dort ist ${fmt(deckel)} angesetzt._`;
+          }
+        } else {
+          b += '\n\n_Für die Kassenprobe braucht es mindestens zwei ' +
+            'Ausschüttungen mit Kassenstand._';
         }
         return b;
       };
@@ -2766,29 +2794,29 @@ const BEFEHLE = {
           return `❌ \`${tag}\` ist kein Datum. Erwartet wird JJJJ-MM-TT, ` +
                  'oder du nimmst einen Vorschlag aus der Liste.';
         }
-        const z = ausschuettungSumme(ausschuettungenIm(...fenster(tag)));
-        if (!z.zugeflossen && !z.summe) return `_Am ${tagLang(tag)} wurde nichts verbucht._`;
-        return `💸 **Ausschüttungen am ${tagLang(tag)}**\n${zeile(z)}` + bilanz(z);
+        const eintraege = ausschuettungenIm(...fenster(tag));
+        const z = ausschuettungSumme(eintraege);
+        if (!z.anzahl) return `_Am ${tagLang(tag)} wurde nichts ausgeschüttet._`;
+        return `💸 **Ausschüttungen am ${tagLang(tag)}**\n${zeile(z)}` + bilanz(eintraege);
       }
 
       // Ohne Angabe: heute und seit dem Neustart
       const heute = budgetTag();
-      const h = ausschuettungSumme(ausschuettungenIm(...fenster(heute)));
+      const heuteEin = ausschuettungenIm(...fenster(heute));
+      const h = ausschuettungSumme(heuteEin);
       const seit = Date.now() - process.uptime() * 1000;
       const n = ausschuettungSumme(ausschuettungenIm(seit, Date.now()));
 
       let t = `💸 **Ausschüttungen**\n\n` +
-        `**Heute** (seit 0 Uhr): ${h.anzahl ? zeile(h) : '_noch nichts abgeschöpft_'}\n` +
+        `**Heute** (seit 0 Uhr): ${h.anzahl ? zeile(h) : '_noch nichts ausgeschüttet_'}\n` +
         `**Seit dem Neustart** (vor ${dauer(Date.now() - seit)}): ` +
         (n.anzahl ? zeile(n) : '_noch nichts_');
 
       if (n.letzte) {
-        t += `\n\nZuletzt ${fmt(n.letzte.betrag)} um ` +
-          `${new Date(n.letzte.stamp).toLocaleTimeString('de-DE').slice(0, 5)} Uhr.`;
+        t += `\n\nZuletzt ${fmt(Math.abs(n.letzte.betrag))} um ${uhr(n.letzte.stamp)} Uhr.`;
       }
 
-      // Kein Balken gegen eine Obergrenze: die Abschöpfung hat keine.
-      t += bilanz(h);
+      t += bilanz(heuteEin);
 
       const archiv = alleTage();
       if (!archiv.length) {
@@ -2869,7 +2897,7 @@ const BEFEHLE = {
           `Gewinn heute (seit 0 Uhr): ${(() => {
             const g = gewinnHeute(f.kasse?.profitSincePayout);
             return `${g.ohneMessung ? 'mind. ' : ''}${fmt(g.summe)}` +
-              (g.abschoepfungen ? ` · davon ${fmt(g.abgeflossen)} abgeschöpft` : '') +
+              (g.abschoepfungen ? ` · davon ${fmt(g.ausgeschuettet)} ausgeschüttet` : '') +
               (g.laufend ? ` · ${fmt(g.laufend)} in dieser Stunde` : '');
           })()}`;
         try {
@@ -3382,17 +3410,15 @@ if (args.includes('--ausschuettung-liste')) {
   console.table(liste.map((a, n) => ({
     Nr: n + 1,
     Uhrzeit: new Date(a.stamp).toLocaleTimeString('de-DE'),
-    Richtung: a.betrag >= 0 ? 'erhalten' : 'abgeschöpft',
+    Richtung: a.betrag >= 0 ? 'erhalten' : 'ausgeschüttet',
     Gewinn: Number.isFinite(a.gewinnVorher) ? fmt(a.gewinnVorher) : 'nicht gemessen',
-    Abgeschoepft: fmt(Math.abs(a.betrag)),
+    Ausgeschuettet: fmt(Math.abs(a.betrag)),
     Behalten: Number.isFinite(a.gewinnVorher)
       ? fmt(Math.max(0, a.gewinnVorher + a.betrag)) : '?',
-    'x Deckel': Number.isFinite(a.gewinnVorher) && CFG.GEWINN_DECKEL_STD
-      ? (a.gewinnVorher / CFG.GEWINN_DECKEL_STD).toFixed(1) : '?',
+    Kasse: Number.isFinite(a.kassenstand) ? fmt(a.kassenstand) : '?',
   })));
-  const z = ausschuettungSumme(liste);
   console.log('');
-  console.table(ausschuettungBilanz(z));
+  console.table(ausschuettungBilanz(liste));
   process.exit(0);
 }
 
@@ -3705,7 +3731,7 @@ if (args.includes('--einstellungen')) {
   const VORGABEN = [
     ['UC_LAGER_SCHWELLE', '500'], ['UC_LAGER_EINBRUCH_PCT', '15'],
     ['UC_PREIS_SPRUNG_PCT', '20'], ['UC_ERINNERUNG_MIN', '60'],
-    ['UC_GEWINN_DECKEL_STD', '2500'], ['UC_TAGESWECHSEL_STD', '4'],
+    ['UC_GEWINN_DECKEL_STD', '3005'], ['UC_TAGESWECHSEL_STD', '4'],
     ['UC_INTERVALL_MS', '60000'], ['UC_LUECKE_MIN', '10'],
     ['UC_API_WEG_MELDUNG_MIN', '30'], ['UC_WIKI_INTERVALL_STD', '24'],
     ['UC_NOTION_INTERVALL_STD', '168'], ['UC_AUSZAHLUNG_LIMIT', '35000'],

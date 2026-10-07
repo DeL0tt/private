@@ -194,12 +194,16 @@ wieder weg — eine Meldung je Vorgang wären 24 am Tag. Stattdessen:
 58.400 $ sind gestern abgeflossen – in 24 Ausschüttungen.
 Im Schnitt 2.433 $, die größte 2.500 $.
 
-Zugeflossen 1.285.471 $ in 11 Buchungen
-Abgeflossen 168.899 $ in 11 Buchungen
-Unterm Strich 1.116.572 $ · 13 % des Zuflusses gehen wieder ab
+Ausgeschüttet: 156.014 $ in 11 Ausschüttungen
+Alles über 3.005 $ je Stunde – das Geld verlässt das System.
 
-Gemessener Gewinn je Abschöpfung: 6.252 $ bis 28.162 $ · Deckel 2.500 $
-Aus dem Gewinnzähler der Firma, nicht aus dem Kassenbuch.
+Behalten: 33.055 $ in 11 Stunden
+
+Kasse zu den Ausschüttungen
+07:00 Uhr: 498.000 $ → 17:00 Uhr: 523.250 $
+Dazugekommen 25.250 $, erwartet 30.050 $ aus 10 Stunden.
+
+📉 4.800 $ weniger als erwartet – ungefähr die Höhe von Gehältern und Miete.
 ```
 
 **Auf Abruf** jederzeit, im Discord mit `/ausschuettung` oder auf dem Server:
@@ -209,12 +213,14 @@ node watcher.mjs --ausschuettung
 ```
 
 ```
-Zugeflossen       1.285.471 $ in 11
-Abgeflossen         168.899 $ in 11
-Unterm Strich     1.116.572 $
-Abfluss vom Zufluss       13 %
-Gewinn gemessen       6.252 $ bis 28.162 $
-Deckel                2.500 $/Std.
+Ausgeschuettet      156.014 $ in 11
+Behalten             33.055 $ in 11
+Deckel                3.005 $/Std.
+Kasse zuerst        498.000 $ (07:00)
+Kasse zuletzt       523.250 $ (17:00)
+Dazugekommen         25.250 $
+Erwartet             30.050 $ aus 10 Std.
+Abweichung           -4.800 $
 Ohne Messung               -
 Seit dem Neustart    91.200 $ in 38 (2 Tage)
 ```
