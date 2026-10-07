@@ -343,11 +343,16 @@ export function ausschuettungenIm(von, bis) {
  * Die Frage, die sie beantwortet: **ist mehr Geld in der Firma, als aus dem
  * Behaltenen folgen kann?**
  *
- * Die Mechanik dahinter: eine Ausschüttung nimmt alles über dem Stundendeckel
- * aus dem System – das Geld ist weg, es ist ein Geldsink. Was unter dem Deckel
+ * Die Mechanik dahinter: eine Ausschüttung nimmt alles über einer Grenze aus
+ * dem System – das Geld ist weg, es ist ein Geldsink. Was unter der Grenze
  * bleibt, ist der Betrag, um den die Firmenkasse in dieser Stunde wachsen
  * *sollte*. Gehälter und Miete ziehen davon wieder ab. Kommt am Ende mehr
  * heraus, kam Geld aus einer Quelle, die hier nicht verbucht ist.
+ *
+ * **Die Grenze ist je Stunde eine andere** – sie wird gewürfelt, nicht
+ * eingestellt. Deshalb wird sie gemessen (Gewinn vor der Ausschüttung minus
+ * dem, was abfloss) und aufsummiert, statt aus einer Konstante zu kommen. Der
+ * `deckel` dient nur als Ersatz für Stunden ohne Messung und als Vergleich.
  *
  * Gemessen wird **nur zu den Ausschüttungszeitpunkten**. Ein Kassenstand
  * zwischendurch taugt nicht: der enthält den Gewinn, der gleich wieder
@@ -364,12 +369,14 @@ export function kassenBilanz(eintraege, deckel = 0) {
 
   const ausgeschuettet = ab.reduce((n, a) => n - a.betrag, 0);
 
-  // Behalten je Ausschüttung: der gemessene Gewinn davor minus dem, was
-  // abgeflossen ist. Gemessen, nicht aus dem Deckel gerechnet – er fällt
-  // verschieden aus.
+  // Die Grenze dieser Stunde: der gemessene Gewinn davor minus dem, was
+  // abgeflossen ist. Das ist genau der Betrag, der stehen geblieben ist – und
+  // damit die gewürfelte Grenze selbst.
   const behaltenVon = (a) => Number.isFinite(a.gewinnVorher)
     ? Math.max(0, a.gewinnVorher + a.betrag)      // betrag ist negativ
     : null;
+
+  const grenzen = ab.map(behaltenVon).filter(x => x !== null);
 
   const mitStand = ab.filter(a => Number.isFinite(a.kassenstand));
   const erster = mitStand[0] || null;
@@ -388,12 +395,20 @@ export function kassenBilanz(eintraege, deckel = 0) {
 
   const ist = erster && letzter ? letzter.kassenstand - erster.kassenstand : null;
 
+  const behalten = grenzen.reduce((n, x) => n + x, 0);
+
   return {
     anzahl: ab.length,
     ausgeschuettet,
-    // Das Behaltene über alle Ausschüttungen, nicht nur die dazwischen.
-    behalten: ab.map(behaltenVon).filter(x => x !== null).reduce((n, x) => n + x, 0),
-    behaltenAnzahl: ab.map(behaltenVon).filter(x => x !== null).length,
+    // Das Behaltene über alle Ausschüttungen, nicht nur die dazwischen. Das
+    // ist gleichzeitig die Summe der gewürfelten Stundengrenzen.
+    behalten,
+    behaltenAnzahl: grenzen.length,
+    // Die Grenzen selbst, damit sichtbar wird, wie weit sie streuen.
+    grenzen,
+    grenzeNiedrigst: grenzen.length ? Math.min(...grenzen) : null,
+    grenzeHoechst: grenzen.length ? Math.max(...grenzen) : null,
+    grenzeSchnitt: grenzen.length ? Math.round(behalten / grenzen.length) : null,
 
     ersterStand: erster ? erster.kassenstand : null,
     ersterStamp: erster ? erster.stamp : null,

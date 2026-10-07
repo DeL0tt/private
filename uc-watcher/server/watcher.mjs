@@ -102,9 +102,11 @@ const CFG = {
   // Gewinn ueber dieser Grenze wird stuendlich abgeschoepft.
   // Was die Firma je Stunde behalten darf. Alles darüber nimmt die
   // Ausschüttung aus dem System – ein Geldsink, das Geld ist weg.
-  // Die Grenze ist nicht fest: sie fällt je Stunde verschieden aus, deshalb
-  // wird sie je Ausschüttung gemessen. Dieser Wert dient als Vergleich und
-  // als Ersatz, wenn eine Messung fehlt.
+  //
+  // Die Grenze wird je Stunde **gewürfelt**, sie ist keine Einstellung. Der
+  // Watcher misst sie deshalb bei jeder Ausschüttung (Gewinn davor minus dem,
+  // was abfloss) und summiert die gemessenen Werte. Dieser Wert hier ist nur
+  // der Ersatz für Stunden, in denen keine Messung vorliegt.
   GEWINN_DECKEL_STD:    +(process.env.UC_GEWINN_DECKEL_STD || 3_005),
   // Wann der Topf zurückgesetzt wird. Das ist Mitternacht und damit etwas
   // anderes als der Spieltag, der um 04:00 wechselt – die beiden nicht
@@ -1086,7 +1088,10 @@ function ausschuettungBilanz(eintraege) {
   return {
     Ausgeschuettet: `${fmt(k.ausgeschuettet)} in ${k.anzahl}`,
     Behalten: `${fmt(k.behalten)} in ${k.behaltenAnzahl}`,
-    Deckel: `${fmt(deckel)}/Std.`,
+    Stundengrenze: k.behaltenAnzahl
+      ? `${fmt(k.grenzeNiedrigst)} bis ${fmt(k.grenzeHoechst)} (${fmt(k.grenzeSchnitt)})`
+      : 'nicht gemessen',
+    'Ersatz ohne Messung': `${fmt(deckel)}/Std.`,
     'Kasse zuerst': k.ersterStand === null
       ? '–' : `${fmt(k.ersterStand)} (${uhr(k.ersterStamp)})`,
     'Kasse zuletzt': k.letzterStand === null
@@ -1338,11 +1343,13 @@ async function ausschuettungsBericht(state) {
   await push(`ausschuettung_tag_${vorbei}`, `💸 Ausschüttungen ${tagKurz(vorbei)}`,
     `**Ausgeschüttet: ${fmt(k.ausgeschuettet)}** in ${k.anzahl} ` +
     `${k.anzahl === 1 ? 'Ausschüttung' : 'Ausschüttungen'}\n` +
-    `_Alles über ${fmt(deckel)} je Stunde – das Geld verlässt das System._\n` +
+    '_Alles über der Stundengrenze – das Geld verlässt das System._\n' +
     (z.anzahl > 1 ? `Im Schnitt ${fmt(z.schnitt)}, die größte ${fmt(z.groesste)}.\n` : '') +
     (k.behaltenAnzahl
       ? `\n**Behalten: ${fmt(k.behalten)}** in ${k.behaltenAnzahl} ` +
-        `${k.behaltenAnzahl === 1 ? 'Stunde' : 'Stunden'}\n`
+        `${k.behaltenAnzahl === 1 ? 'Stunde' : 'Stunden'}\n` +
+        `Stundengrenze ${fmt(k.grenzeNiedrigst)} bis ${fmt(k.grenzeHoechst)}, ` +
+        `im Schnitt ${fmt(k.grenzeSchnitt)} – sie wird je Stunde neu gewürfelt.\n`
       : '') +
     (k.vollstaendig
       ? `\n**Kasse zu den Ausschüttungen**\n` +
@@ -2751,12 +2758,19 @@ const BEFEHLE = {
 
         let b = `\n\n**Ausgeschüttet: ${fmt(k.ausgeschuettet)}** in ${k.anzahl} ` +
           `${k.anzahl === 1 ? 'Ausschüttung' : 'Ausschüttungen'}\n` +
-          `_Alles über ${fmt(deckel)} je Stunde – das Geld verlässt das System._`;
+          '_Alles über der Stundengrenze – das Geld verlässt das System._';
 
+        // Die Grenze wird je Stunde gewürfelt. Also nicht eine Konstante
+        // hinschreiben, sondern die gemessenen Werte: Spanne, Schnitt, Summe.
         if (k.behaltenAnzahl) {
           b += `\n\n**Behalten: ${fmt(k.behalten)}** in ${k.behaltenAnzahl} ` +
             `${k.behaltenAnzahl === 1 ? 'Stunde' : 'Stunden'}\n` +
-            '_So viel sollte die Kasse dadurch gewachsen sein._';
+            `Stundengrenze ${k.grenzeNiedrigst === k.grenzeHoechst
+              ? fmt(k.grenzeSchnitt)
+              : `${fmt(k.grenzeNiedrigst)} bis ${fmt(k.grenzeHoechst)}` +
+                ` · im Schnitt ${fmt(k.grenzeSchnitt)}`}\n` +
+            '_Sie wird je Stunde neu gewürfelt – gemessen, nicht eingestellt.\n' +
+            'Die Summe ist der Betrag, um den die Kasse dadurch wachsen sollte._';
         }
 
         if (k.vollstaendig) {
@@ -3413,7 +3427,8 @@ if (args.includes('--ausschuettung-liste')) {
     Richtung: a.betrag >= 0 ? 'erhalten' : 'ausgeschüttet',
     Gewinn: Number.isFinite(a.gewinnVorher) ? fmt(a.gewinnVorher) : 'nicht gemessen',
     Ausgeschuettet: fmt(Math.abs(a.betrag)),
-    Behalten: Number.isFinite(a.gewinnVorher)
+    // Was stehen blieb, ist die gewürfelte Grenze dieser Stunde.
+    Grenze: Number.isFinite(a.gewinnVorher)
       ? fmt(Math.max(0, a.gewinnVorher + a.betrag)) : '?',
     Kasse: Number.isFinite(a.kassenstand) ? fmt(a.kassenstand) : '?',
   })));

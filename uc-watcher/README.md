@@ -194,16 +194,17 @@ wieder weg — eine Meldung je Vorgang wären 24 am Tag. Stattdessen:
 58.400 $ sind gestern abgeflossen – in 24 Ausschüttungen.
 Im Schnitt 2.433 $, die größte 2.500 $.
 
-Ausgeschüttet: 156.014 $ in 11 Ausschüttungen
-Alles über 3.005 $ je Stunde – das Geld verlässt das System.
+Ausgeschüttet: 154.549 $ in 11 Ausschüttungen
+Alles über der Stundengrenze – das Geld verlässt das System.
 
-Behalten: 33.055 $ in 11 Stunden
+Behalten: 34.520 $ in 11 Stunden
+Stundengrenze 2.640 $ bis 3.890 $, im Schnitt 3.138 $ – je Stunde neu gewürfelt.
 
 Kasse zu den Ausschüttungen
-07:00 Uhr: 498.000 $ → 17:00 Uhr: 523.250 $
-Dazugekommen 25.250 $, erwartet 30.050 $ aus 10 Stunden.
+07:00 Uhr: 498.000 $ → 17:00 Uhr: 524.670 $
+Dazugekommen 26.670 $, erwartet 31.640 $ aus 10 Stunden.
 
-📉 4.800 $ weniger als erwartet – ungefähr die Höhe von Gehältern und Miete.
+📉 4.970 $ weniger als erwartet – ungefähr die Höhe von Gehältern und Miete.
 ```
 
 **Auf Abruf** jederzeit, im Discord mit `/ausschuettung` oder auf dem Server:
@@ -213,14 +214,15 @@ node watcher.mjs --ausschuettung
 ```
 
 ```
-Ausgeschuettet      156.014 $ in 11
-Behalten             33.055 $ in 11
-Deckel                3.005 $/Std.
+Ausgeschuettet      154.549 $ in 11
+Behalten             34.520 $ in 11
+Stundengrenze         2.640 $ bis 3.890 $ (3.138 $)
+Ersatz ohne Messung   3.005 $/Std.
 Kasse zuerst        498.000 $ (07:00)
-Kasse zuletzt       523.250 $ (17:00)
-Dazugekommen         25.250 $
-Erwartet             30.050 $ aus 10 Std.
-Abweichung           -4.800 $
+Kasse zuletzt       524.670 $ (17:00)
+Dazugekommen         26.670 $
+Erwartet             31.640 $ aus 10 Std.
+Abweichung           -4.970 $
 Ohne Messung               -
 Seit dem Neustart    91.200 $ in 38 (2 Tage)
 ```

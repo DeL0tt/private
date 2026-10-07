@@ -307,28 +307,35 @@ als Gewinnanzeige wertlos. Der Tagesgewinn kommt stattdessen aus dem
 Gewinnzähler, wie er vor jeder Abschöpfung gemessen wurde, plus der laufenden
 Stunde.
 
-**Die Ausschüttung ist ein Geldsink.** Alles über dem Stundendeckel (Vorgabe
-3.005 $, einstellbar über `UC_GEWINN_DECKEL_STD`) verlässt das System – das
-Geld ist weg, nicht umgebucht. Was darunter bleibt, ist der Betrag, um den die
-Firmenkasse in dieser Stunde wachsen **sollte**. Gehälter und Miete ziehen
-davon wieder ab.
+**Die Ausschüttung ist ein Geldsink.** Alles über einer Grenze verlässt das
+System – das Geld ist weg, nicht umgebucht. Was darunter bleibt, ist der
+Betrag, um den die Firmenkasse in dieser Stunde wachsen **sollte**. Gehälter
+und Miete ziehen davon wieder ab.
+
+**Die Grenze wird je Stunde gewürfelt.** Sie ist keine Einstellung und keine
+Konstante. Der Watcher misst sie bei jeder Ausschüttung – Gewinn davor minus
+dem, was abfloss, ist genau der Betrag, der stehen blieb – und summiert die
+gemessenen Werte. `UC_GEWINN_DECKEL_STD` ist nur der Ersatz für Stunden, in
+denen keine Messung vorliegt.
 
 Daraus die **Kassenprobe**, die beantwortet, ob mehr Geld in der Firma ist, als
 daraus folgen kann:
 
 ```
-Ausgeschüttet: 156.014$ in 11 Ausschüttungen
-Alles über 3.005$ je Stunde – das Geld verlässt das System.
+Ausgeschüttet: 154.549$ in 11 Ausschüttungen
+Alles über der Stundengrenze – das Geld verlässt das System.
 
-Behalten: 33.055$ in 11 Stunden
-So viel sollte die Kasse dadurch gewachsen sein.
+Behalten: 34.520$ in 11 Stunden
+Stundengrenze 2.640$ bis 3.890$ · im Schnitt 3.138$
+Sie wird je Stunde neu gewürfelt – gemessen, nicht eingestellt.
+Die Summe ist der Betrag, um den die Kasse dadurch wachsen sollte.
 
 Kasse zu den Ausschüttungen
 07:00 Uhr: 498.000$
-17:00 Uhr: 523.250$
-Dazugekommen: 25.250$ · erwartet 30.050$ aus 10 Stunden
+17:00 Uhr: 524.670$
+Dazugekommen: 26.670$ · erwartet 31.640$ aus 10 Stunden
 
-📉 4.800$ weniger als erwartet.
+📉 4.970$ weniger als erwartet.
 Das ist der normale Fall: Gehälter und Miete zehren am Behaltenen.
 ```
 
@@ -344,10 +351,10 @@ Drei Dinge daran sind wichtig:
 - **Der erste Stand ist die Grundlinie**, kein Zuwachs. Zum Soll zählt deshalb
   nur das Behaltene der Stunden *nach* der ersten Ausschüttung – genau die, die
   zwischen erstem und letztem Stand liegen.
-- **Behalten wird gemessen, nicht aus dem Deckel gerechnet** (Gewinn vor der
-  Ausschüttung minus dem, was abfloss). Es fällt je Stunde verschieden aus.
-  Fehlt eine Messung, tritt der Deckel als Ersatz ein und die Auswertung sagt
-  es.
+- **Das Soll rechnet mit den gemessenen Grenzen**, nicht mit einer Konstante.
+  Bei zehn Stunden ist es die Summe der zehn gewürfelten Werte, nicht
+  10 × Deckel. Fehlt eine Messung, tritt der Deckel nur für diese eine Stunde
+  ein, und die Auswertung sagt es.
 
 Hier stand einmal „behalten durfte die Firma", „X % vom Gewinn abgeflossen" und
 „bringt niemandem etwas" – abgeleitet aus einem einzigen beobachteten Eintrag
