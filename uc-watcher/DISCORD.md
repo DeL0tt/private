@@ -303,57 +303,43 @@ abgeflossen sind.
 **Der Gewinn zählt seit 0 Uhr.** `/firma` und `/kasse` zeigten einmal
 `profitSincePayout` – „Gewinn seit der letzten Ausschüttung". Seit stündlich
 abgeschöpft wird, steht dort nur noch die angebrochene Stunde, und die Zahl war
-als Gewinnanzeige wertlos. Der Tagesgewinn wird stattdessen aus dem Archiv
-zusammengesetzt: was bei jeder Abschöpfung angesammelt war, plus das, was seit
-der letzten dazugekommen ist. Fehlt für eine Abschöpfung die Messung, steht
-„mind." davor.
+als Gewinnanzeige wertlos. Der Tagesgewinn kommt stattdessen aus dem
+Gewinnzähler, wie er vor jeder Abschöpfung gemessen wurde, plus der laufenden
+Stunde.
 
-**Gerechnet wird aus Gemessenem, nicht aus dem Deckel.** Das Kassenbuch kennt
-nur den Abfluss. Der Gewinn, der bis zur Abschöpfung angesammelt war, wird
-**vor** der Buchung gemessen und am Archiveintrag vermerkt:
+**Zwei Quellen, die getrennt bleiben.** Das war der teuerste Irrtum in diesem
+Teil, deshalb steht er hier:
 
-```
-gewinnVorher   der angesammelte Gewinn    (gemessen)
-betrag         was abgeschöpft wurde      (Kassenbuch)
-behalten       die Differenz              (gerechnet)
-```
-
-Gemessen wird *vorher*, nicht nachher. Der Stand danach verrät nur den Rest,
-und daraus auf den Deckel zu schließen war falsch: angesammelt war regelmäßig
-mehr als der Deckel vorsieht, und genau das soll die Zahl ja zeigen.
-
-Gemessen wird nur, wenn ein Messpunkt aus den letzten drei Durchläufen vor der
-Buchung vorliegt. War der Watcher aus, fehlt er; die Auswertung weist die Lücke
-aus („für X von Y Abschöpfungen fehlt der gemessene Gewinn") und zählt dort nur
-den Abfluss. Das Erwirtschaftete ist dann eine **Untergrenze** und entsprechend
-mit „mindestens" beschriftet.
-
-Die Zeile, an der die Entscheidung über Personal und Produktion hängt:
-
-```
-Gewinn je Abschöpfung: 10.278$ bis 27.358$ · erlaubt sind 2.500$
-⚠️ Selbst die schwächste gemessene Abschöpfung lag beim 4,1-fachen des Deckels.
-Die Produktion könnte um 76 % einbrechen, bevor weniger übrig bleibt.
-```
-
-Maßgeblich ist die **schwächste** Stunde, nicht der Durchschnitt: so weit kann
-man herunter, ohne in irgendeiner Stunde unter den Deckel zu fallen.
-
-Dazu kommt die Zeile **„über dem Soll"**: wie viel mehr erwirtschaftet wurde,
-als der Deckel vorsieht. Das ist der Teil der Produktion, der niemandem etwas
-bringt – Einkauf, Löhne und Lager kosten dafür trotzdem.
-
-**Zwei Dinge heißen „Ausschüttung", und sie haben nichts miteinander zu tun:**
-
-| | was es ist | Grenze |
+| Quelle | was sie sagt | was sie nicht sagt |
 |---|---|---|
-| **Abschöpfung** (stündlich) | der Server nimmt jeden Gewinn über 2.500 $/Std. weg | keine, nach oben offen |
-| **Auszahlung** an Mitglieder | ihr holt Geld aus der Firma | 50.000 $/Tag, 20.000 $ steuerfrei |
+| **Kassenbuch** | dass Geld zu- oder abfließt, und wie viel | *warum* – ob ein Zufluss bleibt oder durchläuft, ob ein Abfluss Gebühr, Steuer oder Abschöpfung ist |
+| **Gewinnzähler** | wie viel Gewinn bis zur Abschöpfung angesammelt war | nichts über die Verwendung |
 
-`/ausschuettung` zeigt die **Abschöpfung**. Einen Balken gegen eine
-Obergrenze gibt es dort nicht, weil es keine gibt: wer gut verdient, verliert
-entsprechend mehr. Das Tageslimit steht in `/kasse` und zählt nur
-Auszahlungen.
+Unter der Kategorie „Ausschüttung" stehen **beide Richtungen**: große Zuflüsse
+und kleinere Abflüsse, oft im selben Zeitpunkt. Der Bericht nennt sie
+nebeneinander und deutet sie nicht:
+
+```
+Im Kassenbuch verbucht
+Zugeflossen 1.285.471$ in 11 Buchungen (Schnitt 116.861$)
+Abgeflossen 168.899$ in 11 Buchungen
+Unterm Strich 1.116.572$ · 13 % des Zuflusses gehen wieder ab
+
+Gemessener Gewinn je Abschöpfung: 6.252$ bis 28.162$ · Deckel 2.500$
+Aus dem Gewinnzähler der Firma gelesen, nicht aus dem Kassenbuch.
+```
+
+Hier stand einmal „behalten durfte die Firma", „abgeflossen – X % vom Gewinn"
+und „bringt niemandem etwas". Das waren Deutungen, die aus einem einzigen
+beobachteten Eintrag abgeleitet waren, und sie waren falsch: der Abfluss ist
+rund ein Achtel des Zuflusses, nicht neun Zehntel des Gewinns. Die Felder
+`behalten`, `erwirtschaftet` und `anteilAb` im Archiv sind deshalb entfernt.
+
+**Gemessen wird vor der Buchung.** Der Zustand führt einen kurzen Gewinnverlauf
+mit Zeitstempeln; zu einer Abschöpfung wird der jüngste Messpunkt aus den
+letzten drei Durchläufen davor gesucht. Gibt es keinen – der Watcher war aus –,
+fehlt die Messung, und die Auswertung sagt das („für X von Y Abschöpfungen
+fehlt die Messung") statt eine Null auszugeben.
 
 **Um 0 Uhr** kommt der Tagesbericht nach `#benachrichtigung`: wie viel am
 abgelaufenen Tag abgeflossen ist. Das ist Gewinn, den die Firma erwirtschaftet

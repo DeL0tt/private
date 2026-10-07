@@ -1073,15 +1073,14 @@ function rechenlast() {
 function ausschuettungBilanz(z) {
   const deckel = CFG.GEWINN_DECKEL_STD;
   return {
-    Erwirtschaftet: (z.ohneMessung ? 'min. ' : '') + fmt(z.erwirtschaftet),
-    Behalten: `${fmt(z.behalten)} in ${z.behaltenAnzahl}`,
-    Abgeschoepft: `${fmt(z.summe)} in ${z.anzahl}`,
-    Abgeflossen: z.erwirtschaftet ? `${Math.round(z.anteilAb * 100)} %` : '–',
-    'Gewinn je Stunde': z.gemessenAnzahl
+    Zugeflossen: `${fmt(z.zugeflossen)} in ${z.zuAnzahl}`,
+    Abgeflossen: `${fmt(z.summe)} in ${z.anzahl}`,
+    'Unterm Strich': fmt(z.zugeflossen - z.summe),
+    'Abfluss vom Zufluss': z.zugeflossen
+      ? `${Math.round(z.summe / z.zugeflossen * 100)} %` : '–',
+    'Gewinn gemessen': z.gemessenAnzahl
       ? `${fmt(z.gewinnNiedrigst)} bis ${fmt(z.gewinnHoechst)}` : 'nicht gemessen',
-    'Deckel': `${fmt(deckel)}/Std.`,
-    'Schwaechste vs. Deckel': z.gemessenAnzahl
-      ? `${(z.gewinnNiedrigst / deckel).toFixed(1)}x` : '–',
+    Deckel: `${fmt(deckel)}/Std.`,
     'Ohne Messung': z.ohneMessung || '–',
   };
 }
@@ -1104,10 +1103,12 @@ function gewinnHeute(aktuell) {
   const z = ausschuettungSumme(ausschuettungenIm(von, von + 24 * 3_600_000));
   const laufend = Number.isFinite(aktuell) ? aktuell : 0;
   return {
-    summe: z.erwirtschaftet + laufend,
+    // Aus dem Gewinnzähler, nicht aus dem Kassenbuch: was bis zu jeder
+    // Abschöpfung angesammelt war, plus die laufende Stunde.
+    summe: z.gewinnGemessen + laufend,
     laufend,
     abgeflossen: z.summe,
-    behalten: z.behalten,
+    zugeflossen: z.zugeflossen,
     abschoepfungen: z.anzahl,
     // Fehlt für eine Abschöpfung die Messung, ist die Summe eine Untergrenze.
     ohneMessung: z.ohneMessung,
@@ -1314,31 +1315,32 @@ async function ausschuettungsBericht(state) {
   const bis = von + 24 * 3_600_000;
   const z = ausschuettungSumme(ausschuettungenIm(von, bis));
 
-  if (!z.erwirtschaftet) return log('Keine Ausschüttungen am', vorbei);
+  if (!z.zugeflossen && !z.summe) return log('Keine Ausschüttungen am', vorbei);
 
   const deckel = CFG.GEWINN_DECKEL_STD;
 
+  // Nur, was im Kassenbuch steht, und der gemessene Gewinn daneben. Was ein
+  // Zufluss oder Abfluss bedeutet, sagt das Buch nicht – also sagt der Bericht
+  // es auch nicht.
   await push(`ausschuettung_tag_${vorbei}`, `💸 Ausschüttungen ${tagKurz(vorbei)}`,
-    `Gestern erwirtschaftet: **${z.ohneMessung ? 'mindestens ' : ''}` +
-    `${fmt(z.erwirtschaftet)}**\n` +
-    `Behalten durfte die Firma **${fmt(z.behalten)}**\n` +
-    `Abgeflossen **${fmt(z.summe)}** in ${z.anzahl} ` +
-    `${z.anzahl === 1 ? 'Abschöpfung' : 'Abschöpfungen'} – ` +
-    `**${Math.round(z.anteilAb * 100)} %** vom Gewinn.\n` +
-    (z.anzahl > 1 ? `Im Schnitt ${fmt(z.schnitt)}, die größte ${fmt(z.groesste)}.\n` : '') +
-    (z.ohneMessung
-      ? `_Für ${z.ohneMessung} von ${z.anzahl} Abschöpfungen fehlt der ` +
-        `gemessene Gewinn – tatsächlich war es mehr._\n`
+    `Zugeflossen **${fmt(z.zugeflossen)}**` +
+    (z.zuAnzahl ? ` in ${z.zuAnzahl} ${z.zuAnzahl === 1 ? 'Buchung' : 'Buchungen'}` : '') + '\n' +
+    `Abgeflossen **${fmt(z.summe)}**` +
+    (z.anzahl ? ` in ${z.anzahl} ${z.anzahl === 1 ? 'Buchung' : 'Buchungen'}` : '') + '\n' +
+    `**Unterm Strich ${fmt(z.zugeflossen - z.summe)}**` +
+    (z.zugeflossen
+      ? ` · ${Math.round(z.summe / z.zugeflossen * 100)} % des Zuflusses gehen wieder ab`
+      : '') + '\n' +
+    (z.anzahl > 1
+      ? `\nAbflüsse im Schnitt ${fmt(z.schnitt)}, der größte ${fmt(z.groesste)}.\n`
       : '') +
-    (deckel && z.gemessenAnzahl
-      ? `\n**Gewinn je Abschöpfung:** ${fmt(z.gewinnNiedrigst)} bis ` +
-        `${fmt(z.gewinnHoechst)}, erlaubt sind ${fmt(deckel)}.\n` +
-        (z.gewinnNiedrigst > deckel
-          ? `⚠️ Auch die schwächste Abschöpfung lag beim ` +
-            `${String(Math.round(z.gewinnNiedrigst / deckel * 10) / 10).replace('.', ',')}-fachen ` +
-            `des Deckels. ${Math.round((1 - deckel / z.gewinnNiedrigst) * 100)} % der ` +
-            `Produktion bringen niemandem etwas.`
-          : `_Die schwächste lag unter dem Deckel._`)
+    (z.gemessenAnzahl
+      ? `\n**Gemessener Gewinn je Abschöpfung:** ${fmt(z.gewinnNiedrigst)} bis ` +
+        `${fmt(z.gewinnHoechst)}${deckel ? ` · Deckel ${fmt(deckel)}` : ''}\n` +
+        '_Aus dem Gewinnzähler der Firma, nicht aus dem Kassenbuch._'
+      : '') +
+    (z.ohneMessung
+      ? `\n_Für ${z.ohneMessung} von ${z.anzahl} Abschöpfungen fehlt die Messung._`
       : ''),
     state, 'low');
 }
@@ -2618,7 +2620,7 @@ const BEFEHLE = {
       t += `\n\nKasse: ${fmt(f.kasse?.balance)}\n` +
         `Gewinn heute (seit 0 Uhr): **${g.ohneMessung ? 'mind. ' : ''}${fmt(g.summe)}**`;
       if (g.abschoepfungen) {
-        t += `\n_Davon ${fmt(g.abgeflossen)} abgeschöpft, ${fmt(g.behalten)} geblieben` +
+        t += `\n_${fmt(g.abgeflossen)} abgeflossen, ${fmt(g.zugeflossen)} zugeflossen` +
           `${g.laufend ? ` · ${fmt(g.laufend)} in dieser Stunde` : ''}._`;
       } else if (g.laufend) {
         t += `\n_Noch nichts abgeschöpft._`;
@@ -2718,37 +2720,41 @@ const BEFEHLE = {
 
       // Was die Firma behalten durfte, wird gemessen, nicht aus dem Deckel
       // gerechnet: es fällt je Abschöpfung verschieden aus.
+      // Beschrieben wird, was im Kassenbuch steht, und nichts darüber hinaus.
+      //
+      // Unter „Ausschüttung" stehen zwei Richtungen, und was sie bedeuten,
+      // steht nicht dabei: ob ein Zufluss das Geld der Firma ist oder nur
+      // durchläuft, und ob ein Abfluss eine Gebühr, eine Steuer oder eine
+      // Abschöpfung ist. Hier stand einmal „behalten", „verloren" und „bringt
+      // niemandem etwas" – gedeutet, nicht gemessen, und die Deutung war
+      // falsch. Jetzt stehen die Richtungen nebeneinander, benannt nach dem,
+      // was belegt ist.
       const bilanz = (z) => {
-        if (!z.erwirtschaftet) return '';
-        const untergrenze = z.ohneMessung > 0;
-        let b = `\n\n**Erwirtschaftet:** ${untergrenze ? 'mindestens ' : ''}` +
-          `${fmt(z.erwirtschaftet)}\n` +
-          `Behalten durfte die Firma **${fmt(z.behalten)}**` +
-          (z.behaltenAnzahl > 1 ? ` (Schnitt ${fmt(z.behaltenSchnitt)})` : '') + '\n' +
-          `Abgeflossen **${fmt(z.summe)}** – ` +
-          `**${Math.round(z.anteilAb * 100)} %** vom Gewinn.` +
-          (untergrenze
-            ? `\n_Für ${z.ohneMessung} von ${z.anzahl} Abschöpfungen fehlt der ` +
-              `gemessene Gewinn – dort ist nur der Abfluss bekannt. Das ` +
-              `Erwirtschaftete ist also höher als hier steht._`
+        if (!z.zugeflossen && !z.summe) return '';
+        let b = '\n\n**Im Kassenbuch verbucht**\n' +
+          `Zugeflossen **${fmt(z.zugeflossen)}**` +
+          (z.zuAnzahl ? ` in ${z.zuAnzahl} ${z.zuAnzahl === 1 ? 'Buchung' : 'Buchungen'}` +
+            (z.zuAnzahl > 1 ? ` (Schnitt ${fmt(Math.round(z.zugeflossen / z.zuAnzahl))})` : '')
+            : '') + '\n' +
+          `Abgeflossen **${fmt(z.summe)}**` +
+          (z.anzahl ? ` in ${z.anzahl} ${z.anzahl === 1 ? 'Buchung' : 'Buchungen'}` : '') + '\n' +
+          `**Unterm Strich ${fmt(z.zugeflossen - z.summe)}**` +
+          (z.zugeflossen
+            ? ` · ${Math.round(z.summe / z.zugeflossen * 100)} % des Zuflusses ` +
+              `gehen wieder ab`
             : '');
 
-        // Die Zahl, an der die Entscheidung hängt: wie weit über dem Deckel
-        // produziert wird. Gerechnet wird aus dem gemessenen Gewinn je
-        // Abschöpfung, nicht aus einer Annahme über den Rest.
-        if (deckel && z.gemessenAnzahl) {
-          const luft = Math.round(z.gewinnNiedrigst / deckel * 10) / 10;
-          b += `\n\n**Gewinn je Abschöpfung:** ${fmt(z.gewinnNiedrigst)} bis ` +
-            `${fmt(z.gewinnHoechst)} · erlaubt sind ${fmt(deckel)}\n` +
-            (z.gewinnNiedrigst > deckel
-              ? `⚠️ Selbst die **schwächste** gemessene Abschöpfung lag beim ` +
-                `**${String(luft).replace('.', ',')}-fachen** des Deckels.\n` +
-                `_Die Produktion könnte um ` +
-                `${Math.round((1 - deckel / z.gewinnNiedrigst) * 100)} % einbrechen, ` +
-                `bevor weniger übrig bleibt. Löhne, Einkauf und Lager kosten für ` +
-                `diesen Teil trotzdem voll._`
-              : `_Die schwächste Abschöpfung lag unter dem Deckel – hier geht ` +
-                `Ertrag verloren, wenn die Produktion weiter sinkt._`);
+        // Der gemessene Gewinn ist unabhängig davon, wie das Spiel bucht: er
+        // kommt aus dem Gewinnzähler der Firma, nicht aus dem Kassenbuch.
+        if (z.gemessenAnzahl) {
+          b += `\n\n**Gemessener Gewinn je Abschöpfung:** ` +
+            `${fmt(z.gewinnNiedrigst)} bis ${fmt(z.gewinnHoechst)}` +
+            (deckel ? ` · Deckel ${fmt(deckel)}` : '') + '\n' +
+            '_Aus dem Gewinnzähler der Firma gelesen, nicht aus dem Kassenbuch._';
+        }
+        if (z.ohneMessung) {
+          b += `\n_Für ${z.ohneMessung} von ${z.anzahl} Abschöpfungen fehlt die ` +
+            `Messung._`;
         }
         return b;
       };
@@ -2761,7 +2767,7 @@ const BEFEHLE = {
                  'oder du nimmst einen Vorschlag aus der Liste.';
         }
         const z = ausschuettungSumme(ausschuettungenIm(...fenster(tag)));
-        if (!z.erwirtschaftet) return `_Am ${tagLang(tag)} wurde nichts verbucht._`;
+        if (!z.zugeflossen && !z.summe) return `_Am ${tagLang(tag)} wurde nichts verbucht._`;
         return `💸 **Ausschüttungen am ${tagLang(tag)}**\n${zeile(z)}` + bilanz(z);
       }
 
@@ -3394,7 +3400,9 @@ if (args.includes('--ausschuettung-liste')) {
 // das Spiel die stündliche Abschöpfung wirklich verbucht – und was der
 // Watcher daraus macht.
 // Einmalige Korrektur der Alt-Einträge: bis zur Vorzeichen-Korrektur wurde
-// jeder Betrag positiv gespeichert. Ohne --ja wird nur gerechnet.
+// jeder Betrag positiv gespeichert. Ohne --ja wird nur gerechnet – und das
+// sollte man auch erst tun: Zuflüsse unter derselben Kategorie gibt es
+// wirklich, und einer ohne Kassenstand würde hier mit umgedreht.
 if (args.includes('--archiv-vorzeichen')) {
   const schreiben = args.includes('--ja');
   const r = vorzeichenKorrektur({ schreiben });
@@ -3412,7 +3420,11 @@ if (args.includes('--archiv-vorzeichen')) {
   })));
   console.log(r.geschrieben
     ? '\n✅ Geschrieben. Die Einträge zählen jetzt als Abfluss.'
-    : '\nNichts geändert. Mit --ja wird geschrieben:\n' +
+    : '\n⚠️  Nichts geändert – und erst prüfen, dann schreiben.\n' +
+      'Zuflüsse unter derselben Kategorie gibt es wirklich. Fehlt einem der\n' +
+      'Kassenstand, wird er hier mit umgedreht und zählt danach falsch.\n' +
+      'Sieh die Liste oben durch: gehören diese Beträge in den Abfluss?\n\n' +
+      'Wenn ja:\n' +
       '  node --env-file=.env watcher.mjs --archiv-vorzeichen --ja');
   process.exit(0);
 }
@@ -4008,18 +4020,6 @@ if (args.includes('--test')) {
     process.exit(1);
   }
   process.exit(0);
-}
-
-// Einmalige Korrektur der Alt-Einträge beim Start. Bis zur Vorzeichen-
-// Korrektur hat jede Abschöpfung positiv im Archiv gestanden und zählte damit
-// als Gutschrift. Erkannt werden die Alt-Einträge daran, dass ihnen der
-// Kassenstand fehlt; wiederholte Starts finden nichts mehr.
-{
-  const k = vorzeichenKorrektur({ schreiben: true });
-  if (k.anzahl) {
-    info(`Archiv korrigiert: ${k.anzahl} Ausschüttungen ohne Vorzeichen ` +
-         `(${fmt(k.summe)}) zählen jetzt als Abfluss.`);
-  }
 }
 
 info(`UC-Watcher läuft – Intervall ${CFG.INTERVALL_MS / 1000}s, Zustand: ${CFG.STATE_FILE}`);

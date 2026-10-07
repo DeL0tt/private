@@ -194,12 +194,12 @@ wieder weg — eine Meldung je Vorgang wären 24 am Tag. Stattdessen:
 58.400 $ sind gestern abgeflossen – in 24 Ausschüttungen.
 Im Schnitt 2.433 $, die größte 2.500 $.
 
-Gestern erwirtschaftet: 247.832 $
-Behalten durfte die Firma 19.000 $ in 6 Gutschriften
-Abgeflossen 228.832 $ in 6 Abschöpfungen – 92 % vom Gewinn.
+Zugeflossen 1.285.471 $ in 11 Buchungen
+Abgeflossen 168.899 $ in 11 Buchungen
+Unterm Strich 1.116.572 $ · 13 % des Zuflusses gehen wieder ab
 
-⚠️ 232.832 $ über dem Soll. Vorgesehen sind 2.500 $ je Stunde, also 15.000 $ –
-erwirtschaftet wurde das 16,5-fache.
+Gemessener Gewinn je Abschöpfung: 6.252 $ bis 28.162 $ · Deckel 2.500 $
+Aus dem Gewinnzähler der Firma, nicht aus dem Kassenbuch.
 ```
 
 **Auf Abruf** jederzeit, im Discord mit `/ausschuettung` oder auf dem Server:
@@ -209,12 +209,13 @@ node watcher.mjs --ausschuettung
 ```
 
 ```
-Erwirtschaftet      247.832 $
-Behalten             19.000 $ in 6
-Abgeschoepft        228.832 $ in 6
-Abgeflossen              92 %
-Soll laut Deckel     15.000 $ (2.500 $/Std.)
-Ueber dem Soll      232.832 $
+Zugeflossen       1.285.471 $ in 11
+Abgeflossen         168.899 $ in 11
+Unterm Strich     1.116.572 $
+Abfluss vom Zufluss       13 %
+Gewinn gemessen       6.252 $ bis 28.162 $
+Deckel                2.500 $/Std.
+Ohne Messung               -
 Seit dem Neustart    91.200 $ in 38 (2 Tage)
 ```
 

@@ -251,9 +251,10 @@ export function summiere(tage) {
   const summe = {
     tage: tage.length, firmaMs: 0, gesamtMs: 0,
     // `ausschuettungen`/`betrag` meinen die Abflussseite – danach wird am
-    // häufigsten gefragt. `behalten` und `erwirtschaftet` daneben, damit ein
-    // Wochenbericht beide Richtungen zeigen kann.
-    ausschuettungen: 0, betrag: 0, behalten: 0, erwirtschaftet: 0,
+    // häufigsten gefragt. `zugeflossen` daneben, damit ein Wochenbericht beide
+    // Richtungen zeigen kann, und `gewinnGemessen` als die Zahl aus dem
+    // Gewinnzähler, die von der Buchungsart unabhängig ist.
+    ausschuettungen: 0, betrag: 0, zugeflossen: 0, gewinnGemessen: 0,
     auszahlung: 0, freibetrag: 0,
     von: tage[0]?.tag || null, bis: tage[tage.length - 1]?.tag || null,
     spieler: [],
@@ -263,9 +264,13 @@ export function summiere(tage) {
     summe.firmaMs += t.firmaMs || 0;
     for (const x of t.ausschuettungen || []) {
       const b = x.betrag || 0;
-      if (b < 0) { summe.ausschuettungen++; summe.betrag -= b; }
-      else summe.behalten += b;
-      summe.erwirtschaftet += Math.abs(b);
+      if (b < 0) {
+        summe.ausschuettungen++;
+        summe.betrag -= b;
+        if (Number.isFinite(x.gewinnVorher)) summe.gewinnGemessen += x.gewinnVorher;
+      } else {
+        summe.zugeflossen += b;
+      }
     }
     summe.auszahlung += t.auszahlung?.summe || 0;
     summe.freibetrag += t.auszahlung?.freibetrag || 0;
@@ -336,9 +341,16 @@ export function ausschuettungenIm(von, bis) {
  * Einmalige Korrektur der Alt-Einträge.
  *
  * Bis zur Vorzeichen-Korrektur hat merkeAusschuettung() jeden Betrag mit
- * Math.abs() positiv gespeichert. Diese Einträge sehen nun wie Gutschriften
- * aus, waren aber Abflüsse. Erkennbar sind sie daran, dass ihnen der
- * Kassenstand fehlt – den schreibt erst die neue Fassung mit.
+ * Math.abs() positiv gespeichert. Diese Einträge sehen wie Zuflüsse aus, waren
+ * aber Abflüsse. Als Kennzeichen dient der fehlende Kassenstand – den schreibt
+ * erst die neue Fassung mit.
+ *
+ * **Von Hand aufrufen, nie automatisch.** Das Kennzeichen ist nicht sicher:
+ * Zuflüsse unter derselben Kategorie gibt es wirklich, und einer ohne
+ * Kassenstand würde hier fälschlich umgedreht. Beim Dienststart lief das
+ * einmal mit – das ist entfernt, weil der Schaden größer wäre als der Nutzen.
+ * Vor dem Schreiben erst ohne `schreiben` ansehen, welche Einträge gemeint
+ * sind.
  *
  * `schreiben: false` rechnet nur durch und ändert nichts.
  */
@@ -368,50 +380,34 @@ export function vorzeichenKorrektur({ schreiben = false } = {}) {
 }
 
 /**
- * Die beiden Richtungen einer Ausschüttung getrennt auswerten.
+ * Eine Reihe von Ausschüttungsbuchungen auswerten.
  *
- * `behalten`    was der Firma zugeflossen ist (positive Buchungen)
- * `abgefuehrt`  was ihr weggenommen wurde (negative Buchungen)
- * `erwirtschaftet` beides zusammen – der Gewinn, der wirklich entstanden ist
- * `summe`       bleibt der Abfluss, denn danach wird am häufigsten gefragt
+ * Zwei Quellen, die nicht vermischt werden dürfen:
  *
- * Die Einzelbeträge kommen mit, weil „wie viel durften wir behalten" je
- * Abschöpfung verschieden ausfällt und sich nicht aus einem Deckel ableiten
- * lässt. Gemessen statt angenommen.
+ *   **Kassenbuch** – unter „Ausschüttung" stehen beide Richtungen, Zufluss und
+ *   Abfluss. Was eine Richtung *bedeutet*, steht nicht dabei: ob ein Zufluss
+ *   der Firma bleibt oder nur durchläuft, ob ein Abfluss Gebühr, Steuer oder
+ *   Abschöpfung ist. Deshalb heißen die Felder `zugeflossen` und `summe`
+ *   (Abfluss) und sonst nichts.
+ *
+ *   **Gewinnzähler** – `gewinnVorher` am Eintrag, vor jeder Abschöpfung
+ *   gemessen. Von der Buchungsart unabhängig und die belastbarere Zahl.
+ *
+ * Hier standen einmal `behalten`, `erwirtschaftet` und `anteilAb`, die beides
+ * zusammenrechneten. Das setzte voraus, dass ein Zufluss bei der Firma bleibt
+ * und ein Abfluss verloren ist – gedeutet, nicht gemessen, und die Deutung war
+ * falsch. Wer eine Aussage über Gewinn braucht, nimmt `gewinnGemessen`.
  */
 export function ausschuettungSumme(eintraege) {
-  const zu  = eintraege.filter(a => (a.betrag || 0) > 0);
-  const ab  = eintraege.filter(a => (a.betrag || 0) < 0);
+  const zu = eintraege.filter(a => (a.betrag || 0) > 0);
+  const ab = eintraege.filter(a => (a.betrag || 0) < 0);
 
   const abgefuehrt = ab.reduce((n, a) => n - a.betrag, 0);
-
-  // Gerechnet wird aus dem, was gemessen wurde, nicht aus dem Deckel:
-  //
-  //   gewinnVorher  der Gewinn, der bis zur Abschöpfung angesammelt war
-  //   betrag        was davon abgeschöpft wurde (steht im Kassenbuch)
-  //   behalten      die Differenz – was der Firma geblieben ist
-  //
-  // Sie fällt je Abschöpfung verschieden aus, und sie ist nicht der Deckel:
-  // angesammelt war regelmäßig mehr. Deshalb wird nichts unterstellt.
-  const gemessen = ab.filter(a => Number.isFinite(a.gewinnVorher));
-  const behaltenJe = [
-    ...zu.map(a => a.betrag),
-    ...gemessen.map(a => Math.max(0, a.gewinnVorher + a.betrag)),  // betrag < 0
-  ];
-  const behalten = behaltenJe.reduce((n, x) => n + x, 0);
-
-  // Das Erwirtschaftete aus den Messungen, für die nicht gemessenen
-  // Abschöpfungen mindestens ihr Abfluss. Damit ist die Zahl eine Untergrenze
-  // und nie zu hoch.
-  const erwirtschaftet = gemessen.reduce((n, a) => n + a.gewinnVorher, 0) +
-    ab.filter(a => !Number.isFinite(a.gewinnVorher)).reduce((n, a) => n - a.betrag, 0) +
-    zu.reduce((n, a) => n + a.betrag, 0);
-
-  // Für die Abflussseite weiter die bisherigen Felder, damit die Anzeige
-  // nicht an zwei Stellen rechnen muss.
   const betraege = ab.map(a => -a.betrag);
+  const gemessen = ab.filter(a => Number.isFinite(a.gewinnVorher));
 
   return {
+    // --- Abflussseite: danach wird am häufigsten gefragt ---
     anzahl: ab.length,
     betraege,
     summe: abgefuehrt,
@@ -420,22 +416,19 @@ export function ausschuettungSumme(eintraege) {
     erste: ab[0] || eintraege[0] || null,
     letzte: ab[ab.length - 1] || eintraege[eintraege.length - 1] || null,
 
-    behalten,
-    behaltenAnzahl: behaltenJe.length,
-    behaltenJe,
-    behaltenSchnitt: behaltenJe.length ? Math.round(behalten / behaltenJe.length) : 0,
+    // --- Zuflussseite ---
+    zugeflossen: zu.reduce((n, a) => n + a.betrag, 0),
+    zuAnzahl: zu.length,
+
+    // --- Gewinnzähler, unabhängig vom Kassenbuch ---
+    gewinnGemessen: gemessen.reduce((n, a) => n + a.gewinnVorher, 0),
+    gemessenAnzahl: gemessen.length,
     // Für wie viele Abschöpfungen die Messung fehlt. Ohne diese Angabe liest
     // sich eine Lücke wie ein Tag ohne Gewinn – dabei fehlt nur die Zahl.
     ohneMessung: ab.length - gemessen.length,
-    gemessenAnzahl: gemessen.length,
-    // Der höchste angesammelte Gewinn einer einzelnen Abschöpfung. Die Zahl,
-    // an der sich ablesen lässt, wie weit über dem Deckel produziert wurde.
     gewinnHoechst: gemessen.length ? Math.max(...gemessen.map(a => a.gewinnVorher)) : 0,
     gewinnNiedrigst: gemessen.length ? Math.min(...gemessen.map(a => a.gewinnVorher)) : 0,
-    erwirtschaftet,
-    // Wie viel vom Erwirtschafteten abgeflossen ist. Die Zahl, an der sich
-    // entscheidet, ob mehr Produktion überhaupt noch etwas bringt.
-    anteilAb: erwirtschaftet ? abgefuehrt / erwirtschaftet : 0,
+
     // Alle Buchungen, beide Richtungen, in der Reihenfolge des Tages.
     alle: eintraege,
   };
