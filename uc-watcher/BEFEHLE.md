@@ -113,7 +113,8 @@ cd ~/private/uc-watcher/server
 | `node --env-file=.env watcher.mjs --einstellungen` | Alle Werte, dazu das **Zeitkonto**: wohin jede Minute des Spieltags ging |
 | `node --env-file=.env watcher.mjs --freibetrag` | Welche Buchungen gegen das Tageslimit gezählt haben – und welche nicht, mit Grund |
 | `node --env-file=.env watcher.mjs --ausschuettung` | Was heute und seit dem Neustart abgeschöpft wurde |
-| `node --env-file=.env watcher.mjs --ausschuettung-liste [JJJJ-MM-TT]` | Jede einzelne Abschöpfung des Tages mit Uhrzeit und Betrag |
+| `node --env-file=.env watcher.mjs --ausschuettung-liste [JJJJ-MM-TT]` | Jede einzelne Abschöpfung des Tages mit Uhrzeit, Betrag und gelesener Stundengrenze |
+| `node --env-file=.env watcher.mjs --ausschuettung-texte [JJJJ-MM-TT]` | Die rohen Buchungstexte – dort steht die gewürfelte Stundengrenze |
 | `node --env-file=.env watcher.mjs --buchungen` | Das rohe Kassenbuch nach Kategorie – zeigt, was das Spiel wie verbucht |
 | `node --env-file=.env watcher.mjs --archiv-vorzeichen` | Alt-Einträge ohne Vorzeichen anzeigen (einmalige Korrektur, `--ja` schreibt) |
 | `node --env-file=.env watcher.mjs --notion` | Wiki-/Notion-Abgleich sofort, mit Titelliste |
@@ -150,7 +151,6 @@ Speichern mit `Strg+O`, `Enter`, schließen mit `Strg+X`. Danach **immer**
 | `UC_LAGER_SCHWELLE` | `500` | Warnung, wenn das Lager darunter fällt |
 | `UC_LAGER_EINBRUCH_PCT` | `15` | Ab wie viel Prozent plötzlichem Verlust gewarnt wird |
 | `UC_PREIS_SPRUNG_PCT` | `20` | Ab welchem Preissprung gemeldet wird |
-| `UC_GEWINN_DECKEL_STD` | `2500` | Gewinn je Stunde, darüber wird abgeschöpft |
 | `UC_AUSZAHLUNG_LIMIT` | `50000` | Tageslimit für Auszahlungen insgesamt |
 | `UC_AUSZAHLUNG_FREI` | `20000` | davon steuerfrei |
 | `UC_TAGESBERICHT` | an | Tagesbericht um 04:00 – `0` schaltet ihn ab |

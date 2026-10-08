@@ -184,27 +184,35 @@ Firma gelaufen: 4 Std. 0 Min.
 Den Zwischenstand des laufenden Tages gibt es jederzeit mit
 `node watcher.mjs --tagesbericht`. Abschalten mit `UC_TAGESBERICHT=0`.
 
-**Abgeschöpft wird stündlich.** Alles über 2.500 $ Gewinn je Stunde geht
-wieder weg — eine Meldung je Vorgang wären 24 am Tag. Stattdessen:
+**Abgeschöpft wird stündlich.** Alles über einer je Stunde neu gewürfelten
+Grenze geht wieder weg — eine Meldung je Vorgang wären 24 am Tag. Die Grenze
+nennt die Firma im Buchungstext selbst („alles über 3.005$/Std"); von dort
+liest der Watcher sie, errechnen lässt sie sich nicht. Stattdessen:
 
 **Um 0 Uhr** ein Bericht für den abgelaufenen Tag:
 
 ```
 💸 Ausschüttungen 05.10.
-58.400 $ sind gestern abgeflossen – in 24 Ausschüttungen.
-Im Schnitt 2.433 $, die größte 2.500 $.
+Erwirtschaftet: 189.069 $
+Abgeschöpft plus behalten – beides gemessen, nicht aus dem Gewinnzähler
+gerechnet.
+Im Schnitt 14.050 $ je Abschöpfung, die größte 31.452 $.
 
 Ausgeschüttet: 154.549 $ in 11 Ausschüttungen
 Alles über der Stundengrenze – das Geld verlässt das System.
 
 Behalten: 34.520 $ in 11 Stunden
-Stundengrenze 2.640 $ bis 3.890 $, im Schnitt 3.138 $ – je Stunde neu gewürfelt.
+Stundengrenze 2.640 $ bis 3.890 $ · im Schnitt 3.138 $
+Je Stunde neu gewürfelt, aus dem Buchungstext gelesen.
+Die Summe ist der Betrag, um den die Kasse dadurch wachsen sollte.
 
 Kasse zu den Ausschüttungen
-07:00 Uhr: 498.000 $ → 17:00 Uhr: 524.670 $
-Dazugekommen 26.670 $, erwartet 31.640 $ aus 10 Stunden.
+07:00 Uhr: 498.000 $
+17:00 Uhr: 524.670 $
+Dazugekommen: +26.670 $ · erwartet 31.640 $ aus 10 Stunden
 
-📉 4.970 $ weniger als erwartet – ungefähr die Höhe von Gehältern und Miete.
+📉 4.970 $ weniger als erwartet.
+Gehälter und Miete zehren am Behaltenen – sie stecken in dieser Differenz.
 ```
 
 **Auf Abruf** jederzeit, im Discord mit `/ausschuettung` oder auf dem Server:
@@ -217,13 +225,12 @@ node watcher.mjs --ausschuettung
 Ausgeschuettet      154.549 $ in 11
 Behalten             34.520 $ in 11
 Stundengrenze         2.640 $ bis 3.890 $ (3.138 $)
-Ersatz ohne Messung   3.005 $/Std.
 Kasse zuerst        498.000 $ (07:00)
 Kasse zuletzt       524.670 $ (17:00)
 Dazugekommen         26.670 $
 Erwartet             31.640 $ aus 10 Std.
 Abweichung           -4.970 $
-Ohne Messung               -
+Ohne Grenze                -
 Seit dem Neustart    91.200 $ in 38 (2 Tage)
 ```
 

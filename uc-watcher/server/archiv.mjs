@@ -159,17 +159,62 @@ export function merkeZeiten(tag, spieler, firmaMs) {
  * `behalten` ist optional: der Kassenstand nach der Buchung, falls das
  * Kassenbuch ihn mitliefert. Er wird nur mitgeschrieben, nicht gedeutet.
  */
+export function zahlAusText(roh) {
+  // Deutsche Schreibweise: Punkt trennt die Tausender, Komma die
+  // Nachkommastellen. Number() allein läse "3.005" als 3,005.
+  if (roh === null || roh === undefined) return NaN;
+  const n = Number(String(roh).trim().replace(/\./g, '').replace(',', '.'));
+  return Number.isFinite(n) ? n : NaN;
+}
+
+/**
+ * Die gewürfelte Stundengrenze aus dem Buchungstext lesen.
+ *
+ * Die Firma schreibt sie selbst mit, etwa „Betrag ausgeschüttet: 7.778$,
+ * alles über 3.005$/Std". Das ist die einzige echte Messung, die es für die
+ * Grenze gibt – sie wird je Stunde neu gewürfelt.
+ *
+ * Aus dem Gewinnzähler der API lässt sie sich **nicht** gewinnen:
+ * `profitSincePayout` läuft über die stündliche Abschöpfung hinweg weiter.
+ * „Zähler minus Abschöpfung" ergab deshalb Grenzen von über 250.000$, wo
+ * tatsächlich etwa 3.000$ stehen geblieben sind.
+ *
+ * Findet sich im Text keine Grenze, gibt es für diese Stunde keine – geraten
+ * wird nicht.
+ */
+export function grenzeAusText(text) {
+  if (!text) return null;
+  const m = String(text).match(
+    /(?:über|ueber)\s*([\d][\d.,]*)\s*\$?\s*(?:\/|pro\s*)\s*(?:std|stunde|stunden|h)\b\.?/i);
+  if (!m) return null;
+  const zahl = zahlAusText(m[1]);
+  return Number.isFinite(zahl) && zahl >= 0 ? zahl : null;
+}
+
+/** Der rohe Gewinnzähler eines Eintrags, unter altem und neuem Namen. */
+const zaehlerVon = (a) => {
+  const w = Number.isFinite(a.gewinnZaehler) ? a.gewinnZaehler : a.gewinnVorher;
+  return Number.isFinite(w) ? w : null;
+};
+
 export function merkeAusschuettung(tag, stamp, betrag, kassenstand = null,
-                                   gewinnVorher = null) {
+                                   gewinnZaehler = null, detail = '') {
   if (CFG.AUS || !tag) return;
   const eintrag = tagEintrag(tag);
   if (eintrag.ausschuettungen.some(a => a.stamp === stamp)) return;
   const eintragNeu = { stamp, betrag: betrag || 0 };
   if (Number.isFinite(kassenstand)) eintragNeu.kassenstand = kassenstand;
-  // Der Gewinn, der bis zur Abschöpfung angesammelt war. Gemessen vor der
-  // Buchung, nicht danach: der Stand danach verrät nur den Rest, und aus ihm
-  // auf den Deckel zu schließen war falsch – angesammelt war mehr.
-  if (Number.isFinite(gewinnVorher)) eintragNeu.gewinnVorher = gewinnVorher;
+  // Der Gewinnzähler der API als Rohwert – nicht als Gewinn dieser Stunde und
+  // nirgends aufsummiert. Er läuft über die Abschöpfung hinweg weiter, 17
+  // Stände addiert ergäben den Tagesgewinn siebzehnfach.
+  if (Number.isFinite(gewinnZaehler)) eintragNeu.gewinnZaehler = gewinnZaehler;
+  // Den Buchungstext mitschreiben: dort steht die gewürfelte Grenze. Bleibt er
+  // erhalten, lässt sich eine geänderte Formulierung später nachlesen, statt
+  // dass die Messung stillschweigend ausfällt.
+  const text = String(detail || '').trim().slice(0, 200);
+  if (text) eintragNeu.detail = text;
+  const grenze = grenzeAusText(text);
+  if (Number.isFinite(grenze)) eintragNeu.grenze = grenze;
   eintrag.ausschuettungen.push(eintragNeu);
   setzeTag(tag, eintrag);
 }
@@ -252,9 +297,9 @@ export function summiere(tage) {
     tage: tage.length, firmaMs: 0, gesamtMs: 0,
     // `ausschuettungen`/`betrag` meinen die Abflussseite – danach wird am
     // häufigsten gefragt. `zugeflossen` daneben, damit ein Wochenbericht beide
-    // Richtungen zeigen kann, und `gewinnGemessen` als die Zahl aus dem
-    // Gewinnzähler, die von der Buchungsart unabhängig ist.
-    ausschuettungen: 0, betrag: 0, zugeflossen: 0, gewinnGemessen: 0,
+    // Richtungen zeigen kann, und `behalten` als Summe der gewürfelten
+    // Stundengrenzen, soweit sie im Buchungstext standen.
+    ausschuettungen: 0, betrag: 0, zugeflossen: 0, behalten: 0, ohneGrenze: 0,
     auszahlung: 0, freibetrag: 0,
     von: tage[0]?.tag || null, bis: tage[tage.length - 1]?.tag || null,
     spieler: [],
@@ -267,7 +312,8 @@ export function summiere(tage) {
       if (b < 0) {
         summe.ausschuettungen++;
         summe.betrag -= b;
-        if (Number.isFinite(x.gewinnVorher)) summe.gewinnGemessen += x.gewinnVorher;
+        if (Number.isFinite(x.grenze)) summe.behalten += x.grenze;
+        else summe.ohneGrenze++;
       } else {
         summe.zugeflossen += b;
       }
@@ -350,9 +396,16 @@ export function ausschuettungenIm(von, bis) {
  * heraus, kam Geld aus einer Quelle, die hier nicht verbucht ist.
  *
  * **Die Grenze ist je Stunde eine andere** – sie wird gewürfelt, nicht
- * eingestellt. Deshalb wird sie gemessen (Gewinn vor der Ausschüttung minus
- * dem, was abfloss) und aufsummiert, statt aus einer Konstante zu kommen. Der
- * `deckel` dient nur als Ersatz für Stunden ohne Messung und als Vergleich.
+ * eingestellt. Gelesen wird sie aus dem Buchungstext, den die Firma selbst
+ * mitschickt („alles über 3.005$/Std"), und nur die so gemessenen Werte werden
+ * aufsummiert.
+ *
+ * Es gibt dafür keinen Ersatzwert mehr. Eine Konstante für Stunden ohne Messung
+ * floss früher in dieselbe Summe ein und ließ sie gemessen aussehen; und „Gewinn
+ * davor minus Abfluss" war schlicht falsch, weil `profitSincePayout` über die
+ * Abschöpfung hinweg weiterläuft – daraus wurden Grenzen über 250.000$ und ein
+ * Soll von 1,8 Millionen. Fehlt für eine Stunde die Grenze, gibt es für diese
+ * Stunde keine Zahl und damit kein Soll.
  *
  * Gemessen wird **nur zu den Ausschüttungszeitpunkten**. Ein Kassenstand
  * zwischendurch taugt nicht: der enthält den Gewinn, der gleich wieder
@@ -362,46 +415,44 @@ export function ausschuettungenIm(von, bis) {
  * Behaltene der Ausschüttungen *nach* der ersten – das sind genau die Stunden,
  * die zwischen erstem und letztem Stand liegen.
  */
-export function kassenBilanz(eintraege, deckel = 0) {
+export function kassenBilanz(eintraege) {
   const ab = (eintraege || [])
     .filter(a => (a.betrag || 0) < 0)
     .sort((a, b) => a.stamp - b.stamp);
 
   const ausgeschuettet = ab.reduce((n, a) => n - a.betrag, 0);
 
-  // Die Grenze dieser Stunde: der gemessene Gewinn davor minus dem, was
-  // abgeflossen ist. Das ist genau der Betrag, der stehen geblieben ist – und
-  // damit die gewürfelte Grenze selbst.
-  const behaltenVon = (a) => Number.isFinite(a.gewinnVorher)
-    ? Math.max(0, a.gewinnVorher + a.betrag)      // betrag ist negativ
-    : null;
-
-  const grenzen = ab.map(behaltenVon).filter(x => x !== null);
+  // Die Grenze dieser Stunde steht im Buchungstext und wurde beim Erfassen
+  // gelesen. Nur diese Werte zählen – es gibt keinen Ersatz für eine Stunde
+  // ohne Messung, und ein angenommener wäre schlimmer als eine Lücke.
+  const grenzen = ab.map(a => a.grenze).filter(Number.isFinite);
+  const behalten = grenzen.reduce((n, x) => n + x, 0);
 
   const mitStand = ab.filter(a => Number.isFinite(a.kassenstand));
   const erster = mitStand[0] || null;
   const letzter = mitStand.length > 1 ? mitStand[mitStand.length - 1] : null;
 
-  // Das Soll deckt die Stunden zwischen erstem und letztem Stand ab.
+  // Der erste Stand ist die Grundlinie, das Soll deckt nur die Stunden danach.
   const dazwischen = erster && letzter
     ? ab.filter(a => a.stamp > erster.stamp && a.stamp <= letzter.stamp)
     : [];
-  const sollJe = dazwischen.map(behaltenVon);
-  const sollGemessen = sollJe.filter(x => x !== null);
-  const soll = sollGemessen.reduce((n, x) => n + x, 0) +
-    // Für Stunden ohne Messung der Deckel als Ersatz, sonst fehlt der Posten
-    // ganz und die Abweichung sähe größer aus, als sie ist.
-    (deckel ? sollJe.filter(x => x === null).length * deckel : 0);
+  const sollGrenzen = dazwischen.map(a => a.grenze).filter(Number.isFinite);
+  const soll = sollGrenzen.reduce((n, x) => n + x, 0);
+  const ohneGrenze = dazwischen.length - sollGrenzen.length;
 
   const ist = erster && letzter ? letzter.kassenstand - erster.kassenstand : null;
 
-  const behalten = grenzen.reduce((n, x) => n + x, 0);
+  // Die Probe trägt nur, wenn für jede Stunde dazwischen die Grenze bekannt
+  // ist. Fehlt eine, ist das Soll zu klein, und die Abweichung sähe nach
+  // zusätzlichen Einnahmen aus, wo bloß eine Messung fehlt.
+  const vollstaendig = erster !== null && letzter !== null &&
+    dazwischen.length > 0 && ohneGrenze === 0;
 
   return {
     anzahl: ab.length,
     ausgeschuettet,
-    // Das Behaltene über alle Ausschüttungen, nicht nur die dazwischen. Das
-    // ist gleichzeitig die Summe der gewürfelten Stundengrenzen.
+    // Die Summe der gewürfelten Stundengrenzen: der Betrag, um den die Kasse
+    // durch den Gewinn wachsen sollte, bevor Kosten dagegen arbeiten.
     behalten,
     behaltenAnzahl: grenzen.length,
     // Die Grenzen selbst, damit sichtbar wird, wie weit sie streuen.
@@ -416,13 +467,16 @@ export function kassenBilanz(eintraege, deckel = 0) {
     letzterStamp: letzter ? letzter.stamp : null,
 
     stunden: dazwischen.length,
-    soll,
+    // Ohne vollständige Messung gibt es kein Soll und keine Abweichung.
+    soll: vollstaendig ? soll : null,
     ist,
-    // Positiv heißt: mehr in der Kasse, als aus dem Behaltenen folgen kann –
-    // und das, obwohl Gehälter und Miete dagegen arbeiten.
-    differenz: ist === null ? null : ist - soll,
-    ohneMessung: sollJe.filter(x => x === null).length,
-    vollstaendig: erster !== null && letzter !== null,
+    // Positiv heißt: mehr in der Kasse, als die Grenzen hergeben – und das,
+    // obwohl Gehälter und Miete dagegen arbeiten.
+    differenz: ist === null || !vollstaendig ? null : ist - soll,
+    ohneGrenze,
+    // Zwei Stände reichen, um die Kasse zu vergleichen – für das Soll nicht.
+    staendeDa: erster !== null && letzter !== null,
+    vollstaendig,
   };
 }
 
@@ -479,13 +533,20 @@ export function vorzeichenKorrektur({ schreiben = false } = {}) {
  *   Abschöpfung ist. Deshalb heißen die Felder `zugeflossen` und `summe`
  *   (Abfluss) und sonst nichts.
  *
- *   **Gewinnzähler** – `gewinnVorher` am Eintrag, vor jeder Abschöpfung
- *   gemessen. Von der Buchungsart unabhängig und die belastbarere Zahl.
+ *   **Buchungstext** – dort nennt die Firma die gewürfelte Stundengrenze
+ *   („alles über 3.005$/Std"). Beim Erfassen gelesen und als `grenze`
+ *   abgelegt. Das ist die einzige Messung, die es für das Behaltene gibt.
  *
- * Hier standen einmal `behalten`, `erwirtschaftet` und `anteilAb`, die beides
- * zusammenrechneten. Das setzte voraus, dass ein Zufluss bei der Firma bleibt
- * und ein Abfluss verloren ist – gedeutet, nicht gemessen, und die Deutung war
- * falsch. Wer eine Aussage über Gewinn braucht, nimmt `gewinnGemessen`.
+ * Der Gewinnzähler der API (`profitSincePayout`, hier als `gewinnZaehler`)
+ * taugt für keine der beiden Fragen: er läuft über die stündliche Abschöpfung
+ * hinweg weiter. Seine Stände zu addieren zählte denselben Gewinn mehrfach –
+ * daran sind hier schon zwei Auswertungen gescheitert, mit Tagesgewinnen im
+ * Millionenbereich und Stundengrenzen über 250.000$. Er bleibt als Rohwert
+ * liegen (`zaehlerHoechst`), weil sich an ihm vielleicht noch ablesen lässt,
+ * wann er zurückgesetzt wird. Gerechnet wird mit ihm nicht.
+ *
+ * `erwirtschaftet` ist deshalb abgeschöpft + behalten – zwei gemessene Posten.
+ * Fehlt für eine Stunde die Grenze (`ohneGrenze`), ist es eine Untergrenze.
  */
 export function ausschuettungSumme(eintraege) {
   const zu = eintraege.filter(a => (a.betrag || 0) > 0);
@@ -493,7 +554,11 @@ export function ausschuettungSumme(eintraege) {
 
   const abgefuehrt = ab.reduce((n, a) => n - a.betrag, 0);
   const betraege = ab.map(a => -a.betrag);
-  const gemessen = ab.filter(a => Number.isFinite(a.gewinnVorher));
+
+  // Nur die Stunden, für die die Grenze im Buchungstext stand.
+  const grenzen = ab.map(a => a.grenze).filter(Number.isFinite);
+  const behalten = grenzen.reduce((n, x) => n + x, 0);
+  const zaehler = ab.map(zaehlerVon).filter(x => x !== null);
 
   return {
     // --- Abflussseite: danach wird am häufigsten gefragt ---
@@ -509,14 +574,24 @@ export function ausschuettungSumme(eintraege) {
     zugeflossen: zu.reduce((n, a) => n + a.betrag, 0),
     zuAnzahl: zu.length,
 
-    // --- Gewinnzähler, unabhängig vom Kassenbuch ---
-    gewinnGemessen: gemessen.reduce((n, a) => n + a.gewinnVorher, 0),
-    gemessenAnzahl: gemessen.length,
-    // Für wie viele Abschöpfungen die Messung fehlt. Ohne diese Angabe liest
-    // sich eine Lücke wie ein Tag ohne Gewinn – dabei fehlt nur die Zahl.
-    ohneMessung: ab.length - gemessen.length,
-    gewinnHoechst: gemessen.length ? Math.max(...gemessen.map(a => a.gewinnVorher)) : 0,
-    gewinnNiedrigst: gemessen.length ? Math.min(...gemessen.map(a => a.gewinnVorher)) : 0,
+    // --- Behaltene Stundengrenzen, aus dem Buchungstext gelesen ---
+    behalten,
+    grenzen,
+    grenzenAnzahl: grenzen.length,
+    // Für wie viele Abschöpfungen die Grenze im Text fehlte. Ohne diese Angabe
+    // liest sich eine Lücke wie eine Stunde ohne Gewinn – dabei fehlt nur die
+    // Zahl.
+    ohneGrenze: ab.length - grenzen.length,
+    grenzeNiedrigst: grenzen.length ? Math.min(...grenzen) : null,
+    grenzeHoechst: grenzen.length ? Math.max(...grenzen) : null,
+    grenzeSchnitt: grenzen.length ? Math.round(behalten / grenzen.length) : null,
+
+    // Erwirtschaftet = abgeschöpft + behalten. Beide Posten sind gemessen; der
+    // Gewinnzähler der API wird dafür nicht gebraucht und darf es nicht:
+    // addiert man seine Stände auf, zählt derselbe Gewinn mehrfach.
+    erwirtschaftet: abgefuehrt + behalten,
+    // Der höchste gesehene Zählerstand – als Rohwert, nicht als Tagesgewinn.
+    zaehlerHoechst: zaehler.length ? Math.max(...zaehler) : null,
 
     // Alle Buchungen, beide Richtungen, in der Reihenfolge des Tages.
     alle: eintraege,

@@ -287,9 +287,10 @@ UC_BETRIEB_SCHWELLE=40
 
 ### Die Abschöpfung: `/ausschuettung`
 
-Seit der Balance-Änderung wird **stündlich** abgeschöpft: alles über
-**2.500 $ Gewinn pro Stunde** geht wieder weg. Eine Meldung je Vorgang wären
-24 Nachrichten am Tag — deshalb gibt es sie auf Abruf und einmal als Bericht.
+Seit der Balance-Änderung wird **stündlich** abgeschöpft: alles über einer
+**je Stunde neu gewürfelten Grenze** geht wieder weg (beobachtet 2.6k–3.9k).
+Eine Meldung je Vorgang wären 24 Nachrichten am Tag — deshalb gibt es sie auf
+Abruf und einmal als Bericht.
 
 ```
 /ausschuettung              → heute und seit dem Neustart
@@ -297,15 +298,20 @@ Seit der Balance-Änderung wird **stündlich** abgeschöpft: alles über
 ```
 
 Die Antwort nennt Summe, Anzahl, Schnitt und die größte – dazu, was die Firma
-behalten durfte, was insgesamt erwirtschaftet wurde und wie viel Prozent
-abgeflossen sind.
+behalten durfte, und die Kassenprobe.
 
 **Der Gewinn zählt seit 0 Uhr.** `/firma` und `/kasse` zeigten einmal
-`profitSincePayout` – „Gewinn seit der letzten Ausschüttung". Seit stündlich
-abgeschöpft wird, steht dort nur noch die angebrochene Stunde, und die Zahl war
-als Gewinnanzeige wertlos. Der Tagesgewinn kommt stattdessen aus dem
-Gewinnzähler, wie er vor jeder Abschöpfung gemessen wurde, plus der laufenden
-Stunde.
+`profitSincePayout` – „Gewinn seit der letzten Ausschüttung". Der Tagesgewinn
+ist stattdessen **abgeschöpft + behalten**: beide Posten stehen im Kassenbuch
+beziehungsweise im Buchungstext, sind also gemessen.
+
+**`profitSincePayout` geht in keine Summe ein.** Der Zähler läuft über die
+stündliche Abschöpfung hinweg weiter – „seit der letzten Ausschüttung" meint
+nicht die Abschöpfung. Seine Stände zu addieren zählt denselben Gewinn
+mehrfach; so meldete der Bericht einmal **1.454.368 $** für einen Tag, an dem
+rund 415.000 $ zusammenkamen. Er wird nur noch als Rohwert mitgeschrieben
+(Spalte `Zaehler` in `--ausschuettung-liste`), weil sich daran vielleicht
+ablesen lässt, wann er zurückgesetzt wird.
 
 **Die Ausschüttung ist ein Geldsink.** Alles über einer Grenze verlässt das
 System – das Geld ist weg, nicht umgebucht. Was darunter bleibt, ist der
@@ -313,10 +319,21 @@ Betrag, um den die Firmenkasse in dieser Stunde wachsen **sollte**. Gehälter
 und Miete ziehen davon wieder ab.
 
 **Die Grenze wird je Stunde gewürfelt.** Sie ist keine Einstellung und keine
-Konstante. Der Watcher misst sie bei jeder Ausschüttung – Gewinn davor minus
-dem, was abfloss, ist genau der Betrag, der stehen blieb – und summiert die
-gemessenen Werte. `UC_GEWINN_DECKEL_STD` ist nur der Ersatz für Stunden, in
-denen keine Messung vorliegt.
+Konstante – und sie lässt sich nicht errechnen. Die Firma nennt sie im
+Buchungstext selbst:
+
+```
+Betrag ausgeschüttet: 7.778$, alles über 3.005$/Std
+```
+
+Dieser Text ist die Messung. Er wandert beim Erfassen mit ins Archiv, die Zahl
+daraus wird als `grenze` abgelegt und aufsummiert. `--ausschuettung-texte`
+zeigt die Rohtexte und was der Leser daraus macht – ändert das Spiel die
+Formulierung, ist das die Stelle, an der es auffällt.
+
+Steht im Text keine Grenze, gibt es für diese Stunde **keine Zahl**. Es gibt
+keinen Ersatzwert mehr: `UC_GEWINN_DECKEL_STD` floss früher in dieselbe Summe
+ein und ließ sie gemessen aussehen – die Einstellung ist entfernt.
 
 Daraus die **Kassenprobe**, die beantwortet, ob mehr Geld in der Firma ist, als
 daraus folgen kann:
@@ -333,15 +350,19 @@ Die Summe ist der Betrag, um den die Kasse dadurch wachsen sollte.
 Kasse zu den Ausschüttungen
 07:00 Uhr: 498.000$
 17:00 Uhr: 524.670$
-Dazugekommen: 26.670$ · erwartet 31.640$ aus 10 Stunden
+Dazugekommen: +26.670$ · erwartet 31.640$ aus 10 Stunden
 
 📉 4.970$ weniger als erwartet.
-Das ist der normale Fall: Gehälter und Miete zehren am Behaltenen.
+Gehälter und Miete zehren am Behaltenen – sie stecken in dieser Differenz.
 ```
 
 Ein **Plus** heißt: es kam Geld aus einer Quelle, die in dieser Rechnung nicht
 steht – und das, obwohl Gehälter und Miete dagegen arbeiten. Ein **Minus** ist
-der Normalfall und beziffert ungefähr deren Höhe.
+der Normalfall.
+
+Das Soll kommt nur, wenn für **jede** Stunde dazwischen die Grenze bekannt ist.
+Fehlt eine, wäre es zu klein, und die Abweichung sähe nach zusätzlichen
+Einnahmen aus, wo bloß eine Messung fehlt – dann steht dort nichts.
 
 Drei Dinge daran sind wichtig:
 
