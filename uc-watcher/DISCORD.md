@@ -1,0 +1,782 @@
+# Discord-Bot einrichten
+
+Der Watcher kann seine Meldungen zusätzlich nach Discord schicken und dort
+Slash-Commands beantworten. Alles läuft in **einem** Discord-Server, getrennt
+über zwei Kanäle:
+
+- **Team-Kanal**, den alle sehen – Betriebliches, auf das die Angestellten
+  reagieren können
+- **Inhaber-Kanal**, den nur du sehen kannst – Geld, Personal, Arbeitszeiten,
+  Technik
+
+Der Bot selbst läuft weiter auf deiner Oracle-VM, im selben Dienst wie der
+Watcher (`uc-watcher`). Discord hostet nichts – der Bot verbindet sich von
+deinem Server aus dorthin. Ein zusätzlicher Dienst ist nicht nötig.
+
+Statt eines Inhaber-Kanals kann der Bot dir auch eine DM schicken; die Kanal-
+Variante ist aber die bessere, weil dort auch Pings funktionieren und du
+alles an einem Ort hast.
+
+Die Einrichtung dauert etwa zehn Minuten und ist einmalig. Ohne
+`UC_DISCORD_TOKEN` bleibt alles wie bisher – nur ntfy.
+
+---
+
+## 1. Bot anlegen
+
+1. https://discord.com/developers/applications öffnen → **New Application**
+2. Name eingeben, z. B. `EatingPets Watcher` → **Create**
+3. Links **Bot** → **Reset Token** → **Yes, do it** → Token **kopieren**
+
+> Der Token ist wie ein Passwort. Er gehört in die `.env` und **nirgendwo
+> sonst** – nicht in Discord-Nachrichten, nicht ins Repo, nicht in
+> Screenshots. Wer ihn hat, kann als dein Bot handeln. Versehentlich
+> veröffentlicht? Auf derselben Seite **Reset Token** drücken, dann ist der
+> alte wertlos.
+
+Auf derselben Bot-Seite die drei Schalter unter **Privileged Gateway
+Intents** ruhig **aus** lassen. Der Watcher liest keine Nachrichten mit, er
+braucht nur seine eigenen Befehle.
+
+## 2. Bot auf deinen Server einladen
+
+1. Links **OAuth2** → **URL Generator**
+2. Unter *Scopes*: **bot** und **applications.commands** ankreuzen
+3. Unter *Bot Permissions*: **Send Messages** und **Embed Links** ankreuzen
+4. Die erzeugte URL unten kopieren, im Browser öffnen, Server auswählen
+
+Mehr Rechte braucht er nicht. Er liest nichts, löscht nichts, kickt niemanden.
+
+## 3. Die Kanäle
+
+Der Bot ist auf drei Kanäle ausgelegt. Zwei reichen, der dritte ist optional:
+
+| Kanal | Wer sieht ihn | Was reinkommt |
+|---|---|---|
+| `benachrichtigung` | alle | Lager, Lieferengpass, Firma pausiert, Ausschüttung |
+| `vorfälle` | alle | Vorfall, Kassenvorfall – **gekürzt** |
+| `probleme` | **nur du** | Kasse, Buchungen, Personal, Zeiten, Zugang, Technik – und alle Vorfälle vollständig |
+
+Jede Meldung geht **an genau eine Stelle**. Was in einem Kanal steht, bekommst
+du nicht zusätzlich in `#probleme` – du siehst die Kanäle ja ohnehin. Willst du
+die ausführliche Fassung trotzdem doppelt, stellst du in `/melden` „ich und das
+Team" beziehungsweise „ein bestimmter Kanal und ich" ein.
+
+Unabhängig davon geht die **vollständige** Fassung weiterhin per ntfy auf dein
+Handy – dort verlierst du also nichts.
+
+`#chat` bekommt nichts vom Bot.
+
+**Den privaten Kanal anlegen:** Kanal anlegen → **Privater Kanal** einschalten →
+dich hinzufügen. Oder nachträglich: Rechtsklick → **Kanal bearbeiten** →
+**Berechtigungen** → bei `@everyone` **Kanal ansehen** auf ❌.
+
+> **Der häufigste Fehler:** Im privaten Kanal ist der Bot mit ausgesperrt. Füge
+> ihn dort ausdrücklich hinzu (**Kanal ansehen** und **Nachrichten senden** auf
+> ✅), sonst kommt bei dir nichts an und im Log steht `Discord 403`.
+
+## 4. IDs besorgen
+
+Discord zeigt IDs nur im Entwicklermodus:
+**Einstellungen → Erweitert → Entwicklermodus** einschalten.
+
+Danach mit Rechtsklick **ID kopieren**:
+
+| Was | Wo | Für |
+|---|---|---|
+| Server-ID | Rechtsklick auf den Servernamen | `UC_DISCORD_GUILD` |
+| Kanal für alle | Rechtsklick auf `#benachrichtigung` | `UC_DISCORD_TEAM_KANAL` |
+| Kanal für Vorfälle | Rechtsklick auf `#vorfälle` | `UC_DISCORD_VORFALL_KANAL` |
+| Deine Nutzer-ID | Rechtsklick auf dich selbst | `UC_DISCORD_CHEF_ID` |
+| Privater Kanal | Rechtsklick auf `#probleme` | `UC_DISCORD_CHEF_KANAL` |
+
+## 5. In die `.env` eintragen
+
+```
+nano ~/private/uc-watcher/server/.env
+```
+
+```ini
+UC_DISCORD_TOKEN=der.kopierte.token
+UC_DISCORD_GUILD=123456789012345678
+UC_DISCORD_TEAM_KANAL=123456789012345678       # #benachrichtigung
+UC_DISCORD_VORFALL_KANAL=123456789012345678    # #vorfälle
+UC_DISCORD_CHEF_KANAL=123456789012345678       # #probleme, nur du
+UC_DISCORD_CHEF_ID=123456789012345678          # deine Nutzer-ID
+```
+
+`UC_DISCORD_CHEF_ID` brauchst du auch mit eigenem Kanal: daran erkennt der Bot
+bei den Befehlen, dass du der Inhaber bist.
+
+Speichern (`Strg+O`, `Enter`, `Strg+X`), dann:
+
+```
+cd ~/private/uc-watcher/server
+node --env-file=.env watcher.mjs --discord-test
+```
+
+Das registriert die Befehle und schickt **in jeden eingerichteten Kanal eine
+Probemeldung**. Prüfe:
+
+- Kam in `#probleme` die Inhaber-Meldung an?
+- Steht in `#benachrichtigung` **nur** die Team-Meldung?
+- Steht in `#vorfälle` **nur** die Vorfall-Meldung?
+
+Passt es, den Dienst neu starten: `sudo systemctl restart uc-watcher`
+
+> Lässt du `UC_DISCORD_CHEF_KANAL` leer, schickt der Bot dir stattdessen eine
+> DM. Dafür musst du Direktnachrichten von Servermitgliedern erlauben
+> (**Einstellungen → Privatsphäre**), und Pings gibt es dort nicht. Mit
+> gesetztem Kanal ist beides kein Thema.
+
+---
+
+## Wer bekommt was
+
+Mit eingerichtetem `#vorfälle` sieht die Verteilung so aus – „Team" meint
+`#benachrichtigung`, „Vorfälle" den Vorfallkanal, „Du" den privaten Kanal.
+
+In der Tabelle steht, wohin eine Meldung standardmäßig geht.
+
+| Meldung | Team | Du |
+|---|---|---|
+| Lagerbestand niedrig | ✅ | – |
+| Lieferengpass, Einkauf teurer | ✅ | – |
+| Firma pausiert, obwohl jemand online ist | – | ✅ |
+| Vorfall im Unternehmen | → `#vorfälle`, ohne Namen | – |
+| Kassenvorfall | → `#vorfälle`, ohne Kassenstand | – |
+| Zwischenstand bis zur Ausschüttung | ✅ ohne Beträge | – |
+| Ausschüttung fällig | ✅ ohne Beträge | – |
+| Plötzlicher Lagerverlust (Diebstahlverdacht) | – | ✅ |
+| Personal abgeworben / unvollständig | – | ✅ |
+| Löhne nicht bezahlt, Mietrückstand | – | ✅ |
+| Ausschüttung erfolgt (Betrag) | – | ✅ |
+| Tagesbericht mit Onlinezeiten | – | ✅ |
+| Zugang abgelaufen, Seite nicht erreichbar | – | ✅ |
+| Wiki- und Notion-Abgleich | – | ✅ |
+
+**Alle sehen alles:** Kassenstände, Beträge und wer wann da war. Eine gekürzte
+Fassung für geteilte Kanäle gab es früher; in einer Firma, in der alle die
+Zahlen sehen dürfen, war sie nur die schlechtere Meldung. Ausnahme bleiben die
+Themen mit Namenslisten – Diebstahlverdacht und Personal gehen von Haus aus nur
+an dich, weil dort ein Verdacht im Raum steht.
+
+Das ist nur die Voreinstellung. **Mit `/melden` stellst du jede Meldung
+einzeln um** – siehe unten. Die Tabelle gilt für alles, was du nicht selbst
+geändert hast.
+
+Die Voreinstellung lässt sich auch pauschal verschieben:
+`UC_DISCORD_TEAM_THEMEN=lager,event_` stellt dem Team nur noch diese beiden
+zu. Dieser Schalter ist ein grobes Werkzeug, darum greift er bei
+`lagerverlust_` und `personal_` nicht – die enthalten Namen von Anwesenden
+und sollen nicht durch einen Tippfehler in einer Liste öffentlich werden. Über
+`/melden` kannst du sie trotzdem freigeben, dort ist es eine bewusste
+Einzelentscheidung und der Bot sagt dir vorher, was drinsteht.
+
+---
+
+## Befehle
+
+Jeder im Server kann benutzen:
+
+| Befehl | Zeigt |
+|---|---|
+| `/firma` | Status, Lager, Personal, wer online ist, Kasse und Tagesgewinn |
+| `/lager` | **Beide Bestände:** Firmenlager mit gemessener Reichweite und die Zoohandlung |
+| `/zeiten` | Wer gerade online ist und die eigene Zeit heute |
+| `/kasse` | Tageslimit und Freibetrag, Kasse, Gewinn, letzte Buchungen |
+| `/ausschuettung` | Wie viel Gewinn abgeschöpft wurde – heute, seit dem Neustart, an einem bestimmten Tag |
+| `/hilfe` | Welche Befehle es gibt |
+
+### Ein Kanal für Befehle
+
+Antworten sind normalerweise **nur für den Fragenden sichtbar**. In einem
+eigenen Befehlskanal ist das unpraktisch – dort soll das Team mitlesen können.
+Dafür gibt es `UC_DISCORD_BEFEHL_KANAL`:
+
+```ini
+UC_DISCORD_BEFEHL_KANAL=123456789012345678    # z. B. #befehle
+```
+
+Dort antworten `/firma`, `/lager`, `/zeiten` und `/kasse`
+**für alle sichtbar**. Überall sonst bleiben sie privat.
+
+Zwei Dinge bleiben geschützt: Die vorbehaltenen Befehle (`/kasse`,
+`/tagesbericht`, …) antworten **auch dort privat**. Und `/firma` und
+`/zeiten` zeigen im offenen Kanal **keine Beträge** – auch dann nicht,
+wenn der Fragende sie sonst sehen dürfte. Sonst stünde der Kassenstand für
+alle da, nur weil der Falsche getippt hat.
+
+### Nachkauf und Reichweite
+
+Solange der automatische Nachkauf läuft, füllt sich das Lager selbst – eine
+Reichweite wäre dann eine Zahl ohne Bedeutung. `/lager` sagt deshalb nur
+„Nachkauf läuft" und lässt die Hochrechnung weg.
+
+Erkannt wird das an den **Einkäufen des Systems** im Kassenbuch: Hat es in den
+letzten 90 Minuten eingekauft, läuft der Nachkauf. Liefert die API irgendwann
+ein ausdrückliches Feld dafür, hat das Vorrang.
+
+Setzt der Nachkauf aus, während Bestand abfließt, kommt eine Meldung ins Team
+(„Nachkauf scheint auszusetzen") – mitsamt der Reichweite, denn ab dann zählt
+sie wieder. Das ist der Fall, auf den es ankommt: entweder ist der Nachkauf
+abgeschaltet oder die Kasse reicht nicht.
+
+### Reichweite des Lagers
+
+`/lager` sagt, wie lange der Bestand noch reicht. Die Zahl stammt **nicht** aus
+der API: deren `salesPerMinute` ist eine Momentangröße, tatsächlich wird aber
+schubweise verkauft – alle paar Minuten ein Batzen. Wer das auf die Minute
+umlegt, bekommt eine Reichweite, die um ein Vielfaches danebenliegt.
+
+Der Watcher misst deshalb selbst: Er schreibt bei jedem Durchlauf den Bestand
+mit und rechnet daraus, wie viel über die Zeit wirklich abfließt. Lieferungen
+zählen nicht mit, nur Rückgänge. Nach etwa zehn Minuten Laufzeit steht die
+erste Aussage, danach wird sie über eine Stunde gemittelt.
+
+Dasselbe Maß schützt die Einbruchserkennung: Sie lässt mindestens den größten
+bisher beobachteten Verkaufsschub als erklärbar durchgehen, damit ein normaler
+Verkauf nicht als Diebstahl gemeldet wird.
+
+### Der Betrieb in `/lager`
+
+Zeigt den Bestand der Zoohandlung.
+
+Die Daten stehen in `/api/panel/me` unter `businesses`, je Betrieb mit `lager`
+und `lagerMax`. Gelesen wird der Wert **eines** Betriebs – er stimmt also
+bereits, es wird nichts verrechnet.
+
+Am zuverlässigsten läuft das über die **ID**, die im Dashboard vor dem Namen
+steht (`ID 35`):
+
+```ini
+UC_BETRIEB_ID=35
+```
+
+Das ist auch deshalb besser als der Name, weil die API den Betrieb unter
+Umständen nur „Business #35" nennt – gesucht würde „Zoohandlung" dann
+vergeblich. Ist die ID gesetzt und wird nicht gefunden, meldet der Befehl das,
+statt ersatzweise einen anderen Betrieb zu zeigen.
+
+Ohne ID sucht der Watcher den Namen und nimmt sonst den einzigen Betrieb mit
+echtem Lager (`hasLager`). Ein Betrieb wie die Werbung zeigt zwar einen Wert
+an, hat aber keines – der wird damit übergangen.
+
+Der Watcher meldet von sich aus, wenn es knapp wird (unter 40) oder nichts
+mehr da ist. Beides geht ins Team, und bei „leer" werden die angepingt, die
+gerade spielen – die können nachfüllen.
+
+Beim ersten Mal muss die Adresse der Betriebsübersicht gefunden werden:
+
+```
+node --env-file=.env watcher.mjs --betrieb-probe
+```
+
+Das probiert die üblichen Adressen durch und sagt am Ende, ob es die
+Zoohandlung samt Bestand lesen konnte. Findet es nichts, öffne
+https://unicacity.eu/dashboard/businesses im Browser, drücke F12 →
+**Netzwerk**, lade neu und sieh nach, welche `/api/…`-Adresse abgefragt wird.
+Die kommt dann in die `.env`:
+
+```ini
+UC_BETRIEB_PFAD=/api/…
+UC_BETRIEB=Zoohandlung
+UC_BETRIEB_ABZUG=100
+UC_BETRIEB_SCHWELLE=40
+```
+
+### Die Abschöpfung: `/ausschuettung`
+
+Seit der Balance-Änderung wird **stündlich** abgeschöpft: alles über einer
+**je Stunde neu gewürfelten Grenze** geht wieder weg (beobachtet 2.6k–3.9k).
+Eine Meldung je Vorgang wären 24 Nachrichten am Tag — deshalb gibt es sie auf
+Abruf und einmal als Bericht.
+
+```
+/ausschuettung              → heute und seit dem Neustart
+/ausschuettung tag:…        → ein bestimmter Kalendertag
+```
+
+Die Antwort nennt Summe, Anzahl, Schnitt und die größte – dazu, was die Firma
+behalten durfte, und die Kassenprobe.
+
+**Der Gewinn zählt seit 0 Uhr.** `/firma` und `/kasse` zeigten einmal
+`profitSincePayout` – „Gewinn seit der letzten Ausschüttung". Der Tagesgewinn
+ist stattdessen **abgeschöpft + behalten**: beide Posten stehen im Kassenbuch
+beziehungsweise im Buchungstext, sind also gemessen.
+
+**`profitSincePayout` geht in keine Summe ein.** Der Zähler läuft über die
+stündliche Abschöpfung hinweg weiter – „seit der letzten Ausschüttung" meint
+nicht die Abschöpfung. Seine Stände zu addieren zählt denselben Gewinn
+mehrfach; so meldete der Bericht einmal **1.454.368 $** für einen Tag, an dem
+rund 415.000 $ zusammenkamen. Er wird nur noch als Rohwert mitgeschrieben
+(Spalte `Zaehler` in `--ausschuettung-liste`), weil sich daran vielleicht
+ablesen lässt, wann er zurückgesetzt wird.
+
+**Die Ausschüttung ist ein Geldsink.** Alles über einer Grenze verlässt das
+System – das Geld ist weg, nicht umgebucht. Was darunter bleibt, ist der
+Betrag, um den die Firmenkasse in dieser Stunde wachsen **sollte**. Gehälter
+und Miete ziehen davon wieder ab.
+
+**Die Grenze wird je Stunde gewürfelt.** Sie ist keine Einstellung und keine
+Konstante – und sie lässt sich nicht errechnen. Die Firma nennt sie im
+Buchungstext selbst:
+
+```
+Betrag ausgeschüttet: 7.778$, alles über 3.005$/Std
+```
+
+Dieser Text ist die Messung. Er wandert beim Erfassen mit ins Archiv, die Zahl
+daraus wird als `grenze` abgelegt und aufsummiert. `--ausschuettung-texte`
+zeigt die Rohtexte und was der Leser daraus macht – ändert das Spiel die
+Formulierung, ist das die Stelle, an der es auffällt.
+
+Steht im Text keine Grenze, gibt es für diese Stunde **keine Zahl**. Es gibt
+keinen Ersatzwert mehr: `UC_GEWINN_DECKEL_STD` floss früher in dieselbe Summe
+ein und ließ sie gemessen aussehen – die Einstellung ist entfernt.
+
+Daraus die **Kassenprobe**, die beantwortet, ob mehr Geld in der Firma ist, als
+daraus folgen kann:
+
+```
+Ausgeschüttet: 154.549$ in 11 Ausschüttungen
+Alles über der Stundengrenze – das Geld verlässt das System.
+
+Behalten: 34.520$ in 11 Stunden
+Stundengrenze 2.640$ bis 3.890$ · im Schnitt 3.138$
+Sie wird je Stunde neu gewürfelt – gemessen, nicht eingestellt.
+Die Summe ist der Betrag, um den die Kasse dadurch wachsen sollte.
+
+Kasse zu den Ausschüttungen
+07:00 Uhr: 498.000$
+17:00 Uhr: 524.670$
+Dazugekommen: +26.670$ · erwartet 31.640$ aus 10 Stunden
+
+📉 4.970$ weniger als erwartet.
+Gehälter und Miete zehren am Behaltenen – sie stecken in dieser Differenz.
+```
+
+Ein **Plus** heißt: es kam Geld aus einer Quelle, die in dieser Rechnung nicht
+steht – und das, obwohl Gehälter und Miete dagegen arbeiten. Ein **Minus** ist
+der Normalfall.
+
+Das Soll kommt nur, wenn für **jede** Stunde dazwischen die Grenze bekannt ist.
+Fehlt eine, wäre es zu klein, und die Abweichung sähe nach zusätzlichen
+Einnahmen aus, wo bloß eine Messung fehlt – dann steht dort nichts.
+
+Drei Dinge daran sind wichtig:
+
+- **Gemessen wird nur zu den Ausschüttungszeitpunkten.** Ein Kassenstand
+  zwischendurch enthält den Gewinn, der gleich wieder abgeschöpft wird, und
+  würde den Zuwachs grob zu hoch ausweisen.
+- **Der erste Stand ist die Grundlinie**, kein Zuwachs. Zum Soll zählt deshalb
+  nur das Behaltene der Stunden *nach* der ersten Ausschüttung – genau die, die
+  zwischen erstem und letztem Stand liegen.
+- **Das Soll rechnet mit den gemessenen Grenzen**, nicht mit einer Konstante.
+  Bei zehn Stunden ist es die Summe der zehn gewürfelten Werte, nicht
+  10 × Deckel. Fehlt eine Messung, tritt der Deckel nur für diese eine Stunde
+  ein, und die Auswertung sagt es.
+
+Hier stand einmal „behalten durfte die Firma", „X % vom Gewinn abgeflossen" und
+„bringt niemandem etwas" – abgeleitet aus einem einzigen beobachteten Eintrag
+und falsch. Die Felder `behalten`, `erwirtschaftet` und `anteilAb` im Archiv
+sind entfernt.
+
+**Gemessen wird vor der Buchung.** Der Zustand führt einen kurzen Gewinnverlauf
+mit Zeitstempeln; zu einer Ausschüttung wird der jüngste Messpunkt aus den
+letzten drei Durchläufen davor gesucht. Gibt es keinen – der Watcher war aus –,
+fehlt die Messung, und die Auswertung sagt das statt eine Null auszugeben.
+
+**Um 0 Uhr** kommt der Tagesbericht nach `#benachrichtigung`: wie viel am
+abgelaufenen Tag abgeflossen ist. Das ist Gewinn, den die Firma erwirtschaftet
+und wieder abgegeben hat. Fällt der Tag auf null, bleibt es still.
+
+Abschalten oder verschieben wie jede andere Meldung — in der Schaltzentrale
+unter **Ausschüttungen: Tagesbericht um 0 Uhr**.
+
+### Das Tagesbudget in `/kasse`
+
+Ausschüttungen, Gehälter und Auszahlungen zehren an einem gemeinsamen Topf von
+50.000 $ je Tag; die ersten 20.000 $ davon sind steuerfrei.
+`/kasse` zeigt, wie viel davon noch frei ist – und zwar allen. Die
+Firmenzahlen im selben Befehl (Kassenstand, Gewinn, Buchungen) hängen weiter am
+Zahlen-Schalter, es geht also niemandem etwas verloren, wenn du ihn zudrehst.
+
+Der Topf setzt sich **um Mitternacht** zurück. Das ist bewusst etwas anderes
+als der Spieltag des Watchers, der um 04:00 wechselt – Onlinezeiten und
+Tagesbericht richten sich nach dem, das Budget nicht. Deshalb nennt der
+Tagesbericht beim Tageslimit ausdrücklich das Datum und „0–24 Uhr": die Zahl
+gehört zum Kalendertag, nicht zum Spieltag des Berichts.
+
+Gezählt wird eine Buchung, deren **Kategorie** `auszahlung` oder `gehalt`
+enthält. Sie wird übergangen, wenn **Kategorie oder Buchungstext** eines der
+Ausnahmewörter enthält. Voreingestellt sind nur:
+
+- `löhne`, `loehne`, `lohn`, `npc` – die Kosten der NPCs, kein Geld, das sich
+  jemand auszahlt.
+
+`ausschütt` stand hier einmal als Ausnahme. Das war falsch und ließ den
+Freibetrag zu niedrig aussehen: holt sich ein Mitglied seinen Anteil, steht im
+Kassenbuch „Auszahlung" und erst im Text „Ausschüttung an …" – das ist eine
+Auszahlung und zählt. Die **stündliche Abschöpfung** zählt dagegen nicht; sie
+kommt als eigene Kategorie `Ausschüttung` und fällt damit ohnehin nicht unter
+die Auszahlungskategorien.
+
+Nachsehen, was das Spiel wirklich verbucht:
+
+```
+node --env-file=.env watcher.mjs --buchungen
+node --env-file=.env watcher.mjs --ausschuettung-liste [JJJJ-MM-TT]
+```
+
+### Wenn die Summe nicht stimmt
+
+Passt die Zahl nicht zu deinen eigenen Auszahlungen, lass sie dir aufschlüsseln
+– dann steht da, welche Buchung gezählt hat und welche nicht:
+
+```
+/kasse aufschluesselung:true
+```
+
+Das kommt immer privat und nur für den, der auch `/kasse` darf – einzelne
+Buchungen sind mehr als eine Summe. Auf dem Server dasselbe, zusätzlich mit
+den geltenden Wortlisten:
+
+```bash
+node --env-file=.env watcher.mjs --freibetrag
+```
+
+Steht in der Liste etwas, das nicht zählen soll, nimm das kennzeichnende Wort
+in die Ausnahmen auf:
+
+```ini
+UC_AUSZAHLUNG_LIMIT=35000
+UC_AUSZAHLUNG_KATEGORIEN=auszahlung,gehalt
+UC_AUSZAHLUNG_AUSNAHMEN=ausschütt,ausschuett,löhne,loehne,lohn,npc
+```
+
+Die Ausnahmeliste **ersetzt** die Vorgabe vollständig – wer sie setzt, muss
+die Ausschüttung selbst wieder mit aufführen.
+
+`/tagesbericht` gehört ebenfalls allen:
+
+| Befehl | Zeigt |
+|---|---|
+| `/tagesbericht` | Onlinezeiten des Teams – mit `tag:` ein vergangener Spieltag, mit `tage:` ein Zeitraum samt Vergleich |
+
+## Nur für dich
+
+Vier Befehle, die den Watcher **einstellen** statt etwas anzuzeigen:
+
+| Befehl | Macht |
+|---|---|
+| `/melden` | Einstellen, wer welche Meldung sieht und ob gepingt wird |
+| `/zuordnen` | Discord-Konto einem UnicaCity-Namen zuordnen |
+| `/testvorfall` | Einen Vorfall vortäuschen, um Kanal und Ping zu prüfen |
+| `/watcher` | Läuft er, Token-Ablauf, Rechenlast |
+
+Ein Befehl ist entweder für alle da oder nur für dich – eine Rechteverwaltung
+dazwischen gab es einmal. Sie verwaltete Rechte, die ohnehin alle haben sollten,
+und war damit vor allem eine Fehlerquelle: ein Befehl konnte in Discords Liste
+fehlen, obwohl jemand ihn durfte.
+
+Antworten sind **nur für den Fragenden sichtbar** – es entsteht kein Geplapper
+im Kanal. Im Befehlskanal (siehe oben) antworten die offenen Befehle für alle
+sichtbar; die vier hier bleiben auch dort privat.
+
+Versucht ein Angestellter einen davon, bekommt er nur den Hinweis, dass das dem
+Inhaber vorbehalten ist. Der Befehl wird dabei nicht ausgeführt.
+
+### Prüfen, ob Vorfälle ankommen: `/testvorfall`
+
+```
+/testvorfall art:ABWERBUNG
+```
+
+Verschickt einen als solchen gekennzeichneten Probe-Vorfall – über **denselben
+Weg** wie ein echter: gleiche Schlüsselbildung, gleiche Regel, gleicher Kanal,
+gleicher Ping. Danach berichtet der Bot, was passiert ist:
+
+- welche Regel gegriffen hat und in welchen Kanal es ging
+- **wie viele Konten gepingt wurden und welche**
+- und falls keins: warum nicht
+
+Der letzte Punkt ist der eigentliche Nutzen. Er unterscheidet drei Fälle, die
+sich sonst gleich anfühlen: gerade ist niemand ingame (dann ist Schweigen
+richtig), niemand ist zugeordnet (dann pingt diese Einstellung nie), oder die
+Namen in `/zuordnen` passen nicht zu denen im Spiel.
+
+Die Probe verändert nichts: keine Erinnerung, keine gespeicherte Sperre, kein
+Eintrag in den Vorfallsarten. Sie lässt sich also beliebig oft wiederholen.
+
+### Wer sieht welche Befehle überhaupt?
+
+Zwei verschiedene Dinge, die man leicht verwechselt:
+
+**Die Befehlsliste von Discord** – was erscheint, wenn jemand `/` tippt. Die
+füllt Discord selbst, nicht der Bot. Ohne Zutun stünden dort **alle** Befehle
+samt Beschreibung, auch die, die der Bot dann verweigern würde.
+
+Deshalb werden `/melden`, `/zuordnen`, `/watcher` und `/testvorfall` bei der
+Registrierung als Verwaltungsbefehle gekennzeichnet: Wer im Server keine
+Verwaltungsrechte hat, sieht sie gar nicht erst. Mit
+`UC_DISCORD_BEFEHLE_VERBERGEN=0` lässt sich das abstellen.
+
+Verborgen und vorbehalten sind jetzt dieselben vier Befehle – ein verborgener
+Befehl, den jeder ausführen darf, wäre nur schwer zu finden; ein sichtbarer, den
+niemand darf, eine Einladung zum Fehlversuch.
+
+**Die Antwort von `/hilfe`** – die kommt vom Bot und zeigt jedem nur die
+Befehle, die er auch ausführen kann. Ein Angestellter sieht die vier
+Inhaber-Befehle dort gar nicht, sondern nur deren Anzahl, ohne Namen, damit er
+weiß, dass es sie gibt. Der Inhaber sieht alles ohne Hinweis.
+
+### Die Schaltzentrale: `/melden`
+
+`/melden` stellt **eine Nachricht** in den Kanal, in dem du den Befehl benutzt.
+
+> **„Der Bot darf in diesem Kanal nicht schreiben"?** Bei einem gesperrten
+> Kanal reicht die serverweite Rolle nicht – die Sperre des Kanals
+> überschreibt sie. Rechtsklick auf den Kanal → *Kanal bearbeiten* →
+> *Berechtigungen* → bei **Rollen/Mitglieder** auf **+**, die Rolle des Bots
+> wählen, und **Kanal ansehen**, **Nachrichten senden** und **Links einbetten**
+> auf ✓ stellen. Am Handy: Kanal lange drücken → *Bearbeiten* →
+> *Berechtigungen*.
+Diese Nachricht ist die Schaltzentrale: Sie zeigt alle Meldungen mit ihrem
+Zustand, und du stellst sie darin mit Menüs und Knöpfen um.
+
+**Pinne sie an** (Rechtsklick auf die Nachricht → Anpinnen), dann findest du sie
+immer wieder. Sie funktioniert dauerhaft, auch Wochen später und nach einem
+Neustart des Watchers — welches Thema gerade offen ist, steckt in den Knöpfen
+selbst, nicht im Speicher des Dienstes.
+
+**Die Übersicht:**
+
+```
+🎛️ Meldungen – Schaltzentrale
+
+·  Plötzlicher Lagerverlust (mit Namen)
+✏️ Lagerbestand niedrig — #lager
+·  Nachkauf setzt aus
+   …
+✏️ Vorfall im Unternehmen — #vorfälle · Ping · Nachfassen 5′
+🔇 Mietrückstand
+✏️ Vorfall: ABWERBUNG — #vorfälle · Ping · Nachfassen 5′
+
+· Voreinstellung · ✏️ von dir geändert · 🔇 abgeschaltet
+
+[▼ Thema zum Umstellen wählen        ]
+( ➕ Vorfallsart hinzufügen )  ( 🔄 Neu laden )
+```
+
+Wählst du ein Thema aus dem Menü, zeigt **dieselbe** Nachricht dessen Zustand
+samt Knöpfen. Es sammeln sich also keine Nachrichten an:
+
+```
+Vorfall im Unternehmen
+
+📬 Geht nach #vorfälle
+🔔 Pingt, wer gerade ingame online ist.
+⏰ Bleibt der Vorfall offen, kommt nach 5 Min. eine Erinnerung.
+
+( 🔇 Abschalten ) ( 🔕 Ping aus ) ( ⏰ Nachfassen aus ) ( ↩️ Zurücksetzen )
+[# In einen anderen Kanal schicken  ]
+( ◀️ Zurück zur Übersicht )
+```
+
+| Knopf | Wirkung |
+|---|---|
+| **Abschalten** | Die Meldung kommt **gar nicht mehr** – auch nicht aufs Handy. Der Knopf wird dann zu „Wieder einschalten". |
+| **Ping an/aus** | Anpingen, wer gerade ingame online ist. Erscheint nur bei Vorfällen – alles andere hat keine Frist. |
+| **Nachfassen an/aus** | Nach 5 Minuten erinnern, solange der Vorfall offen ist. Nur beim Vorfall im Unternehmen. |
+| **Zurücksetzen** | Verwirft alles, was du für dieses Thema eingestellt hast. Erscheint nur, wenn es etwas zu verwerfen gibt. |
+| **Kanal wählen** | Ein Auswahlmenü mit allen Textkanälen. Die Meldung geht danach dorthin. |
+| **Vorfallsart hinzufügen** | Öffnet ein Eingabefeld für eine Art wie `ABWERBUNG`. Danach lässt sie sich einzeln einstellen, unabhängig von den übrigen Vorfällen. |
+
+**Nur du kannst sie bedienen.** Die Nachricht steht sichtbar im Kanal, aber ein
+Klick von jemand anderem bekommt nur den Hinweis, dass das dem Inhaber
+vorbehalten ist — eine angepinnte Nachricht wäre sonst eine offene
+Fernbedienung.
+
+Verlierst du die Tafel, ruf einfach wieder `/melden`. Eine zweite funktioniert
+genauso; sie zeigen beide denselben Stand, weil beide dieselbe Datei lesen.
+
+### Was fest ist und nicht mehr einstellbar
+
+Vier Entscheidungen hat der Watcher für dich getroffen, weil es für jedes Thema
+dieselbe Antwort gab:
+
+| | |
+|---|---|
+| **Ruhezeit** | Jede Meldung kommt höchstens **alle 30 Minuten**. |
+| **Ping** | Immer nur **wer gerade ingame online ist**, und nur bei Vorfällen. `@everyone`, `@here` und Rollen-Pings gibt es nicht mehr — sie erreichten verlässlich die Falschen: Leute, die Discord offen haben, aber nicht spielen. |
+| **Nachfassen** | Immer nach **5 Minuten**. Bei einer Frist von zehn Minuten ist alles andere zu früh oder zu spät. |
+| **Ausschüttungsbericht** | Einmal **um 0 Uhr** für den abgelaufenen Tag. Abgeschöpft wird stündlich; 24 Meldungen am Tag will niemand. |
+
+Über die `.env` lassen sie sich verschieben (`UC_ERINNERUNG_MIN`,
+`UC_VORFALL_ERINNERUNG_MIN`), aus dem Discord heraus
+nicht. Das ist Absicht: es sind Entscheidungen für die ganze Firma, nicht je
+Meldung.
+
+### Wohin eine Meldung geht
+
+Jedes Thema hat einen vorgesehenen Ort — ins Team, zu dir, oder in den
+Vorfall-Kanal. Die Kanalauswahl an der Tafel überschreibt das.
+
+Meldungen mit Namenslisten (Diebstahlverdacht, Personal) gehen von Haus aus
+**nur an dich**. Schickst du sie in einen geteilten Kanal, ist das eine bewusste
+Entscheidung — der Bot hält dich nicht davon ab.
+
+Abschalten heißt **vollständig** abschalten, auch die Benachrichtigung aufs
+Handy über ntfy. Sonst wäre die Einstellung eine Halbwahrheit.
+
+Die Regeln liegen in `uc-watcher-regeln.json` neben dem Zustand und gelten
+sofort. Löschst du die Datei, gilt wieder die Voreinstellung.
+
+### Der Knopf „Ich kümmere mich"
+
+Unter jeder Vorfallsmeldung hängt ein grüner Knopf. Ein Druck bedeutet: **zu
+diesem Vorfall kommt nichts mehr.** Keine Erinnerung, keine Wiederholung,
+auch nicht aufs Handy. Und im Kanal steht, dass sich jemand kümmert – sonst
+fahren zwei Leute zum selben Vorfall, während ein dritter nichts tut, weil er
+jemanden dort vermutet.
+
+Die Erwähnungen über der Meldung werden dabei abgeräumt: die Sache ist
+vergeben, da muss niemand mehr hervorgehoben sein.
+
+- **Jeder darf drücken.** Wer den Vorfall löst, ist der, der gerade spielt; er
+  muss keinen Befehl kennen und kein Recht haben.
+- **Der Knopf verschwindet danach für alle**, und in der Fußnote der Meldung
+  steht „✅ übernommen von …". Sonst drücken fünf Leute nacheinander, ohne
+  voneinander zu wissen.
+- **Die Meldung selbst bleibt stehen** – nur kommt nichts Neues mehr dazu.
+- Drückt jemand ein zweites Mal – etwa im anderen Kanal –, sagt der Bot, wer es
+  schon übernommen hatte. Nichts wird überschrieben.
+
+**Auch ohne Knopfdruck** wird ein Vorfall nur **einmal** gemeldet. Er ist ein
+Ereignis, kein Zustand, der halbstündlich in Erinnerung gerufen werden will.
+Was danach noch kommen darf, ist die Erinnerung – und die ist von Haus aus aus.
+
+Der Klick landet in `uc-watcher-regeln.json`, nicht im Zustand des Watchers –
+sonst wäre er nach der nächsten Minute wieder weg. Nach zwölf Stunden wird der
+Eintrag aufgeräumt.
+
+`/testvorfall` schickt den Knopf mit und sagt in der Antwort, was ein Druck
+bei dieser Vorfallsart bewirken würde.
+
+Zwei Dinge zum Ping:
+
+- **Pings wirken in Kanälen**, auch in deinem Inhaber-Kanal. Nur in einer DM
+  gibt es sie nicht – dort erreicht dich die Meldung ohnehin direkt.
+- **Ein Ping braucht eine Zuordnung.** Gepingt wird, wer per `/zuordnen`
+  bekannt ist und gerade spielt. Ohne Zuordnung bleibt es still – der Bot
+  erfindet niemanden.
+
+### Nur anpingen, wer gerade spielt
+
+Der nützlichste Ping-Modus: Bei „Lager leer" oder einem Vorfall werden nur die
+Leute erwähnt, die in dem Moment tatsächlich in UnicaCity sind. Wer Feierabend
+hat, bekommt keine Benachrichtigung. Ist niemand online, geht die Meldung ohne
+Ping raus – sie steht dann einfach im Kanal.
+
+Dafür muss der Bot wissen, welches Discord-Konto zu welchem Spielernamen
+gehört. Das stellst du mit `/zuordnen` ein:
+
+```
+/zuordnen nutzer:@Delott name:LottiMi
+/zuordnen                                → zeigt alle Zuordnungen mit Status
+/zuordnen nutzer:@Delott                 → zeigt nur diese eine
+/zuordnen nutzer:@Delott entfernen:True  → löscht sie
+```
+
+Der Bot prüft dabei mit, ob er den Namen im Team überhaupt kennt, und sagt es
+dir, wenn nicht – meist ein Tippfehler. Groß- und Kleinschreibung ist egal.
+
+Dann an der Schaltzentrale das Thema wählen und **Ping an** drücken.
+
+Auf dem Server kannst du jederzeit nachsehen, wen es gerade träfe:
+
+```
+node --env-file=.env watcher.mjs --zuordnung
+```
+
+Das zeigt je Konto den Spielernamen, ob der Watcher ihn im Team gefunden hat,
+ob die Person gerade online ist und ob sie angepingt würde.
+
+### Eigene Zeiten für Angestellte
+
+`/zeiten` zeigt einem Angestellten nur etwas, wenn sein Discord-Konto einem
+Spielernamen zugeordnet ist:
+
+```ini
+UC_DISCORD_SPIELER=123456789012345678:LottiMi,987654321098765432:Maxine
+```
+
+Ohne Zuordnung bekommt er die Team-Summe statt fremder Arbeitszeiten.
+
+Bequemer geht es mit `/zuordnen` im Discord – die Liste in der `.env` ist nur
+noch für Einträge da, die dauerhaft feststehen sollen. Was per `/zuordnen`
+gesetzt wird, hat Vorrang.
+
+---
+
+## Was ist eigentlich eingestellt?
+
+```
+node --env-file=.env watcher.mjs --einstellungen
+```
+
+Zeigt in einem Durchgang: welche Kanäle eingetragen sind, welche Werte von der
+Voreinstellung abweichen, alle Regeln aus `/melden` im Klartext, die Zuordnung
+aus `/zuordnen` (mit Hinweis, wenn ein Name im Team nicht vorkommt), die
+vergebenen Rechte und den laufenden Zustand.
+
+Zugangsdaten werden dabei nur als „gesetzt" gemeldet, nie im Klartext – die
+Ausgabe lässt sich also gefahrlos weitergeben.
+
+## Wenn etwas klemmt
+
+**„401 Unauthorized" oder „Discord lehnt den Token ab (4004)"**
+→ Der Token stimmt nicht. Was genau, sagt dir:
+
+```
+node --env-file=.env watcher.mjs --discord-pruefe
+```
+
+Das prüft die Form des Werts, ohne ihn anzuzeigen: Anzahl der Teile, Länge,
+versehentliche Umbrüche, und ob überhaupt eine Anwendungs-ID darin steckt.
+
+Häufigste Ursache ist ein verwechselter Wert. Der Bot-Token steht im Developer
+Portal unter **Bot** → **Reset Token** und besteht aus **drei durch Punkte
+getrennten Teilen**. Nicht zu verwechseln mit der Client-ID (nur Ziffern), dem
+Client-Secret (ein Block) oder der Einladungs-URL.
+
+Kommt zusätzlich „Anwendungs-ID nicht ermittelbar", ist es dieselbe Ursache –
+die ID steckt im Token.
+
+Bei diesem Fehler versucht der Bot bewusst **nicht** endlos weiter.
+
+**Befehle erscheinen nicht in Discord**
+→ Wurde die Einladung mit **applications.commands** erzeugt? Ohne diesen
+Scope darf der Bot keine Befehle anlegen. Neu einladen und
+`--discord-test` erneut laufen lassen. Mit gesetzter `UC_DISCORD_GUILD`
+gelten sie sofort, ohne bis zu eine Stunde.
+
+**Der Team-Kanal geht, der Inhaber-Kanal nicht**
+→ Fast immer darf der Bot den privaten Kanal nicht sehen. Kanal bearbeiten →
+Berechtigungen → Bot hinzufügen, **Kanal ansehen** und **Nachrichten senden**
+auf ✅. Im Log steht dann `Discord 403 bei POST /channels/…`.
+
+**Gar keine Meldung an dich, weder Kanal noch DM**
+→ Ist `UC_DISCORD_CHEF_KANAL` leer *und* DMs gesperrt, hat der Bot keinen Weg
+zu dir. Entweder Kanal setzen oder DMs erlauben (Abschnitt 5).
+
+**Meldungen doppelt auf dem Handy**
+→ ntfy und Discord liefern beide. Wenn du nur noch Discord willst,
+`UC_NTFY_TOPIC` leeren. Ich würde ntfy behalten: eine dringende Meldung
+klingelt dort durch den Sperrbildschirm, eine Discord-Nachricht nicht
+zuverlässig.
+
+**Der Bot ist offline, der Watcher läuft**
+→ Beabsichtigt: schlägt Discord fehl, überwacht der Watcher trotzdem weiter.
+`journalctl -u uc-watcher | grep discord` zeigt den Grund.

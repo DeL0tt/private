@@ -1,0 +1,4137 @@
+#!/usr/bin/env node
+// UnicaCity Unternehmen-Watcher – Server-Variante (API).
+// Läuft ohne Browser auf einem Dauerläufer und fragt die offizielle API ab.
+// Voraussetzung: Node.js >= 18. Keine externen Pakete.
+
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { discordAktiv, discordSende, discordStart, discordStop, empfaenger,
+         regelText, THEMEN, themaName, ladeRegeln, speichereRegeln,
+         ladeZuordnung, speichereZuordnung, zuordnungEigen, pruefeToken,
+         kanaele, pingbar, ERINNERUNG_MIN, tafelSenden, istInhaber,
+         istErledigt, merkeErledigt } from './discord.mjs';
+import { merkeZeiten, merkeAusschuettung, merkeAuszahlung, speichereArchiv,
+         ladeArchiv, holeTag, holeTage, letzteTage, alleTage, tagMinus,
+         summiere, vergleich, anteile, archivDatei, archivAktiv,
+         ausschuettungenIm, ausschuettungSumme, kassenBilanz, grenzeAusText,
+         vorzeichenKorrektur } from './archiv.mjs';
+
+/* ========================= KONFIGURATION ========================= */
+
+const CFG = {
+  API:        process.env.UC_API || 'https://api.unicacity.eu',
+  DASHBOARD:  'https://unicacity.eu/dashboard/unternehmen',
+
+  // Der Zugang läuft über ein Cookie von api.unicacity.eu. Damit holt sich der
+  // Watcher bei /api/auth/refresh fortlaufend frische Token (die halten 2 Std.).
+  COOKIE: process.env.UC_COOKIE || '',
+  TOKEN:  process.env.UC_TOKEN  || '',   // optionaler Starttoken, sonst per refresh
+
+  // So lange vor Ablauf wird vorsorglich erneuert
+  TOKEN_PUFFER_MIN: +(process.env.UC_TOKEN_PUFFER_MIN || 5),
+
+  USER_AGENT: process.env.UC_USER_AGENT ||
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36',
+
+  NTFY_TOPIC:  process.env.UC_NTFY_TOPIC || '',
+  NTFY_SERVER: process.env.UC_NTFY_SERVER || 'https://ntfy.sh',
+
+  LAGER_SCHWELLE: +(process.env.UC_LAGER_SCHWELLE || 500),
+  // Plötzlicher Lagerverlust: ab wie viel Prozent des Bestands gilt ein
+  // Rückgang als Vorfall, wenn er nicht durch den normalen Absatz erklärbar ist
+  LAGER_EINBRUCH_PCT: +(process.env.UC_LAGER_EINBRUCH_PCT || 15),
+
+  // Sprung der Einkaufspreise, ab dem ein Lieferengpass vermutet wird
+  PREIS_SPRUNG_PCT: +(process.env.UC_PREIS_SPRUNG_PCT || 20),
+
+  // --- Wiki ---
+  WIKI: process.env.UC_WIKI !== '0',
+  WIKI_INTERVALL_STD: +(process.env.UC_WIKI_INTERVALL_STD || 24),
+
+  // --- Notion-Abgleich ---
+  NOTION_TOKEN: process.env.UC_NOTION_TOKEN || '',
+  // Die Wiki-Seite in Notion (ID aus der Adresse, mit oder ohne Bindestriche)
+  NOTION_WIKI: process.env.UC_NOTION_WIKI || '3c4a6c9607aa80ef9ca5c6658d04c349',
+  NOTION_INTERVALL_STD: +(process.env.UC_NOTION_INTERVALL_STD || 168),   // wöchentlich
+  // Keine Meldung kommt öfter als alle 30 Minuten. Das war einmal je Thema
+  // einstellbar – eine Einstellung, die niemand braucht, weil die Antwort für
+  // jedes Thema dieselbe ist.
+  ERINNERUNG_MIN: +(process.env.UC_ERINNERUNG_MIN || 30),
+
+  TAGESBERICHT:                  process.env.UC_TAGESBERICHT !== '0',
+
+  // Ab wann eine nicht erreichbare Seite gemeldet wird. Kurze Aussetzer sind
+  // normal und sollen nicht aufs Handy.
+  API_WEG_MELDUNG_MIN: +(process.env.UC_API_WEG_MELDUNG_MIN || 30),
+
+  // --- Betrieb (z. B. die Zoohandlung) ---
+  // Wie lange nach dem letzten Einkauf der Nachkauf noch als laufend gilt.
+  NACHKAUF_FENSTER_MIN: +(process.env.UC_NACHKAUF_FENSTER_MIN || 90),
+
+  // Verwaltungsbefehle vor den übrigen verbergen. Discord zeigt sonst jedem
+  // alle Befehle samt Beschreibung, auch wenn der Bot sie verweigert.
+  BEFEHLE_VERBERGEN: process.env.UC_DISCORD_BEFEHLE_VERBERGEN !== '0',
+
+  // Wie oft höchstens nachgefasst wird, damit ein hängender Vorfall nicht
+  // endlos meldet.
+  VORFALL_ERINNERUNG_MAX: +(process.env.UC_VORFALL_ERINNERUNG_MAX || 3),
+
+  // Gelesen wird der Bestand eines einzelnen Betriebs aus /api/panel/me –
+  // also bereits der echte Wert. Der Abzug bleibt nur als Notnagel für den
+  // Fall, dass jemand eine Gesamtsumme statt eines Betriebs auswertet.
+  BETRIEB:           process.env.UC_BETRIEB || 'Zoohandlung',
+  // Sicherer als der Name: die ID des Betriebs aus dem Dashboard. Ist sie
+  // gesetzt, wird nur danach gesucht und der Abzug entfällt – dann steht der
+  // Bestand dieses einen Betriebs da, nicht die Summe aller.
+  BETRIEB_ID:        process.env.UC_BETRIEB_ID || '',
+  BETRIEB_ABZUG:    +(process.env.UC_BETRIEB_ABZUG || 0),
+  BETRIEB_MAX:      +(process.env.UC_BETRIEB_MAX || 240),
+  BETRIEB_SCHWELLE: +(process.env.UC_BETRIEB_SCHWELLE || 40),
+
+  // Obergrenze für Auszahlungen und Gehälter je Tag
+  // Zwei verschiedene Grenzen, die vorher als eine behandelt wurden:
+  //   LIMIT      – wie viel am Tag ueberhaupt rausgehen darf (Firmenkasse,
+  //                Betriebskasse und Gehaelter zusammen)
+  //   FREIBETRAG – wie viel davon steuerfrei ist; darueber 35 % Steuer
+  // Dazu auf alles 15 % Auszahlungsgebuehr.
+  AUSZAHLUNG_LIMIT:     +(process.env.UC_AUSZAHLUNG_LIMIT || 50_000),
+  AUSZAHLUNG_FREI:      +(process.env.UC_AUSZAHLUNG_FREI || 20_000),
+  AUSZAHLUNG_STEUER:    +(process.env.UC_AUSZAHLUNG_STEUER || 35) / 100,
+  AUSZAHLUNG_GEBUEHR:   +(process.env.UC_AUSZAHLUNG_GEBUEHR || 15) / 100,
+  // Gewinn ueber dieser Grenze wird stuendlich abgeschoepft.
+  // Was die Firma je Stunde behalten darf. Alles darüber nimmt die
+  // Für die Stundengrenze der Abschöpfung gibt es hier bewusst keine
+  // Einstellung mehr. Sie wird je Stunde gewürfelt, und UC_GEWINN_DECKEL_STD
+  // war als Ersatzwert nur eine Fehlerquelle: er floss in Summen ein und ließ
+  // sie gemessen aussehen. Die Grenze steht im Buchungstext – steht sie dort
+  // nicht, gibt es für diese Stunde keine Zahl.
+  // Wann der Topf zurückgesetzt wird. Das ist Mitternacht und damit etwas
+  // anderes als der Spieltag, der um 04:00 wechselt – die beiden nicht
+  // verwechseln, sonst zeigt der Befehl nachts einen falschen Stand.
+  AUSZAHLUNG_RESET_STD: +(process.env.UC_AUSZAHLUNG_RESET_STD ?? 0),
+  // Unbekannte Buchungen melden – aus, weil es vor allem Lärm war
+  UNBEKANNTE_BUCHUNGEN: process.env.UC_UNBEKANNTE_BUCHUNGEN === '1',
+
+  LUECKE_MIN:       +(process.env.UC_LUECKE_MIN || 10),
+  TAGESWECHSEL_STD: +(process.env.UC_TAGESWECHSEL_STD || 4),
+
+  INTERVALL_MS: +(process.env.UC_INTERVALL_MS || 60_000),
+  STATE_FILE:   process.env.UC_STATE_FILE || path.join(process.cwd(), 'uc-watcher-state.json'),
+  DEBUG:        process.env.UC_DEBUG === '1',
+};
+
+/**
+ * Vorfallsarten als Starthilfe für die Auswahl in /melden.
+ *
+ * Belegt sind nur diese zwei: ABWERBUNG steht in einer echten Meldung aus dem
+ * Spiel, LIEFERENGPASS wird vom Ereignis mit Expresslieferung und Aufschlag
+ * begleitet, das der Watcher eigens auswertet. Weitere Arten waren geraten und
+ * stehen deshalb nicht mehr hier – eine Auswahlliste, die Arten anbietet, die
+ * es nicht gibt, lädt dazu ein, Regeln für nichts anzulegen.
+ *
+ * Was es wirklich gibt, schreibt der Watcher selbst mit: jede begegnete Art
+ * landet in state.vorfallArten und steht danach in der Auswahl, mit der Zahl
+ * der Sichtungen. `--einstellungen` zeigt die Liste. Eintippen geht immer.
+ */
+const VORFALL_BEKANNT = (process.env.UC_VORFALL_ARTEN || 'ABWERBUNG,LIEFERENGPASS')
+  .split(',').map(a => a.trim().toUpperCase()).filter(Boolean);
+
+/**
+ * Buchungskategorien, die einen Kassenvorfall darstellen – ein Vorfall, der
+ * sich als Abgang im Kassenbuch zeigt. Auch das ist eine Vermutung: welche
+ * Wörter das Spiel benutzt, wissen wir nur von den Buchungen, die vorbeikamen.
+ * Was nicht erkannt wird, landet im Log statt in einer Meldung – eine falsche
+ * Meldung wäre schlimmer als eine fehlende.
+ */
+const VORFALL_KATEGORIEN = [
+  'steuerprüfung', 'steuerpruefung', 'razzia', 'überfall', 'ueberfall',
+  'einbruch', 'diebstahl', 'strafe', 'bußgeld', 'bussgeld', 'sabotage',
+];
+
+// Was gegen das Tageslimit zählt. Gemessen wird am ausgezahlten Betrag –
+// brutto, also an dem, was die Kasse verlässt, nicht an dem, was nach Steuer
+// und Gebühr beim Empfänger ankommt.
+//
+// Zwei Dinge heißen „Ausschüttung" und sind streng zu trennen:
+//
+//   • die **Abschöpfung** – der Server nimmt stündlich jeden Gewinn über
+//     einer gewürfelten Stundengrenze weg. Nach oben offen, hat mit dem
+//     Tageslimit nichts zu tun, steht deshalb NICHT in dieser Liste. Sie kommt
+//     als eigene Kategorie und wird nur ins Archiv geschrieben.
+//   • die **Auszahlung** an Mitglieder – die zehrt am Limit, auch wenn das
+//     Spiel sie als „Auszahlung" verbucht und erst im Text „Ausschüttung an
+//     …" nennt. Deshalb steht „ausschütt" auch nicht mehr in den Ausnahmen.
+//
+// Löhne stehen bewusst nicht dabei – das sind die NPC-Kosten der Firma, kein
+// Geld, das sich jemand auszahlt.
+const AUSZAHLUNG_KATEGORIEN =
+  (process.env.UC_AUSZAHLUNG_KATEGORIEN || 'auszahlung,gehalt')
+    .split(',').map(w => w.trim().toLowerCase()).filter(Boolean);
+
+// Was trotz passender Kategorie NICHT gegen den Freibetrag zählt.
+//
+// Löhne sind die Kosten der NPCs, kein Geld, das sich jemand auszahlt – die
+// zählen nicht mit. Geprüft wird auch der Buchungstext, nicht nur die
+// Kategorie: das Spiel verbucht manches als „Auszahlung" und sagt erst im
+// Text, worum es ging.
+//
+// „ausschütt" stand hier einmal drin. Das war falsch: die Ausschüttung ist
+// genau das, was das Tageslimit misst.
+const AUSZAHLUNG_AUSNAHMEN =
+  (process.env.UC_AUSZAHLUNG_AUSNAHMEN || 'löhne,loehne,lohn,npc')
+    .split(',').map(w => w.trim().toLowerCase()).filter(Boolean);
+
+/**
+ * Zählt diese Buchung gegen das Tageslimit?
+ * Gibt den Grund mit zurück, damit /gehalt und der Tagesbericht belegen
+ * können, was gezählt wurde – und was nicht.
+ */
+function zaehltGegenFreibetrag(kategorie, detail) {
+  const kat = String(kategorie || '').toLowerCase();
+  const txt = `${kat} ${String(detail || '').toLowerCase()}`;
+  if (!AUSZAHLUNG_KATEGORIEN.some(w => kat.includes(w))) {
+    return { zaehlt: false, grund: 'andere Kategorie' };
+  }
+  const ausnahme = AUSZAHLUNG_AUSNAHMEN.find(w => txt.includes(w));
+  if (ausnahme) return { zaehlt: false, grund: `Ausnahme „${ausnahme}"` };
+  return { zaehlt: true, grund: '' };
+}
+
+// Bekannte, harmlose Kategorien – alles andere landet im Log.
+const NORMALE_KATEGORIEN = [
+  'verkauf', 'einkauf', 'löhne', 'loehne', 'nebenkosten', 'talent',
+  'ausschüttung', 'ausschuettung', 'einzahlung', 'auszahlung', 'quest', 'auftrag',
+];
+
+const MIN = 60_000;
+
+// Kein Abruf darf ewig hängen. Ohne Grenze wartet fetch() unbegrenzt – und ein
+// hängender Durchlauf zählt keine Zeit mehr, während die Uhr weiterläuft.
+const ABRUF_MS = +(process.env.UC_ABRUF_TIMEOUT_MS || 20_000);
+const log  = (...a) => CFG.DEBUG && console.log(new Date().toISOString(), ...a);
+const info = (...a) => console.log(new Date().toISOString(), ...a);
+
+/* ========================= ZUSTAND ========================= */
+
+const leer = () => ({
+  token: null, tokenExp: 0, cookie: null,   // Zugang, überlebt Neustarts
+  lager: null, personal: null, kasse: null, gewinn: null,
+  // Die letzten Gewinnstände mit Zeitstempel. Gebraucht, um bei einer
+  // Abschöpfung den Stand von *vorher* zu kennen: das ist der Gewinn, der
+  // wirklich angesammelt war. Der Stand danach sagt es nicht – er verrät nur
+  // den Rest, und die Annahme „der Rest ist der Deckel" war falsch.
+  gewinnVerlauf: [],
+  spieler: {},            // name -> { online, seit, sitzungMs, gesamtMs, zuletzt, tag }
+  tag: null,                 // laufender Spieltag (wechselt um 04:00)
+  ausschuettungTag: null,   // Kalendertag des letzten Ausschüttungsberichts
+  firmaTagMs: 0, firmaTag: null,   // Laufzeit im aktuellen Spieltag (unabhängig von der Ausschüttung)
+  letzteAusschuettung: null, letzterTick: null,
+  wiki: null,              // { id: {titel, kategorie, updatedAt, laenge} }
+  wikiGeprueft: 0,
+  notionGeprueft: 0,
+  preise: null,            // letzte Einkaufspreise je Ware
+  letzterLagerTick: 0,
+  letzterLedgerStamp: 0,  // bis hierhin wurde das Kassenbuch verarbeitet
+  auszahlungSumme: 0, auszahlungTag: null, auszahlungen: [],  // Freibetrag je Tag
+  auszahlungGestern: null,  // Schlussstand des Vortags für den Tagesbericht
+  betriebBestand: null,   // zuletzt gesehener Bestand der Zoohandlung
+  letzterEinkauf: 0,      // belegt, dass der Nachkauf läuft
+  offenerVorfall: null,   // { schluessel, art, frist, seit, zuletzt, runde }
+  vorfallLauf: 0,         // zählt hoch, wenn ein neuer Vorfall beginnt
+  vorfallArten: {},       // gesehene Arten, für die Auswahl in /melden
+  lagerVerlauf: [],       // { t, lager } für den gemessenen Absatz
+  zeitkonto: null,        // { tag, gezaehlt, pausiert, niemand, luecke, ausfaelle }
+  lastPush: {},
+  apiWegSeit: 0,          // seit wann UnicaCity nicht erreichbar ist
+});
+
+function load() {
+  try { return Object.assign(leer(), JSON.parse(fs.readFileSync(CFG.STATE_FILE, 'utf8'))); }
+  catch { return leer(); }
+}
+let zuletztGespeichert = '';
+/**
+ * Alte Sperreinträge wegräumen.
+ *
+ * Viele Themen tragen eine laufende Nummer oder einen Zeitstempel
+ * ('vorfall_1726…', 'event_ABWERBUNG_a3f9'), damit ein zweiter Vorfall nicht
+ * als Wiederholung des ersten gilt. Jeder davon hinterlässt einen Eintrag in
+ * lastPush, der nie wieder gebraucht wird – ohne Aufräumen wächst die
+ * Zustandsdatei mit jedem Vorfall.
+ */
+const SPERRE_BEHALTEN_MS = 2 * 24 * 3_600_000;   // zwei Tage decken jede Wiederholung ab
+
+function raeumeSperren(state) {
+  const grenze = Date.now() - SPERRE_BEHALTEN_MS;
+  for (const [thema, zeit] of Object.entries(state.lastPush || {})) {
+    if (zeit < grenze) delete state.lastPush[thema];
+  }
+}
+
+function save(s) {
+  // Ein Ausfall läuft jede Minute durch diese Funktion, ohne dass sich etwas
+  // ändert. Dann muss auch nichts auf die Platte.
+  const inhalt = JSON.stringify(s, null, 2);
+  if (inhalt === zuletztGespeichert) return;
+  const tmp = CFG.STATE_FILE + '.tmp';
+  // 0600: Die Datei enthält Cookie und Token – niemand sonst darf sie lesen.
+  fs.writeFileSync(tmp, inhalt, { mode: 0o600 });
+  fs.renameSync(tmp, CFG.STATE_FILE);        // atomar – übersteht Stromausfall
+  zuletztGespeichert = inhalt;
+}
+
+// Spieltag läuft 04:00 → 04:00
+// Ohne Argument: der laufende Spieltag. Mit Zeitstempel: der Spieltag, zu dem
+// dieser Zeitpunkt gehört – eine Buchung um 02:00 zählt noch zum Vortag.
+const spieltag = (zeit = Date.now()) => {
+  const d = new Date(zeit - CFG.TAGESWECHSEL_STD * 3_600_000);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+
+/**
+ * Eine Dauer lesbar machen.
+ *
+ * Erst auf Minuten runden, dann in Stunden und Minuten teilen. Umgekehrt –
+ * Stunden abschneiden, Minuten runden – ergab bei 8 Std. 59 Min. 42 Sek. die
+ * Ausgabe "8 Std. 60 Min.": der Rest wurde auf 60 gerundet, die Stunde aber
+ * nicht mitgezählt.
+ */
+// Uhrzeit ohne Sekunden. An mehreren Stellen gebraucht, seit die Kassenprobe
+// sagt, zu welchem Zeitpunkt ein Stand gilt.
+const uhr = (stamp) => new Date(stamp).toLocaleTimeString('de-DE').slice(0, 5);
+
+function dauer(ms) {
+  if (!ms || ms < MIN) return '<1 Min.';
+  const minuten = Math.round(ms / MIN);
+  const h = Math.floor(minuten / 60), m = minuten % 60;
+  return h ? `${h} Std. ${m} Min.` : `${m} Min.`;
+}
+
+const fmt = n => Number(n).toLocaleString('de-DE', { maximumFractionDigits: 2 }) + '$';
+
+// 'JJJJ-MM-TT' → '20.09.' bzw. '20.09.2026'
+const tagKurz = (tag) => tag ? `${tag.slice(8)}.${tag.slice(5, 7)}.` : '?';
+const tagLang = (tag) => tag ? `${tagKurz(tag)}${tag.slice(0, 4)}` : '?';
+
+/**
+ * Der Bericht eines Spieltags, gelesen aus dem Archiv.
+ *
+ * Die Zahlen kommen aus archiv.mjs, nicht aus dem Laufzeitzustand – deshalb
+ * funktioniert das auch für gestern oder für vorletzte Woche, und deshalb
+ * sehen der nächtliche Push und der Discord-Befehl garantiert dasselbe.
+ */
+function tagesText(tag) {
+  const e = holeTag(tag);
+  if (!e) return `Für den Spieltag ${tagLang(tag)} liegen keine Zahlen vor.`;
+
+  const zeilen = Object.entries(e.spieler)
+    .map(([name, p]) => ({ name, ms: p.ms || 0, rolle: p.rolle || '' }))
+    .sort((a, b) => b.ms - a.ms)
+    .map(x => x.ms >= MIN ? `• ${x.name} — ${dauer(x.ms)}` : `• ${x.name} — nicht online`);
+  const gesamt = Object.values(e.spieler).reduce((a, p) => a + (p.ms || 0), 0);
+
+  let t = `Spieltag ${tagLang(tag)} (04:00 bis 04:00)\n\n` +
+    (zeilen.length ? zeilen.join('\n') : 'Niemand war online.') +
+    `\n\nSumme aller Spieler: ${dauer(gesamt)}` +
+    `\nFirma gelaufen: ${dauer(e.firmaMs)}`;
+
+  if (e.ausschuettungen.length) {
+    const betrag = e.ausschuettungen.reduce((a, x) => a + (x.betrag || 0), 0);
+    t += `\nAusschüttungen: ${e.ausschuettungen.length} über ${fmt(betrag)}`;
+  }
+  return t;
+}
+
+// Deutsche Zahl mit Komma. Für Prozente und Speichergrößen, wo fmt() mit
+// seinem Dollarzeichen nicht passt.
+const zahl = (n, k = 1) => Number(n).toFixed(k).replace('.', ',');
+
+/**
+ * Ein Balken sagt auf dem Handy mehr als eine Zahl. Kappt selbst auf 0–100 %,
+ * damit die Aufrufer das nicht jedes Mal bedenken müssen.
+ */
+/**
+ * Zeigt die Form einer API-Antwort statt ihres Inhalts – für die Sonden, die
+ * prüfen, ob ein Feld noch heißt wie erwartet.
+ */
+function umriss(o, tiefe = 0, maxTiefe = 2, breit = 14, schmal = 10) {
+  if (Array.isArray(o)) {
+    return o.length ? `[${o.length}× ${umriss(o[0], tiefe + 1, maxTiefe, breit, schmal)}]` : '[]';
+  }
+  if (o && typeof o === 'object') {
+    const k = Object.keys(o);
+    return tiefe > maxTiefe ? `{${k.slice(0, schmal).join(', ')}}` :
+      '{' + k.slice(0, breit).map(n => `${n}: ${umriss(o[n], tiefe + 1, maxTiefe, breit, schmal)}`).join(', ') + '}';
+  }
+  return typeof o;
+}
+
+const balken = (anteil, breite = 20) => {
+  const striche = Math.round(Math.min(100, Math.max(0, anteil)) / (100 / breite));
+  return '`' + '█'.repeat(striche) + '░'.repeat(breite - striche) + '`';
+};
+
+// Texte aus dem Spiel enthalten Minecraft-Farbcodes: "§7" und Hex-Farben der
+// Form "§x§F§F§E§1§A§8". Die müssen raus, bevor irgendetwas gelesen oder
+// angezeigt wird – sonst verschmilzt die letzte Ziffer des Codes mit der
+// folgenden Zahl ("§x…§8" + "92x" wird zu "892x").
+const sauber = t => String(t ?? '').replace(/§./gu, '').replace(/\s+/g, ' ').trim();
+
+/* ========================= API & ZUGANG ========================= */
+
+// Zugang lebt im Zustand, damit er Neustarts übersteht.
+const zugang = { token: null, exp: 0, cookie: null, geholtUm: 0 };
+
+function ladeZugang(state) {
+  zugang.token  = state.token  || CFG.TOKEN || null;
+  zugang.exp    = state.tokenExp || 0;
+  zugang.cookie = state.cookie || CFG.COOKIE || null;
+}
+function sichereZugang(state) {
+  state.token = zugang.token; state.tokenExp = zugang.exp; state.cookie = zugang.cookie;
+}
+
+// Ablaufzeitpunkt aus dem JWT lesen (nur exp, sonst nichts).
+function tokenAblauf(t) {
+  try {
+    const teil = String(t).split('.')[1];
+    const p = JSON.parse(Buffer.from(teil, 'base64url').toString('utf8'));
+    return p.exp ? p.exp * 1000 : 0;
+  } catch { return 0; }
+}
+
+const tokenFrisch = () =>
+  zugang.token && zugang.exp - Date.now() > CFG.TOKEN_PUFFER_MIN * 60_000;
+
+// 401/403 heißt: das Cookie taugt nicht mehr, da hilft nur ein neues. Alles
+// andere (502, 503, 500 …) ist der Server von UnicaCity, der gerade hustet –
+// das geht von selbst vorbei und ist kein Grund, den Zugang zu verdächtigen.
+// Beide Fälle müssen überall gleich heißen, sonst wird wieder ein Ausfall für
+// einen abgelaufenen Zugang gehalten.
+function pruefeAntwort(res) {
+  if (res.status === 401 || res.status === 403) throw new Error('AUTH');
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+}
+
+// Holt einen neuen Token. Ausgewiesen wird sich mit dem Cookie – der Token
+// allein reicht nicht, das wurde im Browser nachgemessen.
+async function erneuere() {
+  if (!zugang.cookie) throw new Error('KEIN_COOKIE');
+
+  const res = await fetch(CFG.API + '/api/auth/refresh', {
+    signal: AbortSignal.timeout(ABRUF_MS),
+    method: 'POST',
+    headers: {
+      Cookie: zugang.cookie,
+      'User-Agent': CFG.USER_AGENT,
+      'Accept': 'application/json',
+      'Origin': 'https://unicacity.eu',
+      'Referer': 'https://unicacity.eu/',
+    },
+  });
+  pruefeAntwort(res);
+
+  const daten = await res.json();
+  const neu = daten.token || daten.accessToken || daten.data?.token;
+  if (!neu) throw new Error('REFRESH_OHNE_TOKEN');
+
+  // Manche Server erneuern dabei auch das Cookie – dann übernehmen wir es,
+  // sonst verfällt der Zugang beim nächsten Mal.
+  const gesetzt = typeof res.headers.getSetCookie === 'function' ? res.headers.getSetCookie() : [];
+  if (gesetzt.length) {
+    const paare = new Map();
+    for (const teil of String(zugang.cookie).split(';')) {
+      const [k, ...rest] = teil.trim().split('=');
+      if (k) paare.set(k, rest.join('='));
+    }
+    for (const z of gesetzt) {
+      const [k, ...rest] = z.split(';')[0].split('=');
+      if (k) paare.set(k.trim(), rest.join('='));
+    }
+    zugang.cookie = [...paare].map(([k, v]) => `${k}=${v}`).join('; ');
+    log('Cookie wurde erneuert');
+  }
+
+  zugang.token = neu;
+  zugang.exp = tokenAblauf(neu);
+  zugang.geholtUm = Date.now();
+  info(`Token erneuert, gültig bis ${new Date(zugang.exp).toLocaleTimeString('de-DE')}`);
+  return neu;
+}
+
+async function api(pfad, zweiterVersuch = false) {
+  if (!tokenFrisch()) await erneuere();
+
+  const res = await fetch(CFG.API + pfad, {
+    signal: AbortSignal.timeout(ABRUF_MS),
+    headers: {
+      Authorization: 'Bearer ' + zugang.token,
+      Cookie: zugang.cookie || '',
+      'User-Agent': CFG.USER_AGENT,
+      'Accept': 'application/json',
+      'Accept-Language': 'de-DE,de;q=0.9',
+      'Origin': 'https://unicacity.eu',
+      'Referer': 'https://unicacity.eu/',
+    },
+  });
+
+  if ((res.status === 401 || res.status === 403) && !zweiterVersuch) {
+    // Ein gerade erst geholter Token kann nicht abgelaufen sein – dann liegt es
+    // am Pfad oder an fehlenden Rechten. Sonst würde jeder 404-artige Fehler
+    // eine überflüssige Erneuerung auslösen.
+    if (Date.now() - zugang.geholtUm < 60_000) {
+      log('Abgewiesen trotz frischem Token:', pfad);
+      throw new Error('AUTH');
+    }
+    log('Abgewiesen – Token wird erneuert und noch einmal versucht');
+    zugang.exp = 0;
+    return api(pfad, true);
+  }
+  pruefeAntwort(res);
+  return res.json();
+}
+
+const holeFirma  = () => api('/api/panel/company');
+
+// Mögliche Adressen der Betriebsübersicht. Welche es ist, zeigt
+// --betrieb-probe; die erste, die antwortet, wird gemerkt.
+// Die Betriebe stehen in /api/panel/me – belegt durch die Suche im
+// Programmcode des Dashboards, dort gibt es keine eigene Adresse dafür.
+// Die weiteren Panel-Adressen bleiben als Rückfallebene, falls sich das
+// ändert; /api/panel/company steht bewusst nicht dabei, die wird im selben
+// Durchlauf ohnehin schon geholt.
+const BETRIEB_PFADE = ['/api/panel/me', '/api/panel/history'];
+let betriebPfad = process.env.UC_BETRIEB_PFAD || '';
+
+async function holeBetriebe() {
+  if (betriebPfad) return api(betriebPfad);
+  let letzterFehler;
+  for (const pfad of BETRIEB_PFADE) {
+    try {
+      const d = await api(pfad);
+      betriebPfad = pfad;
+      log('Betriebe kommen von', pfad);
+      return d;
+    } catch (e) {
+      letzterFehler = e;
+      // 401/403 heißt Zugangsproblem, nicht falscher Pfad – dann abbrechen.
+      if (e.message === 'AUTH') throw e;
+    }
+  }
+  throw new Error('BETRIEB_PFAD_UNBEKANNT' + (letzterFehler ? ` (${letzterFehler.message})` : ''));
+}
+
+/**
+ * Sucht einen Betrieb am Namen, egal wie tief er in der Antwort steckt.
+ * Die genaue Form der Antwort kennen wir nicht, deshalb wird gesucht statt
+ * einen festen Pfad anzunehmen.
+ */
+function findeBetrieb(daten, name) {
+  const ziel = schluessel(sauber(name));
+  const id = CFG.BETRIEB_ID ? String(CFG.BETRIEB_ID) : '';
+  if (!ziel && !id) return null;
+  let treffer = null;
+  const suche = (o, tiefe = 0) => {
+    if (treffer || !o || tiefe > 8) return;
+    if (Array.isArray(o)) { o.forEach(x => suche(x, tiefe + 1)); return; }
+    if (typeof o !== 'object') return;
+    // Die ID ist eindeutig, der Name kann sich ändern – deshalb zuerst.
+    // In /api/panel/me heißt sie bizID.
+    if (id && String(o.bizID ?? o.id ?? o.businessId ?? '') === id) { treffer = o; return; }
+    if (!id) {
+      const n = o.name ?? o.title ?? o.businessName ?? o.displayName;
+      if (typeof n === 'string' && ziel && schluessel(sauber(n)).includes(ziel)) { treffer = o; return; }
+    }
+    for (const v of Object.values(o)) suche(v, tiefe + 1);
+  };
+  suche(daten);
+  if (treffer) return treffer;
+
+  // Eine gesetzte ID ist verbindlich: Wird sie nicht gefunden, ist das ein
+  // Fehler in der Einstellung. Dann lieber nichts melden als den falschen
+  // Betrieb, dessen Zahlen echt aussehen.
+  if (id) return null;
+
+  // Ohne ID: ein Betrieb wie die Werbung zeigt zwar einen Lagerwert an, hat
+  // aber keines (hasLager: false). Bleibt genau einer mit echtem Lager übrig,
+  // ist er gemeint.
+  const mitLager = [];
+  const sammle = (o, tiefe = 0) => {
+    if (!o || tiefe > 8) return;
+    if (Array.isArray(o)) { o.forEach(x => sammle(x, tiefe + 1)); return; }
+    if (typeof o !== 'object') return;
+    if (o.hasLager === true) mitLager.push(o);
+    for (const v of Object.values(o)) sammle(v, tiefe + 1);
+  };
+  sammle(daten);
+  return mitLager.length === 1 ? mitLager[0] : null;
+}
+
+// Felder, unter denen ein Bestand stecken kann – in dieser Reihenfolge.
+// So heißen die Felder in /api/panel/me. Die übrigen Namen bleiben als
+// Rückfallebene stehen, falls sich die API einmal ändert.
+const BESTAND_FELDER = ['lager', 'stock', 'bestand', 'inventory', 'total', 'amount', 'quantity'];
+const KAPAZITAET_FELDER = ['lagerMax', 'capacity', 'max', 'maxStock', 'maximum', 'limit'];
+
+const ersteZahl = (o, felder) => {
+  for (const k of felder) if (typeof o?.[k] === 'number') return o[k];
+  return null;
+};
+
+/** Liest Bestand und Kapazität aus einem Betrieb heraus. */
+function betriebBestand(betrieb) {
+  if (!betrieb) return null;
+  const direkt = ersteZahl(betrieb, BESTAND_FELDER);
+  if (direkt !== null) {
+    return { roh: direkt, kapazitaet: ersteZahl(betrieb, KAPAZITAET_FELDER) };
+  }
+  // Verschachtelt, etwa { stock: { total: 340, capacity: 400 } }
+  for (const k of BESTAND_FELDER) {
+    const v = betrieb[k];
+    if (v && typeof v === 'object' && !Array.isArray(v)) {
+      const zahl = ersteZahl(v, BESTAND_FELDER);
+      if (zahl !== null) return { roh: zahl, kapazitaet: ersteZahl(v, KAPAZITAET_FELDER) };
+    }
+  }
+  return null;
+}
+
+/**
+ * Bestand des beobachteten Betriebs, bereits um den Sockel bereinigt.
+ * Der Abzug ist das, was im Betrieb steht, aber nicht entnommen werden kann.
+ */
+function betriebStand(daten) {
+  const b = findeBetrieb(daten, CFG.BETRIEB);
+  if (!b) return { gefunden: false };
+  const roh = betriebBestand(b);
+  if (!roh) return { gefunden: true, bestand: null, name: sauber(b.name || b.title || CFG.BETRIEB) };
+
+  // Wir lesen immer den Bestand eines einzelnen Betriebs, nie eine Summe –
+  // der Wert stimmt also schon. Abgezogen wird nur, wenn es jemand
+  // ausdrücklich einstellt.
+  const abzug = CFG.BETRIEB_ID ? 0 : CFG.BETRIEB_ABZUG;
+  const verfuegbar = Math.max(0, roh.roh - abzug);
+  const max = roh.kapazitaet ? Math.max(0, roh.kapazitaet - abzug) : CFG.BETRIEB_MAX;
+  // Heißt der Betrieb in der API nur "Business #35", ist der eingestellte
+  // Name (Zoohandlung) für Menschen die bessere Auskunft.
+  const apiName = sauber(b.name || b.title || '');
+  const anzeige = !apiName || /^business\s*#?\d+$/i.test(apiName) ? CFG.BETRIEB : apiName;
+
+  return {
+    gefunden: true,
+    name: anzeige,
+    angezeigt: roh.roh,
+    bestand: verfuegbar,
+    max,
+    anteil: max ? Math.round(verfuegbar / max * 100) : 0,
+  };
+}
+const holeLedger = (id) => api(`/api/panel/company/ledger?companyId=${id}&days=1&limit=40`);
+
+/* ========================= SPIELERZEITEN ========================= */
+
+// members[] der API liefert online direkt – keine Namensliste nötig.
+function updateSpieler(state, members) {
+  const now = Date.now(), tag = spieltag();
+
+  for (const m of members) {
+    const name = m.name;
+    if (!name) continue;
+    const p = state.spieler[name] ||
+      { online: false, seit: null, sitzungMs: 0, gesamtMs: 0, zuletzt: 0, tag };
+    if (p.tag !== tag) { p.gesamtMs = 0; p.tag = tag; }
+
+    if (m.online) {
+      const luecke = now - (p.zuletzt || 0);
+      if (!p.online || luecke > CFG.LUECKE_MIN * MIN) {
+        p.online = true; p.seit = now; p.sitzungMs = 0;   // neue Sitzung
+      } else {
+        p.sitzungMs = now - p.seit;
+        p.gesamtMs += Math.min(luecke, CFG.LUECKE_MIN * MIN);
+      }
+      p.zuletzt = now;
+    } else if (p.online) {
+      p.online = false;
+      p.sitzungMs = (p.zuletzt || now) - (p.seit || now);
+    }
+    p.rolle = m.roleName || m.role || '';
+    state.spieler[name] = p;
+  }
+}
+
+// Wandzeit, in der die Firma tatsächlich lief: mindestens ein Spieler online
+// UND nicht pausiert. Mehrere gleichzeitig zählen trotzdem nur einmal.
+// firmaTagMs zählt die Laufzeit des Spieltags und wird um 04:00
+// zurückgesetzt. Ein zweiter Zähler bis zur Ausschüttung stand hier einmal
+// daneben – seit stündlich abgeschöpft wird, gibt es nichts mehr, worauf er
+// hinzählen könnte.
+/**
+ * Die Zeit zwischen zwei Durchläufen verbuchen – und zwar jede, mit Grund.
+ *
+ * Der Zähler ist eine Summe aus Minutenentscheidungen. Stimmt er am Ende nicht
+ * mit dem Spiel überein, ist die einzige Frage: welche Minuten wurden nicht
+ * gezählt und warum. Ohne diese Aufstellung lässt sich das nicht beantworten,
+ * nur vermuten – deshalb führt der Watcher ein Zeitkonto je Spieltag.
+ *
+ * @param {'laeuft'|'pausiert'|'niemand'} lage
+ */
+function updateTeamzeit(state, lage) {
+  const now = Date.now(), letzter = state.letzterTick;
+  state.letzterTick = now;
+  const tag = spieltag();
+  if (state.firmaTag !== tag) { state.firmaTagMs = 0; state.firmaTag = tag; }
+
+  // Das Konto gehört zum Spieltag und wird mit ihm zurückgesetzt.
+  if (state.zeitkonto?.tag !== tag) {
+    state.zeitkonto = { tag, gezaehlt: 0, pausiert: 0, niemand: 0, luecke: 0, ausfaelle: 0 };
+  }
+  const konto = state.zeitkonto;
+
+  if (!letzter) return;
+  const luecke = now - letzter;
+
+  // Zu großer Abstand: der Watcher lief nicht. Diese Zeit wird nicht gezählt,
+  // denn was in ihr passiert ist, weiß niemand.
+  if (luecke > CFG.LUECKE_MIN * MIN) {
+    konto.luecke += luecke;
+    konto.ausfaelle++;
+    info(`Zeitlücke von ${dauer(luecke)} – nicht gezählt (Watcher lief nicht)`);
+    return;
+  }
+
+  if (lage === 'laeuft') {
+    state.firmaTagMs += luecke;
+    konto.gezaehlt += luecke;
+  } else if (lage === 'pausiert') {
+    konto.pausiert += luecke;
+  } else {
+    konto.niemand += luecke;
+  }
+}
+
+// Um 04:00 wechselt der Spieltag. Davor: Bericht über den abgelaufenen Tag,
+// danach setzt updateSpieler die Tageszähler zurück.
+async function tagesabschluss(state) {
+  const tag = spieltag();
+  if (!state.tag) { state.tag = tag; return; }        // erster Lauf
+  if (state.tag === tag) return;
+
+  const vorbei = state.tag;
+  state.tag = tag;
+
+  // Den Topf anstoßen, damit der Schlussstand des vergangenen Tages vorliegt,
+  // falls seit Mitternacht keine Buchung mehr kam.
+  auszahlungTopf(state);
+
+  // Den abgeschlossenen Tag endgültig festhalten, bevor updateSpieler die
+  // Tageszähler zurücksetzt. Danach steht er nur noch im Archiv.
+  merkeZeiten(vorbei, state.spieler, state.firmaTagMs);
+  speichereArchiv();
+
+  if (!CFG.TAGESBERICHT) return;
+
+  await push(`tagesbericht_${vorbei}`, `📊 Onlinezeiten ${tagKurz(vorbei)}`,
+    tagesText(vorbei) +
+
+    freibetragText(state),
+    state, 'low');
+}
+
+function onlineBericht(state, fensterMin = 180) {
+  const cutoff = Date.now() - fensterMin * MIN;
+  const zeilen = [];
+  for (const [name, p] of Object.entries(state.spieler)) {
+    if (!p.zuletzt || p.zuletzt < cutoff) continue;
+    const status = p.online ? 'online' : `zuletzt vor ${dauer(Date.now() - p.zuletzt)}`;
+    const sitz = p.online ? dauer(Date.now() - p.seit) : dauer(p.sitzungMs);
+    zeilen.push(`• ${name} — ${status}, Sitzung ${sitz}, heute ${dauer(p.gesamtMs)}`);
+  }
+  return zeilen;
+}
+
+/* ========================= PUSH ========================= */
+
+const PRIO = { min: 1, low: 2, default: 3, high: 4, urgent: 5 };
+
+/**
+ * Wer ist gerade in UnicaCity online und hat ein zugeordnetes Discord-Konto?
+ *
+ * Grundlage sind die Spielerdaten, die der Watcher ohnehin je Durchlauf
+ * fortschreibt. Namen werden ohne Rücksicht auf Groß- und Kleinschreibung
+ * verglichen, weil die Zuordnung von Hand eingetippt wird.
+ */
+function onlineDiscordIds(state) {
+  const online = new Set(Object.entries(state.spieler || {})
+    .filter(([, p]) => p.online)
+    .map(([name]) => name.toLowerCase()));
+  if (!online.size) return [];
+  return Object.entries(ladeZuordnung())
+    .filter(([, ucName]) => online.has(String(ucName).toLowerCase()))
+    .map(([discordId]) => discordId);
+}
+
+/**
+ * Schickt eine Meldung raus: an ntfy (dein Handy) und, falls eingerichtet,
+ * an Discord.
+ *
+ * Alle sehen denselben Wortlaut. Eine gekürzte Fassung für geteilte Kanäle
+ * gab es früher; in einer Firma, in der alle die Zahlen sehen dürfen, war sie
+ * nur die schlechtere Meldung.
+ */
+async function push(thema, titel, text, state, prio = 'high', extra = {}) {
+  const regel = extra.ziel ? { ziel: extra.ziel } : empfaenger(thema, ladeRegeln());
+
+  // "Gar nicht" heißt gar nicht: auch kein ntfy aufs Handy. Sonst wäre die
+  // Einstellung eine Halbwahrheit.
+  if (regel.ziel === 'aus') return log('Abgeschaltet:', thema);
+
+  const now = Date.now();
+
+  // extra.einmal: dieses Thema wird genau einmal gemeldet, nie wieder – egal
+  // wie lange es anliegt. Für Vorfälle: ein Vorfall ist ein Ereignis, kein
+  // Zustand, der halbstündlich in Erinnerung gerufen werden will. Was danach
+  // noch kommt, ist die Erinnerung – und die schaltet der Knopf ab.
+  if (extra.einmal && state.lastPush[thema]) return log('Schon gemeldet:', thema);
+
+  // Sonst eine feste Ruhezeit für alles. Je Thema einstellbar war sie eine
+  // Frage, auf die es nur eine Antwort gab.
+  if (now - (state.lastPush[thema] || 0) < CFG.ERINNERUNG_MIN * MIN) {
+    return log('Cooldown:', thema);
+  }
+  state.lastPush[thema] = now;
+
+  raeumeSperren(state);
+  info('PUSH:', titel);
+  log(text);
+  await discordSende({ ...regel, titel, text, prio, knopf: extra.knopf,
+                       pingNutzer: regel.ping === 'online' ? onlineDiscordIds(state) : undefined });
+
+  if (!CFG.NTFY_TOPIC) return log('  (kein UC_NTFY_TOPIC gesetzt – nur Discord)');
+
+  // Als JSON, nicht per HTTP-Header: Header dürfen nur Latin-1, unsere Titel
+  // enthalten Emojis und Umlaute.
+  try {
+    const res = await fetch(CFG.NTFY_SERVER, {
+      signal: AbortSignal.timeout(ABRUF_MS),
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        topic: CFG.NTFY_TOPIC, title: titel, message: text,
+        priority: PRIO[prio] || 4, tags: ['office'], click: CFG.DASHBOARD,
+      }),
+    });
+    if (!res.ok) console.error('  ntfy antwortete:', res.status, await res.text());
+  } catch (e) { console.error('  ntfy nicht erreichbar:', e.message); }
+}
+
+/* ========================= AUSSCHÜTTUNG ========================= */
+
+/**
+ * Der Tag, auf den sich der Auszahlungstopf bezieht. Nicht der Spieltag:
+ * der beginnt um 04:00, der Topf aber um Mitternacht.
+ */
+function budgetTag(d = new Date()) {
+  const verschoben = new Date(d.getTime() - CFG.AUSZAHLUNG_RESET_STD * 3_600_000);
+  return `${verschoben.getFullYear()}-` +
+    `${String(verschoben.getMonth() + 1).padStart(2, '0')}-` +
+    `${String(verschoben.getDate()).padStart(2, '0')}`;
+}
+
+/**
+ * Stand des Topfes für Auszahlungen und Gehälter. Setzt um Mitternacht
+ * zurück (einstellbar über UC_AUSZAHLUNG_RESET_STD).
+ */
+/**
+ * Wie der Freibetrag am vergangenen Tag genutzt wurde.
+ *
+ * Zwei Fragen beantwortet das: Wurde vergessen auszuzahlen – dann bleibt
+ * etwas übrig, und das Geld ist für den Tag verfallen. Oder wurde darüber
+ * hinaus gezahlt – dann steht da, wie viel.
+ */
+/**
+ * Die Buchungen, die gegen den Freibetrag gezählt haben – und die, die es
+ * trotz passender Kategorie nicht getan haben, mit Grund.
+ */
+function freibetragListe(buchungen = []) {
+  if (!buchungen.length) return '';
+  const zeile = (b) => `${new Date(b.stamp).toLocaleTimeString('de-DE').slice(0, 5)} ` +
+    `${String(b.kategorie).padEnd(16).slice(0, 16)} ${fmt(b.betrag).padStart(12)}` +
+    (b.gezaehlt === false ? `  (${b.grund})` : '');
+  const gezaehlt = buchungen.filter(b => b.gezaehlt !== false);
+  const uebergangen = buchungen.filter(b => b.gezaehlt === false);
+
+  let t = '';
+  if (gezaehlt.length) t += '\n**Gezählt**\n' + tabelle(gezaehlt.map(zeile));
+  if (uebergangen.length) {
+    t += '\n**Nicht gezählt**\n' + tabelle(uebergangen.map(zeile));
+  }
+  return t;
+}
+
+function freibetragText(state) {
+  const g = state.auszahlungGestern;
+  if (!g) return '';
+
+  const limit = g.limit || CFG.AUSZAHLUNG_LIMIT;
+  const rest = limit - g.genutzt;
+  // Den Tag dazusagen. Der Freibetrag läuft von 0 bis 24 Uhr, der Spieltag
+  // von 04:00 bis 04:00 – ohne das Datum liest man die Zahl als die des
+  // Spieltags und vergleicht Äpfel mit Birnen.
+  const wann = g.tag ? ` (${tagKurz(g.tag)} 0–24 Uhr)` : '';
+  // Zwei verschiedene Grenzen, und sie hießen hier einmal beide „Freibetrag".
+  // Das Tageslimit sagt, wie viel überhaupt raus darf; der Freibetrag, wie
+  // viel davon steuerfrei bleibt. Beide messen die Ausschüttung selbst –
+  // brutto, nicht das, was nach Steuer und Gebühr ankommt.
+  let t = `\n\n**Tageslimit${wann}:** ${fmt(g.genutzt)} von ${fmt(limit)} genutzt`;
+
+  if (rest > 0) {
+    t += `\n💸 ${fmt(rest)} nicht ausgezahlt – für diesen Tag verfallen.`;
+  } else if (rest < 0) {
+    t += `\n⚠️ ${fmt(-rest)} über dem Tageslimit.`;
+  } else {
+    t += '\n✅ Genau ausgeschöpft.';
+  }
+
+  const frei = CFG.AUSZAHLUNG_FREI;
+  if (frei) {
+    t += g.genutzt <= frei
+      ? `\n💶 Freibetrag: ${fmt(g.genutzt)} von ${fmt(frei)} – alles steuerfrei.`
+      : `\n💶 Freibetrag: ${fmt(frei)} ausgeschöpft, ` +
+        `${fmt(g.genutzt - frei)} davon versteuert.`;
+  }
+  return t;
+}
+
+function auszahlungTopf(state) {
+  const heute = budgetTag();
+  if (state.auszahlungTag !== heute) {
+    // Der Topf setzt um Mitternacht zurück, der Tagesbericht kommt aber erst
+    // um 04:00. Ohne diesen Merker wäre die Zahl bis dahin verloren.
+    if (state.auszahlungTag) {
+      state.auszahlungGestern = {
+        tag: state.auszahlungTag,
+        genutzt: state.auszahlungSumme || 0,
+        limit: CFG.AUSZAHLUNG_LIMIT,
+        // Die Buchungen mitnehmen. Ohne sie steht im Tagesbericht um 04:00
+        // eine Summe, die niemand mehr nachprüfen kann – die Liste war um
+        // 00:00 längst geleert.
+        buchungen: state.auszahlungen || [],
+      };
+    }
+    state.auszahlungTag = heute;
+    state.auszahlungSumme = 0;
+    state.auszahlungen = [];
+  }
+  const genutzt = state.auszahlungSumme || 0;
+  // Der Eintrag gehört zum Spieltag, der Topf zum Kalendertag – beide
+  // mitgeben, sonst überschreibt der um Mitternacht frisch genullte Topf
+  // zwischen 00:00 und 04:00 den Schlussstand des laufenden Spieltags.
+  merkeAuszahlung(spieltag(), heute, genutzt, CFG.AUSZAHLUNG_LIMIT);
+  return {
+    tag: heute,
+    genutzt,
+    limit: CFG.AUSZAHLUNG_LIMIT,
+    frei: Math.max(0, CFG.AUSZAHLUNG_LIMIT - genutzt),
+    buchungen: state.auszahlungen || [],
+  };
+}
+
+/**
+ * Tatsächlicher Absatz, aus dem eigenen Verlauf gemessen.
+ *
+ * salesPerMinute aus der API ist eine Momentangröße und trifft nicht zu:
+ * Verkauft wird schubweise, alle paar Minuten. Wer damit hochrechnet, bekommt
+ * eine Reichweite, die um ein Vielfaches danebenliegt. Deshalb zählen wir
+ * selbst, wie viel über die Zeit wirklich abfließt.
+ *
+ * Gezählt werden nur Rückgänge; eine Lieferung füllt auf und ist kein Absatz.
+ */
+const VERLAUF_MAX = 180;                 // Stützstellen, bei 60 s Takt = 3 Std.
+
+function merkeLager(state, lager) {
+  if (typeof lager !== 'number') return;
+  state.lagerVerlauf = [...(state.lagerVerlauf || []), { t: Date.now(), lager }]
+    .slice(-VERLAUF_MAX);
+}
+
+function gemessenerAbsatz(state, minutenFenster = 60) {
+  const verlauf = (state.lagerVerlauf || []).filter(
+    x => Date.now() - x.t <= minutenFenster * MIN);
+  if (verlauf.length < 3) return null;
+
+  const spanne = verlauf[verlauf.length - 1].t - verlauf[0].t;
+  if (spanne < 10 * MIN) return null;    // zu kurz für eine belastbare Aussage
+
+  let abgeflossen = 0, schuebe = 0, groessterSchub = 0;
+  for (let i = 1; i < verlauf.length; i++) {
+    const delta = verlauf[i - 1].lager - verlauf[i].lager;
+    if (delta > 0) {
+      abgeflossen += delta; schuebe++;
+      if (delta > groessterSchub) groessterSchub = delta;
+    }
+  }
+  if (!abgeflossen) {
+    return { proMinute: 0, abgeflossen: 0, schuebe: 0, groessterSchub: 0, minuten: spanne / MIN };
+  }
+
+  return {
+    proMinute: abgeflossen / (spanne / MIN),
+    abgeflossen,
+    schuebe,
+    groessterSchub,
+    minuten: spanne / MIN,
+  };
+}
+
+// Namen, unter denen ein Schalter für den Nachkauf stehen könnte. Ob die API
+// so einen liefert, ist offen – deshalb wird zusätzlich an den Buchungen
+// abgelesen, und die haben Vorrang, wenn es kein Feld gibt.
+const NACHKAUF_FELDER = ['autoBuy', 'autoRestock', 'restock', 'autoPurchase',
+                         'buyEnabled', 'nachkauf', 'autoRefill', 'autoBuyEnabled'];
+
+/**
+ * Läuft der automatische Nachkauf?
+ *
+ * Solange er läuft, füllt sich das Lager selbst – eine Reichweite wäre dann
+ * eine Zahl ohne Bedeutung. Erkannt wird er an einem ausdrücklichen Feld,
+ * sonst daran, dass das System vor Kurzem eingekauft hat.
+ */
+function nachkaufStand(f, state) {
+  for (const k of NACHKAUF_FELDER) {
+    if (typeof f?.[k] === 'boolean') return { an: f[k], quelle: 'Anzeige' };
+    if (typeof f?.stock?.[k] === 'boolean') return { an: f.stock[k], quelle: 'Anzeige' };
+  }
+  if (state.letzterEinkauf) {
+    const her = Date.now() - state.letzterEinkauf;
+    return { an: her <= CFG.NACHKAUF_FENSTER_MIN * MIN, quelle: 'Einkäufe', her };
+  }
+  return { an: null, quelle: 'unbekannt' };
+}
+
+/** Wie lange der Bestand bei gemessenem Absatz noch reicht – oder null. */
+function reichweite(state, bestand) {
+  const a = gemessenerAbsatz(state);
+  if (!a || !a.proMinute) return null;
+  return { ms: bestand / a.proMinute * MIN, ...a };
+}
+
+/**
+ * Beschreibt den Absatz für eine Meldung: gemessen, wenn genug Verlauf da ist,
+ * sonst ehrlich als unbekannt. Die Angabe der API wird nicht hochgerechnet.
+ */
+function absatzText(state, f) {
+  const lager = f.stock?.total ?? 0;
+  const r = reichweite(state, lager);
+  if (r) {
+    return `${r.proMinute.toFixed(1)}/Min gemessen über ${Math.round(r.minuten)} Min ` +
+      `– reicht noch ${dauer(r.ms)}.`;
+  }
+  const a = gemessenerAbsatz(state);
+  if (a && a.proMinute === 0) return 'In der letzten Stunde ging nichts raus.';
+  return `noch nicht gemessen (API meldet ${f.stock?.salesPerMinute ?? '?'}/Min, ` +
+    'was schubweise verkauft wird und sich nicht hochrechnen lässt).';
+}
+
+/**
+ * Wie viel Rechenleistung der Watcher belegt.
+ *
+ * process.cpuUsage() zählt die verbrauchte Rechenzeit seit dem Start. Geteilt
+ * durch die Laufzeit ergibt das den Anteil eines Kerns; geteilt durch die Zahl
+ * der Kerne den Anteil der ganzen Maschine. Beide Zahlen sind Durchschnitte
+ * über die gesamte Laufzeit, keine Momentaufnahme – für die Frage "belastet
+ * das den Server?" ist der Durchschnitt aber die ehrlichere Angabe.
+ */
+function rechenlast() {
+  const kerne = os.cpus().length || 1;
+  const laufzeitS = process.uptime();
+  const cpu = process.cpuUsage();                       // Mikrosekunden
+  const verbrauchtS = (cpu.user + cpu.system) / 1e6;
+
+  const speicher = process.memoryUsage();
+  const [l1, l5, l15] = os.loadavg();
+
+  return {
+    kerne,
+    laufzeitS,
+    cpuSekunden: verbrauchtS,
+    // Anteil eines einzelnen Kerns, in Prozent
+    anteilKern: laufzeitS ? (verbrauchtS / laufzeitS) * 100 : 0,
+    // Anteil der gesamten Maschine
+    anteilMaschine: laufzeitS ? (verbrauchtS / laufzeitS / kerne) * 100 : 0,
+    rssMB: speicher.rss / 1024 / 1024,
+    ramGesamtMB: os.totalmem() / 1024 / 1024,
+    ramFreiMB: os.freemem() / 1024 / 1024,
+    last: [l1, l5, l15],
+    // Systemlast je Kern: über 1 heißt, es warten Aufgaben
+    lastProKern: l1 / kerne,
+  };
+}
+
+/**
+ * Stand der Abschöpfung für die Kommandozeile.
+ *
+ * Der 12-Stunden-Zähler, der hier einmal stand, ist mit der Balance-Änderung
+ * bedeutungslos geworden: abgeschöpft wird stündlich, unabhängig von der
+ * Team-Onlinezeit.
+ */
+/**
+ * Die Bilanz einer Ausschüttungsreihe als Tabelle. Die Stundengrenze wird aus
+ * dem Buchungstext gelesen – gerechnet lässt sie sich nicht gewinnen, dafür
+ * würfelt das Spiel sie je Stunde neu.
+ */
+function ausschuettungBilanz(eintraege) {
+  const k = kassenBilanz(eintraege);
+  return {
+    Ausgeschuettet: `${fmt(k.ausgeschuettet)} in ${k.anzahl}`,
+    Behalten: `${fmt(k.behalten)} in ${k.behaltenAnzahl}`,
+    Stundengrenze: k.behaltenAnzahl
+      ? `${fmt(k.grenzeNiedrigst)} bis ${fmt(k.grenzeHoechst)} (${fmt(k.grenzeSchnitt)})`
+      : 'nicht im Buchungstext',
+    'Kasse zuerst': k.ersterStand === null
+      ? '–' : `${fmt(k.ersterStand)} (${uhr(k.ersterStamp)})`,
+    'Kasse zuletzt': k.letzterStand === null
+      ? '–' : `${fmt(k.letzterStand)} (${uhr(k.letzterStamp)})`,
+    Dazugekommen: k.ist === null ? '–' : fmt(k.ist),
+    Erwartet: k.soll === null ? '–' : `${fmt(k.soll)} aus ${k.stunden} Std.`,
+    Abweichung: k.differenz === null ? '–'
+      : `${k.differenz > 0 ? '+' : ''}${fmt(k.differenz)}`,
+    'Ohne Grenze': k.ohneGrenze || '–',
+  };
+}
+
+/**
+ * Behaltenes und Kassenprobe als Discord-Text.
+ *
+ * Eine Fassung für /ausschuettung **und** für den Bericht um 0 Uhr. Getrennte
+ * Fassungen waren schon einmal auseinandergelaufen: in der einen stand noch
+ * eine Deutung, die in der anderen längst gestrichen war.
+ *
+ * Die Ausschüttung ist ein Geldsink – alles über der gewürfelten Stundengrenze
+ * verlässt das System. Was darunter bleibt, ist der Betrag, um den die Kasse in
+ * dieser Stunde wachsen *sollte*; davon ziehen Gehälter und Miete wieder ab.
+ * Daraus die Probe: Soll-Zuwachs aus den Grenzen gegen den Ist-Zuwachs der
+ * Kasse. Gemessen wird **nur** zu den Ausschüttungszeitpunkten – ein Stand
+ * zwischendurch enthält den Gewinn, der gleich wieder abgeschöpft wird, und
+ * wäre grob zu hoch.
+ */
+function bilanzText(eintraege) {
+  const k = kassenBilanz(eintraege);
+  if (!k.anzahl) return '';
+
+  let b = `\n\n**Ausgeschüttet: ${fmt(k.ausgeschuettet)}** in ${k.anzahl} ` +
+    `${k.anzahl === 1 ? 'Ausschüttung' : 'Ausschüttungen'}\n` +
+    '_Alles über der Stundengrenze – das Geld verlässt das System._';
+
+  if (k.behaltenAnzahl) {
+    b += `\n\n**Behalten: ${fmt(k.behalten)}** in ${k.behaltenAnzahl} ` +
+      `${k.behaltenAnzahl === 1 ? 'Stunde' : 'Stunden'}\n` +
+      `Stundengrenze ${k.grenzeNiedrigst === k.grenzeHoechst
+        ? fmt(k.grenzeSchnitt)
+        : `${fmt(k.grenzeNiedrigst)} bis ${fmt(k.grenzeHoechst)}` +
+          ` · im Schnitt ${fmt(k.grenzeSchnitt)}`}\n` +
+      '_Je Stunde neu gewürfelt, aus dem Buchungstext gelesen.\n' +
+      'Die Summe ist der Betrag, um den die Kasse dadurch wachsen sollte._';
+  }
+  if (k.ohneGrenze) {
+    b += `\n\n⚠️ Für ${k.ohneGrenze} von ${k.anzahl} Ausschüttungen nennt der ` +
+      'Buchungstext keine Grenze. Solange das so ist, gibt es für diese Stunden ' +
+      'keine Messung – geschätzt wird nicht.';
+  }
+
+  if (!k.staendeDa) {
+    return b + '\n\n_Für die Kassenprobe braucht es mindestens zwei ' +
+      'Ausschüttungen mit Kassenstand._';
+  }
+
+  b += `\n\n**Kasse zu den Ausschüttungen**\n` +
+    `${uhr(k.ersterStamp)} Uhr: ${fmt(k.ersterStand)}\n` +
+    `${uhr(k.letzterStamp)} Uhr: ${fmt(k.letzterStand)}\n` +
+    `Dazugekommen: **${k.ist >= 0 ? '+' : ''}${fmt(k.ist)}**`;
+
+  if (!k.vollstaendig) {
+    return b + '\n\n_Ein Soll lässt sich daraus nicht bilden – dafür müsste ' +
+      'für jede Stunde dazwischen die Grenze bekannt sein._';
+  }
+
+  const d = k.differenz;
+  return b + ` · erwartet ${fmt(k.soll)} aus ${k.stunden} ` +
+    `${k.stunden === 1 ? 'Stunde' : 'Stunden'}\n\n` +
+    (d > 0
+      ? `✅ **${fmt(d)} mehr als erwartet** – und das, obwohl Gehälter und ` +
+        'Miete dagegen arbeiten. Es kam also Geld aus einer Quelle, die in ' +
+        'dieser Rechnung nicht steht.'
+      : d < 0
+        ? `📉 **${fmt(-d)} weniger als erwartet.**\n` +
+          '_Gehälter und Miete zehren am Behaltenen – sie stecken in dieser ' +
+          'Differenz._'
+        : '_Punktgenau._');
+}
+
+/**
+ * Der Gewinn des laufenden Kalendertags.
+ *
+ * Erwirtschaftet = abgeschöpft + behalten. Beide Posten stehen im Kassenbuch
+ * beziehungsweise im Buchungstext, sind also gemessen.
+ *
+ * `profitSincePayout` geht **nicht** in die Summe ein. Der Zähler läuft über
+ * die stündliche Abschöpfung hinweg weiter; addierte man seine Stände, zählte
+ * derselbe Gewinn mehrfach – so kamen hier einmal 1,45 Millionen für einen Tag
+ * heraus. Der aktuelle Stand wird als Rohwert weitergegeben (`zaehler`), nicht
+ * als Gewinn der laufenden Stunde ausgegeben.
+ */
+function gewinnHeute(aktuell) {
+  const tag = budgetTag();
+  const [j, m, t] = tag.split('-').map(Number);
+  const von = new Date(j, m - 1, t).getTime();
+  const z = ausschuettungSumme(ausschuettungenIm(von, von + 24 * 3_600_000));
+  return {
+    // Abgeschöpft plus behalten – beides gemessen.
+    summe: z.erwirtschaftet,
+    behalten: z.behalten,
+    ausgeschuettet: z.summe,
+    abschoepfungen: z.anzahl,
+    // Fehlt für eine Stunde die Grenze, ist die Summe eine Untergrenze.
+    ohneMessung: z.ohneGrenze,
+    // Der rohe Zählerstand, nur zur Anzeige.
+    zaehler: Number.isFinite(aktuell) ? aktuell : null,
+    tag,
+  };
+}
+
+function ausschuettungStand(state) {
+  const heute = budgetTag();
+  const [j, m, t] = heute.split('-').map(Number);
+  const von = new Date(j, m - 1, t).getTime();
+  const eintraege = ausschuettungenIm(von, von + 24 * 3_600_000);
+  const seit = Date.now() - process.uptime() * 1000;
+  const n = ausschuettungSumme(ausschuettungenIm(seit, Date.now()));
+  return {
+    ...ausschuettungBilanz(eintraege),
+    'Seit dem Neustart': `${fmt(n.summe)} in ${n.anzahl} (${dauer(Date.now() - seit)})`,
+    Letzte: state.letzteAusschuettung
+      ? new Date(state.letzteAusschuettung).toLocaleString('de-DE') : 'unbekannt',
+    'Gewinn dieser Stunde': state.gewinn === null ? '–' : fmt(state.gewinn),
+    'Gewinn heute': fmt(gewinnHeute(state.gewinn).summe),
+  };
+}
+
+/**
+ * Meldet, wenn im beobachteten Betrieb nichts mehr zu holen ist. Die Meldung
+ * geht ans ganze Team – wer gerade spielt, kann nachfüllen.
+ */
+async function pruefeBetrieb(state) {
+  if (!CFG.BETRIEB) return;
+  let stand;
+  try {
+    stand = betriebStand(await betriebeFrisch());
+  } catch (e) {
+    // Die Betriebe sind Beiwerk: schlägt der Abruf fehl, stört das den Rest
+    // der Überwachung nicht.
+    log('Betrieb nicht abrufbar:', e.message);
+    return;
+  }
+  if (!stand.gefunden || stand.bestand === null) return;
+
+  state.betriebBestand = stand.bestand;
+
+  if (stand.bestand <= 0) {
+    await push('betrieb_leer', `🔴 ${stand.name} ist leer`,
+      `Im ${stand.name} ist nichts mehr zu holen.\n` +
+      'Wer gerade spielt, kann nachfüllen.', state, 'high');
+    return;
+  }
+
+  // Es ist wieder etwas da: die Sperre für „leer" lösen. Das gilt auch, wenn
+  // nur wenig nachgefüllt wurde – sonst bliebe das erneute Leerlaufen still,
+  // solange die Sperre der ersten Meldung noch läuft.
+  state.lastPush.betrieb_leer = 0;
+
+  if (stand.bestand <= CFG.BETRIEB_SCHWELLE) {
+    await push('betrieb_knapp', `⚠️ ${stand.name} wird knapp`,
+      `Noch ${stand.bestand} von ${stand.max}.\nNachfüllen, bevor nichts mehr da ist.`,
+      state, 'default');
+  } else {
+    state.lastPush.betrieb_knapp = 0;
+  }
+}
+
+/**
+ * Fasst nach, solange ein Vorfall offen ist.
+ *
+ * Ein Vorfall hat eine Frist – bei einer Abwerbung etwa zehn Minuten. Die
+ * erste Meldung geht unter, wenn gerade niemand hinsieht; deshalb kommt nach
+ * einer einstellbaren Zeit eine zweite, mit der verbleibenden Frist.
+ *
+ * Jede Erinnerung bekommt ein eigenes Thema, sonst würde die Sperre gegen
+ * Wiederholungen sie verschlucken.
+ */
+async function erinnereAnVorfall(state, ereignis) {
+  // Den Vorfall führt vorfallSchluessel(): ist er neu, steht dort danach ein
+  // frischer Eintrag mit runde 0 und zuletzt = jetzt – dann greift die
+  // Wartezeit unten und beim ersten Anblick wird nicht nachgefasst.
+  const schluessel = vorfallSchluessel(state, ereignis);
+  const offen = state.offenerVorfall;
+
+  // Hat jemand den Knopf gedrückt, ist die Sache erledigt – dann kein
+  // Nachfassen mehr, weder im Discord noch aufs Handy.
+  const erledigt = istErledigt(schluessel);
+  if (erledigt) {
+    if (!offen.erledigtGemerkt) {
+      offen.erledigtGemerkt = true;
+      info(`Vorfall von ${erledigt.name || erledigt.wer} übernommen – keine Erinnerung`);
+    }
+    return;
+  }
+
+  const regel = empfaenger(schluessel, ladeRegeln());
+  // Nachgefasst wird nur, wenn es für dieses Thema eingeschaltet ist – und
+  // dann immer nach derselben Zeit. Eine Auswahl aus fünf Abständen war eine
+  // Entscheidung, die niemand treffen wollte.
+  if (!regel.erinnerung || offen.runde >= CFG.VORFALL_ERINNERUNG_MAX) return;
+  if (Date.now() - offen.zuletzt < ERINNERUNG_MIN * MIN) return;
+
+  offen.runde++;
+  offen.zuletzt = Date.now();
+
+  const minuten = ereignis?.minutesLeft ?? ereignis?.minutes;
+  const frist = minuten !== null && minuten !== undefined
+    ? `\n⏳ Noch ${minuten} ${minuten === 1 ? 'Minute' : 'Minuten'} Zeit.`
+    : '';
+
+  await push(`${schluessel}_nachfass_${offen.runde}`,
+    '⏰ Vorfall ist immer noch offen',
+    ereignisText(ereignis) + frist +
+    `\n\nOffen seit ${dauer(Date.now() - offen.seit)}.`,
+    state, 'urgent', { knopf: erledigtKnopf(schluessel) });
+}
+
+/* ========================= ERLEDIGT-KNOPF ========================= */
+
+// Vorsilbe, an der der Knopfdruck wiedererkannt wird. Der Rest der Kennung
+// ist der Vorfallschlüssel – Discord schickt beim Druck nur diese Zeichenkette
+// zurück, mehr Zusammenhang gibt es nicht.
+const KNOPF_ERLEDIGT = 'erledigt:';
+
+/**
+ * Der Knopf hängt an jeder Vorfallsmeldung, auch ohne eingestellte Erinnerung.
+ *
+ * Er hat zwei Zwecke, und der zweite gilt immer: er beendet das Nachfassen,
+ * wenn eines eingestellt ist – und er sagt dem Team, dass sich schon jemand
+ * kümmert. Das ist auch ohne Erinnerung etwas wert: sonst fahren zwei Leute
+ * zum selben Vorfall, während ein dritter nichts tut, weil er annimmt, es sei
+ * jemand dran.
+ *
+ * Weg ist er nur, wenn ihn schon jemand gedrückt hat.
+ */
+function erledigtKnopf(schluessel) {
+  if (istErledigt(schluessel)) return undefined;
+  return { id: KNOPF_ERLEDIGT + schluessel, text: 'Ich kümmere mich', emoji: '✅' };
+}
+
+/**
+ * Was passiert, wenn jemand den Knopf drückt.
+ *
+ * Jeder darf das: den Vorfall löst, wer gerade spielt, und wer ihn erledigt,
+ * muss dafür keinen Befehl kennen und kein Recht haben. Der Name wandert in
+ * die Fußnote der Meldung, damit im Kanal steht, wer sich kümmert – sonst
+ * drücken fünf Leute nacheinander, ohne voneinander zu wissen.
+ */
+async function knopfGedrueckt(id, nutzer, werte = []) {
+  // Die Schaltzentrale bringt ihre eigenen Kennungen mit. Sie gehört dem
+  // Inhaber: sie steht zwar in einem Kanal, aber umstellen darf nur er –
+  // sonst wäre eine angepinnte Nachricht eine offene Fernbedienung.
+  if (id.startsWith(ZT)) {
+    if (!istInhaber(nutzer.id)) {
+      return { text: '🔒 Die Schaltzentrale kann nur der Firmeninhaber ' +
+                     'bedienen. Angesehen werden darf sie von allen.',
+               knopfWeg: false };
+    }
+    return ztKlick(id, werte);
+  }
+
+  if (!id.startsWith(KNOPF_ERLEDIGT)) return null;
+  const schluessel = id.slice(KNOPF_ERLEDIGT.length);
+  const name = nutzer.anzeigename || nutzer.username || 'jemand';
+  const { neu, eintrag } = merkeErledigt(schluessel, nutzer.id, name);
+
+  if (!neu) {
+    const wann = eintrag?.zeit ? ` (vor ${dauer(Date.now() - eintrag.zeit)})` : '';
+    return {
+      text: `Das hatte **${eintrag?.name || 'jemand'}** schon übernommen${wann}.`,
+      fussnote: `übernommen von ${eintrag?.name || 'jemand'}`,
+      inhaltWeg: true,
+    };
+  }
+
+  return {
+    text: '✅ Notiert – zu diesem Vorfall kommt **nichts mehr**: keine ' +
+      'Erinnerung, keine Wiederholung, auch nicht aufs Handy. Im Kanal steht ' +
+      'jetzt, dass du dich kümmerst; die Meldung selbst bleibt stehen.',
+    fussnote: `✅ übernommen von ${name}`,
+    // Die Erwähnungen über dem Embed abräumen – die Sache ist vergeben.
+    inhaltWeg: true,
+  };
+}
+
+/**
+ * Der Tagesbericht über die Ausschüttungen, um 0 Uhr.
+ *
+ * Abgeschöpft wird seit der Balance-Änderung stündlich – jede einzelne davon
+ * zu melden wären 24 Nachrichten am Tag. Stattdessen einmal die Summe: so viel
+ * Gewinn hat die Firma erwirtschaftet und wieder abgegeben.
+ *
+ * Der Bericht hängt am Kalendertag, nicht am Spieltag: die Abschöpfung läuft
+ * nach der Uhr, nicht nach dem 04:00-Wechsel des Watchers.
+ */
+async function ausschuettungsBericht(state) {
+  const heute = budgetTag();
+  if (!state.ausschuettungTag) { state.ausschuettungTag = heute; return; }
+  if (state.ausschuettungTag === heute) return;
+
+  const vorbei = state.ausschuettungTag;
+  state.ausschuettungTag = heute;
+
+  // Das Fenster des abgelaufenen Kalendertags, 0 bis 24 Uhr.
+  const [j, m, t] = vorbei.split('-').map(Number);
+  const von = new Date(j, m - 1, t).getTime();
+  const bis = von + 24 * 3_600_000;
+  const eintraege = ausschuettungenIm(von, bis);
+  const z = ausschuettungSumme(eintraege);
+
+  if (!z.anzahl) return log('Keine Ausschüttungen am', vorbei);
+
+  await push(`ausschuettung_tag_${vorbei}`, `💸 Ausschüttungen ${tagKurz(vorbei)}`,
+    `**Erwirtschaftet: ${z.ohneGrenze ? 'mind. ' : ''}${fmt(z.erwirtschaftet)}**\n` +
+    '_Abgeschöpft plus behalten – beides gemessen, nicht aus dem ' +
+    'Gewinnzähler gerechnet._' +
+    (z.anzahl > 1
+      ? `\nIm Schnitt ${fmt(z.schnitt)} je Abschöpfung, die größte ${fmt(z.groesste)}.`
+      : '') +
+    bilanzText(eintraege),
+    state, 'low');
+}
+
+/* ========================= VORFÄLLE ========================= */
+
+// Das Ereignis der Firma lesbar machen, ohne seinen Aufbau zu kennen.
+// Felder, die das Spiel mitschickt, die aber niemand lesen will: technische
+// Kennungen und Flaggen. Der Rest wird benannt statt roh ausgegeben.
+const EREIGNIS_EGAL = ['type', 'interactive', 'id', 'eventid', 'key'];
+
+// Eine Vorfallsart als Schlüssel schreiben. An mehreren Stellen gebraucht –
+// getrennte Fassungen wären irgendwann auseinandergelaufen, und dann hätte
+// eine Regel für ABWERBUNG die Meldung nicht mehr getroffen.
+const artSchluessel = (roh) =>
+  String(roh ?? '').toUpperCase().replace(/[^A-Z0-9]+/g, '_')
+    .replace(/^_|_$/g, '').slice(0, 30);
+
+function vorfallArt(ev) {
+  return artSchluessel(sauber(ev?.type ?? ev?.name ?? ev?.title ?? '')) || 'UNBEKANNT';
+}
+
+/**
+ * Themenschlüssel eines Vorfalls: 'event_<ART>_<Nummer>'.
+ *
+ * Er muss zwei Dinge gleichzeitig können: **gleich bleiben**, solange derselbe
+ * Vorfall offen ist, und **anders sein** beim nächsten. Vorher war er eine
+ * Quersumme über das ganze Ereignis – und darin steckt `minutesLeft`, das jede
+ * Minute kleiner wird. Damit bekam derselbe Vorfall jede Minute einen neuen
+ * Schlüssel: die Sperre gegen Wiederholungen griff nie, aus einem Vorfall
+ * wurden sechzig Meldungen, und der Erledigt-Knopf zeigte auf einen Schlüssel,
+ * den es in der nächsten Minute nicht mehr gab.
+ *
+ * Jetzt zählt eine Nummer, die nur hochgeht, wenn wirklich ein neuer Vorfall
+ * beginnt. Diese Funktion führt dabei `state.offenerVorfall` – sie ist die
+ * einzige Stelle, die entscheidet, ob ein Ereignis noch dasselbe ist.
+ *
+ * Woran ein neuer Vorfall erkannt wird:
+ *   • es ist gerade keiner offen
+ *   • die Art ist eine andere
+ *   • das Ereignis trägt eine eigene Kennung und die ist anders
+ *   • die Frist ist wieder gestiegen – ein Countdown, der hochspringt, gehört
+ *     zu einem frischen Vorfall derselben Art
+ */
+function vorfallFrist(ev) {
+  for (const feld of [ev?.minutesLeft, ev?.minutes, ev?.minutesRemaining]) {
+    if (Number.isFinite(feld)) return feld;
+  }
+  return null;
+}
+
+function vorfallSchluessel(state, ev) {
+  const art = vorfallArt(ev);
+  const kennung = ev?.id ?? ev?.eventId ?? ev?.eventID ?? null;
+  const frist = vorfallFrist(ev);
+  const offen = state.offenerVorfall;
+
+  const derselbe = !!offen && offen.art === art
+    && (kennung == null || offen.kennung == null || String(kennung) === offen.kennung)
+    && (frist == null || offen.frist == null || frist <= offen.frist);
+
+  if (derselbe) {
+    // Die kleinste gesehene Frist behalten, damit ein Anstieg auffällt.
+    if (frist != null) offen.frist = Math.min(offen.frist ?? frist, frist);
+    return offen.schluessel;
+  }
+
+  state.vorfallLauf = (state.vorfallLauf || 0) + 1;
+  const schluessel = `event_${art}_${state.vorfallLauf.toString(36)}`;
+  state.offenerVorfall = {
+    schluessel, art, frist,
+    kennung: kennung == null ? null : String(kennung),
+    seit: Date.now(), zuletzt: Date.now(), runde: 0,
+  };
+  info(`Neuer Vorfall: ${art} (${schluessel})`);
+  return schluessel;
+}
+
+/**
+ * Der Hinweis auf die Expresslieferung hängt an mehreren Meldungen. Die
+ * Restzeit bis zur nächsten steht nur in der ausführlichen Fassung – im
+ * geteilten Kanal hilft sie niemandem.
+ */
+function expressText(ex, mitFrist = true) {
+  if (!ex?.maxSlots) return '';
+  return `\n\nExpresslieferung: ${ex.freeSlots ?? '?'} von ${ex.maxSlots} Plätzen frei` +
+    `, Aufschlag ${Math.round((ex.surcharge || 0) * 100)} %` +
+    (mitFrist && ex.cooldownLeftMs ? `, wieder möglich in ${dauer(ex.cooldownLeftMs)}` : '');
+}
+
+function ereignisText(ev) {
+  if (!ev) return '';
+  if (typeof ev === 'string') return sauber(ev);
+
+  const teile = [];
+  const name = sauber(ev.name || ev.title || '');
+  const text = sauber(ev.description || ev.text || '');
+  if (name) teile.push(`**${name}**`);
+  if (text) teile.push(text);
+
+  // Die Frist ist das Wichtigste am Vorfall – sie kommt ans Ende, gut sichtbar.
+  const minuten = ev.minutesLeft ?? ev.minutes ?? null;
+  if (minuten !== null && minuten !== undefined) {
+    teile.push(`⏳ Noch ${minuten} ${minuten === 1 ? 'Minute' : 'Minuten'} Zeit`);
+  }
+
+  // Alles, was das Spiel sonst noch mitschickt, geht nicht verloren – aber
+  // erst nach dem, was man wirklich liest.
+  const rest = [];
+  for (const [k, v] of Object.entries(ev)) {
+    if (v === null || typeof v === 'object') continue;
+    if (EREIGNIS_EGAL.includes(k.toLowerCase())) continue;
+    if (['name', 'title', 'description', 'text', 'minutesleft', 'minutes'].includes(k.toLowerCase())) continue;
+    let wert = v;
+    if (/ms$/i.test(k) && typeof v === 'number' && v > 1000) wert = dauer(v);
+    else if (/(endsAt|expires|until|bis)/i.test(k) && typeof v === 'number' && v > 1e12)
+      wert = new Date(v).toLocaleTimeString('de-DE');
+    rest.push(`${k}: ${typeof wert === 'string' ? sauber(wert) : wert}`);
+  }
+  if (rest.length) teile.push(rest.join('\n'));
+
+  return teile.join('\n\n');
+}
+
+// Was kostet der Einkauf gerade, im Schnitt über alle Waren?
+function einkaufsschnitt(wares) {
+  const preise = {};
+  for (const w of wares || []) {
+    if (w.key && typeof w.deskUnitPrice === 'number') preise[w.key] = w.deskUnitPrice;
+  }
+  return preise;
+}
+
+// Mittlere Preisänderung gegenüber dem letzten Durchlauf, in Prozent.
+function preisAenderung(alt, neu) {
+  if (!alt) return null;
+  const werte = [];
+  for (const [k, p] of Object.entries(neu)) {
+    const v = alt[k];
+    if (typeof v === 'number' && v > 0) werte.push((p - v) / v * 100);
+  }
+  if (!werte.length) return null;
+  return werte.reduce((a, b) => a + b, 0) / werte.length;
+}
+
+/* ========================= WIKI ========================= */
+
+// Kategorien und Artikel sind öffentlich – hier braucht es keinen Zugang.
+async function holeWiki() {
+  const res = await fetch(CFG.API + '/api/wiki/categories', {
+    signal: AbortSignal.timeout(ABRUF_MS),
+    headers: { 'User-Agent': CFG.USER_AGENT, Accept: 'application/json' },
+  });
+  if (!res.ok) throw new Error('WIKI ' + res.status);
+  const { categories = [] } = await res.json();
+
+  const artikel = {};
+  for (const k of categories) {
+    const r = await fetch(`${CFG.API}/api/wiki/categories/${k.slug}/articles`, {
+      signal: AbortSignal.timeout(ABRUF_MS),
+      headers: { 'User-Agent': CFG.USER_AGENT, Accept: 'application/json' },
+    });
+    if (!r.ok) { log('Wiki-Kategorie nicht lesbar:', k.slug, r.status); continue; }
+    const { articles = [] } = await r.json();
+    for (const a of articles) {
+      artikel[a.id] = {
+        titel: a.title,
+        kategorie: k.name,
+        slug: k.slug,
+        updatedAt: a.updatedAt,
+        laenge: (a.content || '').length,
+      };
+    }
+  }
+  return artikel;
+}
+
+const wikiLink = a => `https://unicacity.eu/wiki/${a.slug}/${a.id ?? ''}`;
+
+// Gibt zurück, ob sich am Wiki etwas geändert hat.
+async function pruefeWiki(state) {
+  if (!CFG.WIKI) return false;
+  const faellig = Date.now() - (state.wikiGeprueft || 0) >= CFG.WIKI_INTERVALL_STD * 3_600_000;
+  if (!faellig) return false;
+
+  let jetzt;
+  try { jetzt = await holeWiki(); }
+  catch (e) { log('Wiki nicht abrufbar:', e.message); return false; }
+
+  const anzahl = Object.keys(jetzt).length;
+  if (!anzahl) { log('Wiki lieferte keine Artikel – Prüfung übersprungen'); return false; }
+
+  state.wikiGeprueft = Date.now();
+  const vorher = state.wiki;
+  state.wiki = jetzt;
+
+  if (!vorher) {                       // erster Lauf: nur Stand merken
+    info(`Wiki-Ausgangsstand gespeichert: ${anzahl} Artikel`);
+    return false;
+  }
+
+  const neu = [], geaendert = [], entfernt = [];
+  for (const [id, a] of Object.entries(jetzt)) {
+    const v = vorher[id];
+    if (!v) neu.push({ id, ...a });
+    else if (v.updatedAt !== a.updatedAt || v.laenge !== a.laenge)
+      geaendert.push({ id, ...a, vorherLaenge: v.laenge });
+  }
+  for (const [id, v] of Object.entries(vorher)) if (!jetzt[id]) entfernt.push({ id, ...v });
+
+  if (!neu.length && !geaendert.length && !entfernt.length) {
+    log(`Wiki unverändert (${anzahl} Artikel)`);
+    return false;
+  }
+
+  const teile = [];
+  if (neu.length) teile.push(`${neu.length} neu`);
+  if (geaendert.length) teile.push(`${geaendert.length} geändert`);
+  if (entfernt.length) teile.push(`${entfernt.length} entfernt`);
+
+  const block = (titel, liste, mitDelta) => !liste.length ? '' :
+    `\n\n${titel}\n` + liste.slice(0, 15).map(a => {
+      // "(0 Zeichen)" wäre irreführend – dann wurde nur der Zeitstempel berührt
+      const delta = mitDelta && a.vorherLaenge !== undefined && a.laenge !== a.vorherLaenge
+        ? ` (${a.laenge > a.vorherLaenge ? '+' : ''}${a.laenge - a.vorherLaenge} Zeichen)` : '';
+      return `• ${a.kategorie} · ${a.titel}${delta}\n  ${wikiLink(a)}`;
+    }).join('\n') + (liste.length > 15 ? `\n… und ${liste.length - 15} weitere` : '');
+
+  await push(`wiki_${new Date().toISOString().slice(0, 10)}`,
+    `📚 Wiki: ${teile.join(', ')}`,
+    `Stand: ${anzahl} Artikel in ${new Set(Object.values(jetzt).map(a => a.kategorie)).size} Kategorien` +
+    block('🆕 Neu', neu) +
+    block('✏️ Geändert', geaendert, true) +
+    block('🗑️ Entfernt', entfernt),
+    state, 'default');
+
+  return true;      // löst den Notion-Abgleich sofort aus
+}
+
+/* ==================== NOTION-ABGLEICH ==================== */
+
+const NOTION_VERSION = '2022-06-28';
+
+// Notion akzeptiert die ID mit Bindestrichen zuverlässiger
+const mitStrichen = id => {
+  const r = String(id).replace(/-/g, '');
+  return r.length === 32
+    ? `${r.slice(0,8)}-${r.slice(8,12)}-${r.slice(12,16)}-${r.slice(16,20)}-${r.slice(20)}`
+    : id;
+};
+
+async function notion(pfad) {
+  const res = await fetch('https://api.notion.com/v1' + pfad, {
+    signal: AbortSignal.timeout(ABRUF_MS),
+    headers: {
+      Authorization: 'Bearer ' + CFG.NOTION_TOKEN,
+      'Notion-Version': NOTION_VERSION,
+      'Accept': 'application/json',
+    },
+  });
+  if (res.status === 401) throw new Error('NOTION_TOKEN');
+  if (res.status === 404) throw new Error('NOTION_FREIGABE');   // nicht freigegeben
+  if (!res.ok) throw new Error('NOTION ' + res.status);
+  return res.json();
+}
+
+// Titel vergleichbar machen: Groß/Klein, Mehrfach-Leerzeichen, Bindestrich-Arten
+const schluessel = t => String(t).toLowerCase()
+  .replace(/[–—]/g, '-').replace(/\s+/g, ' ').replace(/[·•]/g, '').trim();
+
+// Unterseiten einer Notion-Seite, mit Bearbeitungszeitpunkt
+async function notionUnterseiten(seiteId) {
+  const raus = [];
+  let cursor = null;
+  do {
+    const d = await notion(`/blocks/${mitStrichen(seiteId)}/children?page_size=100` +
+      (cursor ? `&start_cursor=${encodeURIComponent(cursor)}` : ''));
+    for (const b of d.results || []) {
+      if (b.type === 'child_page') {
+        raus.push({ id: b.id, titel: b.child_page.title, bearbeitet: b.last_edited_time });
+      }
+    }
+    cursor = d.has_more ? d.next_cursor : null;
+  } while (cursor);
+  return raus;
+}
+
+// Der gesamte Text einer Notion-Seite. Die Artikel stehen dort als
+// Überschriften innerhalb der Kategorieseite, nicht als Unterseiten –
+// deshalb reicht es nicht, nur die Unterseiten zu betrachten.
+async function notionSeitentext(seiteId, tiefe = 0) {
+  if (tiefe > 2) return '';
+  let text = '';
+  let cursor = null;
+  do {
+    const d = await notion(`/blocks/${mitStrichen(seiteId)}/children?page_size=100` +
+      (cursor ? `&start_cursor=${encodeURIComponent(cursor)}` : ''));
+    for (const b of d.results || []) {
+      const inhalt = b[b.type];
+      if (inhalt && Array.isArray(inhalt.rich_text)) {
+        text += inhalt.rich_text.map(t => t.plain_text || '').join('') + '\n';
+      }
+      if (b.type === 'child_page') text += b.child_page.title + '\n';
+      // Verschachteltes (Toggles, Spalten) mitnehmen
+      if (b.has_children && b.type !== 'child_page') {
+        text += await notionSeitentext(b.id, tiefe + 1);
+      }
+    }
+    cursor = d.has_more ? d.next_cursor : null;
+  } while (cursor);
+  return text;
+}
+
+// Steht der Artikeltitel im Text? Mit Wortgrenzen, damit "Farm" nicht in
+// "Farmer" gefunden wird.
+function titelImText(titel, text) {
+  const t = schluessel(titel);
+  if (!t) return false;
+  const muster = new RegExp(`(^|[^a-z0-9äöüß])${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^a-z0-9äöüß]|$)`);
+  return muster.test(text);
+}
+
+async function vergleicheNotion(state, wikiArtikel) {
+  const kategorienNotion = await notionUnterseiten(CFG.NOTION_WIKI);
+  const nachName = new Map(kategorienNotion.map(k => [schluessel(k.titel), k]));
+
+  const wikiNachKat = new Map();
+  for (const [id, a] of Object.entries(wikiArtikel)) {
+    if (!wikiNachKat.has(a.kategorie)) wikiNachKat.set(a.kategorie, []);
+    wikiNachKat.get(a.kategorie).push({ id, ...a });
+  }
+
+  const fehlen = [], veraltet = [], katFehlen = [];
+
+  for (const [kategorie, artikel] of wikiNachKat) {
+    const nk = nachName.get(schluessel(kategorie));
+    if (!nk) { katFehlen.push(kategorie); continue; }
+
+    // Hat die Kategorie Unterseiten je Artikel, ist deren Bearbeitungsstand
+    // die genaue Quelle. Sonst behelfen wir uns mit dem Text der Seite und
+    // ihrem Gesamtstand – dann ist die Aussage gröber.
+    const unterseiten = await notionUnterseiten(nk.id);
+    // Eine Unterseite darf einen erklärenden Zusatz im Titel tragen, etwa
+    // "test (zweite Fassung Calderón Kartell)" für den Wiki-Artikel "test".
+    // Deshalb steht sie zusätzlich unter ihrem Titel ohne den geklammerten
+    // Zusatz im Verzeichnis. Der Zusatz muss geklammert am Ende stehen, damit
+    // "Farm" nicht plötzlich "Farmer (Nebenjob)" trifft. Die genauen Titel
+    // kommen zuletzt hinein und haben damit Vorrang.
+    const nachTitel = new Map();
+    for (const u of unterseiten) {
+      const k = schluessel(u.titel);
+      const basis = k.replace(/\s*\([^()]*\)$/, '');
+      if (basis && basis !== k && !nachTitel.has(basis)) nachTitel.set(basis, u);
+    }
+    for (const u of unterseiten) nachTitel.set(schluessel(u.titel), u);
+    const text = unterseiten.length ? '' : schluessel(await notionSeitentext(nk.id));
+
+    for (const a of artikel) {
+      const seite = nachTitel.get(schluessel(a.titel));
+      const gefunden = seite || (text && titelImText(a.titel, text));
+      if (!gefunden) { fehlen.push(a); continue; }
+
+      const stand = seite ? seite.bearbeitet : nk.bearbeitet;
+      if (new Date(a.updatedAt) > new Date(stand)) {
+        veraltet.push({ ...a, notionStand: stand, genau: !!seite });
+      }
+    }
+  }
+
+  return { fehlen, veraltet, ueberzaehlig: [], katFehlen,
+           kategorienNotion: kategorienNotion.length };
+}
+
+async function pruefeNotion(state, wikiArtikel, sofort = false) {
+  if (!CFG.NOTION_TOKEN) return;
+  // Nach einer Wiki-Änderung sofort, sonst im eingestellten Takt.
+  const faellig = sofort ||
+    Date.now() - (state.notionGeprueft || 0) >= CFG.NOTION_INTERVALL_STD * 3_600_000;
+  if (!faellig) return;
+  if (!wikiArtikel || !Object.keys(wikiArtikel).length) return;
+
+  let e;
+  try { e = await vergleicheNotion(state, wikiArtikel); }
+  catch (err) {
+    if (err.message === 'NOTION_TOKEN' || err.message === 'NOTION_FREIGABE') {
+      await push('notion_zugang', '🔑 Notion nicht erreichbar',
+        err.message === 'NOTION_TOKEN'
+          ? 'Der Notion-Zugangsschlüssel wird abgelehnt. UC_NOTION_TOKEN prüfen.'
+          : 'Die Wiki-Seite ist für die Integration nicht freigegeben.\n' +
+            'In Notion: Seite öffnen → ••• → Verbindungen → Integration hinzufügen.',
+        state, 'high');
+    } else log('Notion-Abgleich fehlgeschlagen:', err.message);
+    return;
+  }
+
+  state.notionGeprueft = Date.now();
+
+  if (!e.fehlen.length && !e.veraltet.length && !e.katFehlen.length) {
+    return log('Notion ist auf dem Stand des Wikis');
+  }
+
+  const liste = (titel, eintraege, zeile) => !eintraege.length ? '' :
+    `\n\n${titel} (${eintraege.length})\n` +
+    eintraege.slice(0, 12).map(zeile).join('\n') +
+    (eintraege.length > 12 ? `\n… und ${eintraege.length - 12} weitere` : '');
+
+  const teile = [];
+  if (e.fehlen.length) teile.push(`${e.fehlen.length} fehlen`);
+  if (e.veraltet.length) teile.push(`${e.veraltet.length} veraltet`);
+
+
+  await push(`notion_${new Date().toISOString().slice(0, 10)}`,
+    `📋 Notion-Abgleich: ${teile.join(', ') || 'Unterschiede'}`,
+    `Wiki: ${Object.keys(wikiArtikel).length} Artikel · Notion: ${e.kategorienNotion} Kategorien` +
+    liste('🆕 Fehlen in Notion', e.fehlen,
+      a => `• ${a.kategorie} · ${a.titel}\n  ${wikiLink(a)}`) +
+    liste('⏰ Veraltet (Wiki ist neuer)', e.veraltet,
+      a => `• ${a.kategorie} · ${a.titel}\n  Wiki ${a.updatedAt.slice(0, 10)}, ` +
+           `Notion ${String(a.notionStand).slice(0, 10)}${a.genau ? '' : ' (Kategoriestand)'}`) +
+
+    (e.katFehlen.length ? `\n\n📁 Kategorien fehlen in Notion:\n• ${e.katFehlen.join('\n• ')}` : ''),
+    state, 'default');
+}
+
+/* ========================= KASSENBUCH ========================= */
+
+// Was sagt das Kassenbuch über ein Zeitfenster? Verkäufe und Großaufträge
+// kosten Bestand, bringen aber Geld – daran lassen sie sich von einem
+// Einbruch unterscheiden, der nur Bestand kostet.
+function bewegungImFenster(ledger, vonMs) {
+  let abgegeben = 0, einnahmen = 0, unklar = false;
+  for (const e of ledger?.entries || []) {
+    if (e.stamp < vonMs) continue;
+    if (e.amount <= 0) continue;                 // nur Einnahmen betrachten
+    einnahmen += e.amount;
+    const treffer = /(\d+)\s*x/i.exec(sauber(e.detail));
+    if (treffer) abgegeben += +treffer[1];
+    else unklar = true;                          // Menge nicht ablesbar
+  }
+  return { abgegeben, einnahmen, unklar };
+}
+
+// Liefert neue Buchungen seit dem letzten Durchlauf, älteste zuerst.
+function neueBuchungen(state, ledger) {
+  const alle = (ledger.entries || []).filter(e => e.stamp > state.letzterLedgerStamp);
+  alle.sort((a, b) => a.stamp - b.stamp);
+  return alle;
+}
+
+/**
+ * Der Gewinnstand, wie er unmittelbar **vor** einem Zeitpunkt gemessen wurde.
+ *
+ * Das ist die Zahl, die zählt: der Gewinn, der bis zur Abschöpfung wirklich
+ * angesammelt war. Daraus ergibt sich alles andere – abgeschöpft steht im
+ * Kassenbuch, behalten ist die Differenz.
+ *
+ * Gesucht wird der jüngste Messpunkt vor `stamp`, und nur wenn er nicht zu
+ * alt ist. War der Watcher aus oder hing ein Abruf, gibt es keinen brauchbaren
+ * Messpunkt – dann lieber nichts zurückgeben als eine Zahl erfinden, die zu
+ * einem anderen Zeitpunkt gehört.
+ */
+function gewinnVorDem(state, stamp) {
+  const spanne = 3 * CFG.INTERVALL_MS;
+  let treffer = null;
+  for (const m of state.gewinnVerlauf || []) {
+    if (m.stamp >= stamp) continue;                 // liegt schon danach
+    if (stamp - m.stamp > spanne) continue;         // zu weit weg
+    if (!treffer || m.stamp > treffer.stamp) treffer = m;
+  }
+  return treffer && Number.isFinite(treffer.wert) ? treffer.wert : null;
+}
+
+async function werteBuchungenAus(state, buchungen) {
+  for (const b of buchungen) {
+    // Vor der Verarbeitung vormerken, nicht danach: bricht die Meldung ab,
+    // wird diese Buchung beim nächsten Durchlauf sonst erneut gelesen – und
+    // eine Gehaltszahlung zählte zweimal gegen den Freibetrag. Lieber eine
+    // Meldung verlieren als eine Zahl verfälschen.
+    state.letzterLedgerStamp = Math.max(state.letzterLedgerStamp || 0, b.stamp);
+
+    const kat = sauber(b.category).toLowerCase();
+    const detail = sauber(b.detail);
+
+    // Ausschüttung: nur festhalten, nicht melden. Seit der Balance-Änderung
+    // wird stündlich abgeschöpft – eine Meldung je Vorgang wären 24 am Tag.
+    // Zu sehen gibt es sie in /ausschuettung und im Bericht um 0 Uhr.
+    if (kat.includes('ausschütt') || kat.includes('ausschuett')) {
+      state.letzteAusschuettung = b.stamp;
+
+      // Was stehen geblieben ist, nennt die Firma im Buchungstext selbst
+      // („alles über 3.005$/Std"). Dieser Text ist die Messung – er geht
+      // deshalb mit ins Archiv, ungekürzt gelesen und auch im Rohzustand
+      // gespeichert.
+      //
+      // Der Gewinnzähler der API taugt dafür nicht: `profitSincePayout` läuft
+      // über die stündliche Abschöpfung hinweg weiter. „Zähler minus
+      // Abschöpfung" ergab Stundengrenzen von über 250.000$, wo tatsächlich
+      // etwa 3.000$ geblieben sind. Er wandert nur noch als Rohwert mit.
+      const zaehler = gewinnVorDem(state, b.stamp);
+      merkeAusschuettung(spieltag(b.stamp), b.stamp, b.amount, b.balance,
+                         zaehler, detail);
+      log(b.amount >= 0 ? 'Ausschüttung erhalten:' : 'Abgeschöpft:',
+          fmt(Math.abs(b.amount)), detail);
+      // Hier ist Schluss: abgeschöpfter Gewinn ist kein Geld, das sich jemand
+      // auszahlt, und zehrt am Tageslimit nicht. Zählte er mit, stünde das
+      // Budget nach der ersten guten Stunde dauerhaft auf „aufgebraucht".
+      continue;
+    }
+
+    // Eindeutige Vorfälle
+    if (VORFALL_KATEGORIEN.some(w => kat.includes(w))) {
+      const bericht = onlineBericht(state);
+      await push(`vorfall_${b.stamp}`, `🚨 ${sauber(b.category)}`,
+        `${detail}\nBetrag: ${fmt(b.amount)}\nKassenstand danach: ${fmt(b.balance)}` +
+        (bericht.length ? `\n\nOnline zu dem Zeitpunkt:\n${bericht.join('\n')}` : ''),
+        state, 'urgent', { knopf: erledigtKnopf(`vorfall_${b.stamp}`) });
+      continue;
+    }
+
+    // Ein Einkauf des Systems belegt, dass der Nachkauf läuft.
+    if (kat.includes('einkauf')) {
+      state.letzterEinkauf = b.stamp;
+      log('Einkauf gesehen:', fmt(b.amount));
+    }
+
+    // Ausschüttungen, Gehälter und Auszahlungen zehren am Tageslimit –
+    // mitzählen, solange die Buchung vorbeikommt. Das Kassenbuch liefert nur die letzten Einträge,
+    // deshalb wird summiert statt später nachgerechnet.
+    const wertung = zaehltGegenFreibetrag(kat, detail);
+    if (wertung.grund !== 'andere Kategorie') {
+      auszahlungTopf(state);                    // setzt bei Tageswechsel zurück
+      if (wertung.zaehlt) {
+        state.auszahlungSumme = (state.auszahlungSumme || 0) + Math.abs(b.amount);
+      }
+      // Auch das Nichtgezählte festhalten: sonst lässt sich eine Summe, die
+      // nicht zu den eigenen Auszahlungen passt, nicht nachprüfen.
+      state.auszahlungen = [...(state.auszahlungen || []),
+        { stamp: b.stamp, kategorie: sauber(b.category), detail,
+          betrag: Math.abs(b.amount), gezaehlt: wertung.zaehlt, grund: wertung.grund }
+      ].slice(-40);
+      log(wertung.zaehlt ? 'Auszahlung gezählt:' : `Nicht gezählt (${wertung.grund}):`,
+          sauber(b.category), fmt(Math.abs(b.amount)));
+      continue;
+    }
+
+    // Unbekannte Kategorien landen nur im Log. Als Meldung waren sie vor allem
+    // Lärm – sie treten häufig auf und es gibt nie etwas zu tun.
+    if (!NORMALE_KATEGORIEN.some(w => kat.includes(w))) {
+      log('Unbekannte Buchung:', sauber(b.category), fmt(b.amount), detail);
+      if (CFG.UNBEKANNTE_BUCHUNGEN) {
+        await push(`unbekannt_${kat}`, `❔ Unbekannte Buchung: ${sauber(b.category)}`,
+          `${detail}\nBetrag: ${fmt(b.amount)}\nKassenstand danach: ${fmt(b.balance)}\n` +
+          '\nDiese Kategorie kennt der Watcher noch nicht.', state, 'default');
+      }
+    }
+  }
+
+}
+
+/* ========================= PRÜFLAUF ========================= */
+
+async function durchlauf() {
+  const state = load();
+  ladeZugang(state);
+  let daten;
+
+  try {
+    daten = await holeFirma();
+  } catch (e) {
+    if (e.message === 'AUTH' || e.message === 'KEIN_COOKIE') {
+      await push('auth', '🔑 UnicaCity: Zugang abgelaufen',
+        'Der Watcher kommt nicht mehr an die API – das Cookie ist vermutlich abgelaufen.\n' +
+        'Neues Cookie aus dem Browser holen und in die .env eintragen, dann:\n' +
+        'sudo systemctl restart uc-watcher', state, 'urgent');
+    } else {
+      // Server nicht erreichbar oder Netz weg. Das repariert sich meistens von
+      // selbst, also erst melden, wenn es wirklich länger anhält – und ohne
+      // Handlungsaufforderung, denn es gibt nichts zu tun.
+      state.apiWegSeit ||= Date.now();
+      const weg = Date.now() - state.apiWegSeit;
+      log('Abruf fehlgeschlagen:', e.message, `(seit ${dauer(weg)})`);
+      if (weg >= CFG.API_WEG_MELDUNG_MIN * MIN) {
+        await push('apiweg', '📡 UnicaCity nicht erreichbar',
+          `Der Watcher erreicht die Seite seit ${dauer(weg)} nicht (${e.message}).\n` +
+          'Das ist meist der Server selbst und geht von allein vorbei – ' +
+          'du musst nichts tun. Sobald es wieder läuft, bleibt es still.',
+          state, 'default');
+      }
+    }
+    sichereZugang(state);
+    save(state);
+    return;
+  }
+
+  if (state.apiWegSeit) {
+    info(`Wieder erreichbar nach ${dauer(Date.now() - state.apiWegSeit)}`);
+    state.apiWegSeit = 0;
+  }
+
+  const f = daten.company;
+  if (!f) { log('Keine Firma in der Antwort'); return; }
+
+  // --- Spieler & Teamzeit ---
+  const members = f.members || [];
+  await tagesabschluss(state);                 // vor dem Zurücksetzen der Tageszähler
+  updateSpieler(state, members);
+
+  const jemandOnline = members.some(m => m.online);
+  const laeuft = jemandOnline && !f.paused;
+  updateTeamzeit(state, laeuft ? 'laeuft' : jemandOnline ? 'pausiert' : 'niemand');
+
+  // Den laufenden Spieltag ins Archiv schreiben. Der Zustand vergisst die
+  // Zeiten um 04:00 – das Archiv behält sie, und alle Auswertungen lesen
+  // von dort, nicht aus dem Zustand.
+  merkeZeiten(state.tag, state.spieler, state.firmaTagMs);
+
+  // Kassenbuch früh holen: Der Lagercheck braucht es, um Großaufträge von
+  // einem Einbruch zu unterscheiden.
+  let ledger = null;
+  try { ledger = await holeLedger(f.id); }
+  catch (e) { log('Kassenbuch nicht lesbar:', e.message); }
+
+  // Jemand ist da, die Firma steht trotzdem still – das ist einen Hinweis wert.
+  if (jemandOnline && f.paused) {
+    await push('pausiert_trotz_online', '⚠️ Firma pausiert, obwohl jemand online ist',
+      `Status: ${sauber(f.status)}\n` +
+      (f.wagesUnpaid ? 'Die Löhne konnten nicht gezahlt werden.\n' : '') +
+      `Online: ${members.filter(m => m.online).map(m => m.name).join(', ')}\n\n` +
+      'Der Zähler für die Ausschüttung läuft solange nicht weiter.', state, 'high');
+  }
+
+  // --- 1) Lager ---
+  const lager = f.stock?.total;
+  merkeLager(state, lager);
+  if (typeof lager === 'number') {
+    // Plötzlicher Einbruch: Ein Rückgang, den der normale Absatz nicht erklärt,
+    // ist ein Vorfall – etwa ein Einbruch. Nur prüfen, wenn der Watcher
+    // durchgehend lief, sonst wäre jede Ausfallzeit ein Fehlalarm.
+    const jetzt = Date.now();
+    const seitLetzter = state.letzterLagerTick ? jetzt - state.letzterLagerTick : 0;
+    if (state.lager !== null && seitLetzter > 0 && seitLetzter <= CFG.LUECKE_MIN * MIN) {
+      const verlust = state.lager - lager;
+      const minuten = seitLetzter / MIN;
+      // Großzügig gerechnet: anderthalbfacher Absatz plus etwas Spielraum.
+      // Gemessen, nicht aus salesPerMinute hochgerechnet – und mindestens so
+      // viel wie der größte bisher beobachtete Schub, denn verkauft wird
+      // stoßweise. Sonst gilt ein ganz normaler Verkauf als Einbruch.
+      const gemessen = gemessenerAbsatz(state, 120);
+      const proMinute = gemessen?.proMinute ?? (f.stock.salesPerMinute || 0);
+      const laufenderAbsatz = Math.max(
+        proMinute * minuten * 1.5,
+        (gemessen?.groessterSchub || 0) * 1.5,
+      ) + 5;
+
+      // Dazu alles, was im selben Fenster Geld gebracht hat – Verkäufe und
+      // Großaufträge kosten Bestand, sind aber kein Vorfall.
+      const bewegung = bewegungImFenster(ledger, jetzt - seitLetzter);
+      const erklaerbar = laufenderAbsatz + bewegung.abgegeben;
+      const prozent = state.lager > 0 ? (verlust / state.lager) * 100 : 0;
+
+      if (verlust > erklaerbar && prozent >= CFG.LAGER_EINBRUCH_PCT) {
+        if (bewegung.unklar) {
+          // Es gab Einnahmen, deren Stückzahl nicht ablesbar war – dann lieber
+          // schweigen als einen Großauftrag als Einbruch melden.
+          log('Lagerverlust nicht eindeutig: Einnahmen ohne ablesbare Menge');
+        } else {
+          const bericht = onlineBericht(state);
+          await push(`lagerverlust_${jetzt}`, '🚨 Plötzlicher Lagerverlust',
+            `Lager: ${state.lager} → ${lager} (${verlust} Einheiten, ` +
+            `${prozent.toFixed(1)} %)\n` +
+            `Erklärbar wären höchstens ${Math.round(erklaerbar)} in ` +
+            `${Math.round(minuten)} Min.\n` +
+            (bewegung.einnahmen
+              ? `Verbucht: ${fmt(bewegung.einnahmen)} für ${bewegung.abgegeben} Einheiten – ` +
+                `der Rest bleibt unerklärt.\n\n`
+              : `Keine Einnahme in dieser Zeit – es war also kein Verkauf.\n\n`) +
+            (bericht.length
+              ? `Online zum Zeitpunkt:\n${bericht.join('\n')}`
+              : 'Niemand aus dem Team war online.'),
+            state, 'urgent');
+        }
+      }
+    }
+    state.letzterLagerTick = jetzt;
+
+    if (lager < CFG.LAGER_SCHWELLE) {
+      await push('lager', '⚠️ Lagerbestand niedrig',
+        `Lager: ${lager} / ${f.stock.capacity} (Schwelle ${CFG.LAGER_SCHWELLE})\n` +
+        `Absatz: ${absatzText(state, f)}`,
+        state, 'high');
+    } else if (state.lager !== null && state.lager < CFG.LAGER_SCHWELLE) {
+      state.lastPush.lager = 0;
+    }
+    state.lager = lager;
+  }
+
+  // --- 2) Personal (NPCs) ---
+  const personal = Array.isArray(f.employees) ? f.employees.length : null;
+  const maxPersonal = f.maxEmployees ?? null;
+  if (personal !== null) {
+    const alt = state.personal;
+    if (alt !== null && personal !== alt) {
+      const gefallen = personal < alt;
+      const bericht = onlineBericht(state);
+      await push(`personal_${personal}_${Date.now()}`,
+        gefallen ? '🚨 Personal abgeworben' : 'ℹ️ Personal aufgestockt',
+        `Personal: ${alt}/${maxPersonal} → ${personal}/${maxPersonal}\n` +
+        (gefallen
+          ? `${alt - personal} NPC${alt - personal > 1 ? 's' : ''} weg – Abwerbung wurde nicht abgewendet.`
+          : `+${personal - alt} eingestellt.`) +
+        (bericht.length
+          ? `\n\nOnline zum Zeitpunkt der Änderung:\n${bericht.join('\n')}`
+          : '\n\n(Niemand aus dem Team war online.)'),
+        state, gefallen ? 'urgent' : 'default');
+    } else if (maxPersonal && personal < maxPersonal) {
+      await push('personal_unvollstaendig', '⚠️ Personal unvollständig',
+        `Personal: ${personal}/${maxPersonal} – ${maxPersonal - personal} fehlen.`, state);
+    }
+    state.personal = personal;
+  }
+
+  // --- 2b) Nachkauf: setzt er aus, während Bestand abfließt? ---
+  // Das ist der Fall, der wirklich zählt. Läuft der Nachkauf, füllt sich das
+  // Lager selbst und eine Reichweite wäre bedeutungslos.
+  if (typeof lager === 'number') {
+    const nk = nachkaufStand(f, state);
+    const abfluss = gemessenerAbsatz(state, CFG.NACHKAUF_FENSTER_MIN);
+
+    if (nk.an === false && nk.quelle === 'Einkäufe' && abfluss?.abgeflossen > 0) {
+      const r = reichweite(state, lager);
+      await push('nachkauf_aus', '⏹️ Nachkauf scheint auszusetzen',
+        `Seit ${dauer(nk.her)} hat das System nichts eingekauft, ` +
+        `es sind aber ${abfluss.abgeflossen} Einheiten abgeflossen.\n` +
+        `Bestand: ${lager}` + (r ? `, reicht noch ${dauer(r.ms)}.` : '.') + '\n\n' +
+        'Entweder ist der Nachkauf aus oder die Kasse reicht nicht.',
+        state, 'high');
+    } else if (nk.an === true) {
+      // Läuft wieder: Sperre lösen, damit die nächste Aussetzer-Meldung kommt.
+      state.lastPush.nachkauf_aus = 0;
+    }
+  }
+
+  // --- 3) Firmenzustand ---
+  if (f.wagesUnpaid) {
+    await push('loehne', '⚠️ Löhne nicht bezahlt',
+      `Die Firma kann die Löhne nicht zahlen.\nKasse: ${fmt(f.kasse.balance)}`, state, 'urgent');
+  }
+  if (f.rentStrikes > 0) {
+    await push('miete', '⚠️ Mietrückstand',
+      `Mahnungen: ${f.rentStrikes} von ${f.rentStrikesMax}.`, state, 'urgent');
+  }
+  if (f.event) {
+    const bericht = onlineBericht(state);
+    const ex = f.express || {};
+    // Art und Anzahl mitschreiben, damit /melden sie zur Auswahl anbieten kann.
+    const art = vorfallArt(f.event);
+    state.vorfallArten = { ...(state.vorfallArten || {}),
+      [art]: {
+        anzahl: (state.vorfallArten?.[art]?.anzahl || 0) + 1,
+        zuletzt: Date.now(),
+        name: sauber(f.event?.name || f.event?.title || art),
+      } };
+
+    const vSchluessel = vorfallSchluessel(state, f.event);
+
+    // Hat jemand den Knopf gedrückt, kommt zu diesem Vorfall nichts mehr –
+    // auch nicht die Meldung selbst. Vorher stoppte der Knopf nur die
+    // Erinnerungen, und nach der Ruhezeit stand derselbe Vorfall samt Ping
+    // wieder im Kanal.
+    if (!istErledigt(vSchluessel)) {
+      await push(vSchluessel, '🚨 Vorfall im Unternehmen',
+        ereignisText(f.event) + expressText(ex) +
+        (bericht.length ? `\n\nOnline zum Zeitpunkt:\n${bericht.join('\n')}` : ''),
+        state, 'urgent', { knopf: erledigtKnopf(vSchluessel), einmal: true });
+    }
+
+    await erinnereAnVorfall(state, f.event);
+  } else if (state.offenerVorfall) {
+    // Der Vorfall ist weg – erledigt oder abgelaufen. Ruhe geben.
+    info(`Vorfall erledigt nach ${dauer(Date.now() - state.offenerVorfall.seit)}`);
+    state.offenerVorfall = null;
+  }
+
+  // --- Einkaufspreise: Sprung deutet auf einen Lieferengpass hin ---
+  const preiseJetzt = einkaufsschnitt(f.wares);
+  if (Object.keys(preiseJetzt).length) {
+    const aenderung = preisAenderung(state.preise, preiseJetzt);
+    // Nur melden, wenn die Firma das Ereignis nicht ohnehin selbst nennt –
+    // sonst bekämst du dieselbe Sache zweimal aufs Handy.
+    if (aenderung !== null && aenderung >= CFG.PREIS_SPRUNG_PCT && !f.event) {
+      const bericht = onlineBericht(state);
+      const ex = f.express || {};
+      const teuerste = Object.entries(preiseJetzt)
+        .map(([k, p]) => `${k.toLowerCase()}: ${p}$` +
+             (state.preise[k] ? ` (vorher ${state.preise[k]}$)` : ''))
+        .slice(0, 6);
+      await push('preissprung', '📦 Lieferengpass – Einkauf teurer',
+        `Einkaufspreise im Schnitt +${aenderung.toFixed(0)} %\n\n` +
+        teuerste.join('\n') + expressText(ex) +
+        (bericht.length ? `\n\nOnline zum Zeitpunkt:\n${bericht.join('\n')}` : ''),
+        state, 'high');
+    }
+    state.preise = preiseJetzt;
+  }
+
+  // --- 4) Kasse & Gewinn ---
+  state.kasse  = f.kasse?.balance ?? state.kasse;
+  // Erst den neuen Stand in den Verlauf schieben, dann setzen: die Auswertung
+  // der Buchungen greift danach auf den Verlauf zu und braucht dort beides –
+  // den Stand vor der Abschöpfung und den danach.
+  const gewinnJetzt = f.kasse?.profitSincePayout;
+  if (Number.isFinite(gewinnJetzt)) {
+    state.gewinnVerlauf = [...(state.gewinnVerlauf || []),
+      { stamp: Date.now(), wert: gewinnJetzt }].slice(-10);
+  }
+  state.gewinn = gewinnJetzt ?? state.gewinn;
+
+  // --- 5) Kassenbuch (oben bereits geholt) ---
+  try {
+    if (!ledger) throw new Error('nicht geladen');
+    const neu = neueBuchungen(state, ledger);
+    if (state.letzterLedgerStamp === 0) {
+      // Erster Lauf: nur Stand merken, nicht rückwirkend melden
+      const alle = ledger.entries || [];
+      state.letzterLedgerStamp = alle.length ? Math.max(...alle.map(e => e.stamp)) : 0;
+      log('Kassenbuch-Startpunkt gesetzt');
+    } else {
+      await werteBuchungenAus(state, neu);
+    }
+  } catch (e) { log('Kassenbuch nicht auswertbar:', e.message); }
+
+  // --- 5b) Betrieb (Zoohandlung): Bestand im Auge behalten ---
+  await pruefeBetrieb(state);
+
+  // --- 6) Ausschüttung ---
+  await ausschuettungsBericht(state);
+
+  // --- 7) Wiki (höchstens einmal je Intervall) ---
+  const wikiGeaendert = await pruefeWiki(state);
+
+  // --- 8) Notion abgleichen: sofort nach einer Wiki-Änderung, sonst im Takt ---
+  await pruefeNotion(state, state.wiki, wikiGeaendert);
+
+  sichereZugang(state);
+  save(state);
+  speichereArchiv();              // schreibt nur, wenn sich ein Tag geändert hat
+  log('geprüft', { lager: state.lager, personal: state.personal, kasse: state.kasse,
+                   gewinn: state.gewinn, laeuft, firmaHeute: dauer(state.firmaTagMs),
+                   online: members.filter(m => m.online).map(m => m.name) });
+}
+
+/* ========================= DISCORD-BEFEHLE ========================= */
+
+const tabelle = (zeilen) => zeilen.length ? '```\n' + zeilen.join('\n') + '\n```' : '_keine Daten_';
+
+// Die Firma wird für mehrere Befehle gebraucht. Ein kurzer Puffer verhindert,
+// dass fünf Leute hintereinander fünf API-Abfragen auslösen.
+/**
+ * Kurzer Puffer für Abrufe, die mehrere Befehle auslösen können. Ohne ihn
+ * löst jeder Tastendruck im Discord eine eigene Abfrage bei UnicaCity aus.
+ */
+const PUFFER_MS = 20_000;
+const puffer = new Map();
+
+async function frisch(schluessel, hole) {
+  const alt = puffer.get(schluessel);
+  if (alt && Date.now() - alt.zeit < PUFFER_MS) return alt.daten;
+  const daten = await hole();
+  puffer.set(schluessel, { zeit: Date.now(), daten });
+  return daten;
+}
+
+const firmaFrisch    = () => frisch('firma', async () => (await holeFirma()).company);
+const ledgerFrisch   = (id) => frisch(`ledger:${id}`, () => holeLedger(id));
+const betriebeFrisch = () => frisch('betriebe', holeBetriebe);
+
+
+/**
+ * Das Firmenlager als Text: Bestand, Nachkauf, gemessene Reichweite.
+ * Eigene Funktion, weil /lager beide Bestände zeigt und der Aufbau sonst in
+ * einer Befehlsdefinition mit zwei Ausgängen steckte.
+ */
+async function lagerText() {
+  const f = await firmaFrisch();
+  const st = load();
+  const bestand = f.stock?.total ?? 0, kapazitaet = f.stock?.capacity ?? 0;
+  const anteil = kapazitaet ? Math.round(bestand / kapazitaet * 100) : 0;
+  let t = `**Lager:** ${bestand} / ${kapazitaet} (${anteil} %)\n` + balken(anteil);
+
+  const nk = nachkaufStand(f, st);
+
+  // Läuft der Nachkauf, füllt sich das Lager selbst – dann sagt eine
+  // Reichweite nichts aus und bleibt weg.
+  if (nk.an === true) {
+    t += '\n🔄 **Nachkauf läuft** – der Bestand füllt sich selbst auf.';
+    if (nk.quelle === 'Einkäufe' && nk.her) {
+      t += ` Letzter Einkauf vor ${dauer(nk.her)}.`;
+    }
+    if (bestand < CFG.LAGER_SCHWELLE) {
+      t += `\n⚠️ Trotzdem unter der Schwelle von ${CFG.LAGER_SCHWELLE} – ` +
+           'entweder reicht das Geld nicht oder der Nachkauf kommt nicht hinterher.';
+    }
+    return t;
+  }
+
+  if (nk.an === false) {
+    t += '\n⏹️ **Nachkauf ist aus.**' +
+      (nk.quelle === 'Einkäufe' && nk.her
+        ? ` Seit ${dauer(nk.her)} hat das System nichts eingekauft.`
+        : '');
+  }
+
+  // Gemessen statt hochgerechnet: verkauft wird schubweise, die Angabe der
+  // API lässt sich nicht auf die Minute umlegen.
+  const r = reichweite(st, bestand);
+  const a = gemessenerAbsatz(st);
+  if (r) {
+    t += `\n**Reicht noch ${dauer(r.ms)}** – ${r.proMinute.toFixed(1)}/Min, ` +
+      `gemessen über ${Math.round(r.minuten)} Min ` +
+      `(${r.abgeflossen} Stück in ${r.schuebe} Schüben).`;
+  } else if (a) {
+    t += '\nIn der letzten Stunde ging nichts raus – keine Reichweite berechenbar.';
+  } else {
+    t += '\nReichweite noch unbekannt: der Watcher misst den Absatz selbst ' +
+      'und braucht dafür etwa 10 Minuten Laufzeit.';
+  }
+
+  if (bestand < CFG.LAGER_SCHWELLE) {
+    t += `\n⚠️ Unter der Schwelle von ${CFG.LAGER_SCHWELLE} – nachfüllen.`;
+  }
+  return t;
+}
+
+/**
+ * Die Zoohandlung als Text, oder '' wenn kein Betrieb eingerichtet ist.
+ * Ein Fehler wird benannt statt geworfen: das Firmenlager soll trotzdem
+ * herauskommen, wenn nur die Betriebsübersicht klemmt.
+ */
+async function betriebText() {
+  if (!CFG.BETRIEB) return '';
+  let daten;
+  try {
+    daten = await betriebeFrisch();
+  } catch (e) {
+    return e.message.startsWith('BETRIEB_PFAD_UNBEKANNT')
+      ? `**${CFG.BETRIEB}:** _Übersicht nicht gefunden – auf dem Server ` +
+        '`--betrieb-probe` ausführen._'
+      : `**${CFG.BETRIEB}:** _Abruf fehlgeschlagen: ${e.message}_`;
+  }
+
+  const st = betriebStand(daten);
+  if (!st.gefunden) return `**${CFG.BETRIEB}:** _gibt es dort nicht._`;
+  if (st.bestand === null) {
+    return `**${st.name}:** _gefunden, aber der Bestand steht in keinem ` +
+           'bekannten Feld. `--betrieb-probe` zeigt die Antwort._';
+  }
+
+  let t = `**${st.name}: ${st.bestand} von ${st.max}**\n` + balken(st.anteil);
+  if (!CFG.BETRIEB_ID && CFG.BETRIEB_ABZUG) {
+    t += `\nGelesen ${st.angezeigt}, abzüglich ${CFG.BETRIEB_ABZUG}.`;
+  }
+  if (st.bestand <= 0) t += '\n🔴 **Leer.** Es kann nichts mehr entnommen werden.';
+  else if (st.bestand <= CFG.BETRIEB_SCHWELLE) {
+    t += `\n⚠️ Wird knapp – unter ${CFG.BETRIEB_SCHWELLE}.`;
+  }
+  return t;
+}
+
+/**
+ * Die Übersicht über mehrere Spieltage, mit Vergleich zur Zeit davor.
+ * Gehört zu /tagesbericht: derselbe Datenbestand, dieselbe Frage über einen
+ * längeren Zeitraum.
+ */
+function zeitraumText(tage) {
+  const n = Math.min(90, Math.max(2, tage));
+
+  // Den laufenden Tag mitnehmen, sonst fehlt heute im Zeitraum.
+  const st = load();
+  merkeZeiten(st.tag, st.spieler, st.firmaTagMs);
+
+  const v = vergleich(n);
+  if (!v.jetzt.tage) return '_Das Archiv ist noch leer – die Zahlen sammeln sich ' +
+    'ab jetzt an._';
+
+  // Ohne ältere Tage gibt es nichts zu vergleichen – dann wäre jeder Pfeil nur
+  // ein „neu", und das liest sich wie ein Anstieg.
+  const pfeil = (d) => !v.davor.tage ? ''
+    : Math.abs(d) < 5 * MIN ? '  ·' : d > 0 ? ' ▲' : ' ▼';
+  const zeilen = v.spieler.map(p =>
+    `${p.name.padEnd(18)} ${dauer(p.ms).padStart(14)} ` +
+    `${String(p.tage).padStart(2)} Tg ${dauer(p.schnitt).padStart(13)}/Tg` +
+    pfeil(p.diff));
+
+  let t = `**Letzte ${v.jetzt.tage} Spieltage** ` +
+    `(${tagKurz(v.jetzt.von)} bis ${tagKurz(v.jetzt.bis)})\n` + tabelle(zeilen) +
+    `\nSumme: ${dauer(v.jetzt.gesamtMs)} · Firma gelaufen: ${dauer(v.jetzt.firmaMs)}`;
+
+  if (v.davor.tage) {
+    const rel = v.davor.gesamtMs
+      ? ` (${v.gesamtMs >= 0 ? '+' : ''}${Math.round(v.gesamtMs / v.davor.gesamtMs * 100)} %)`
+      : '';
+    t += `\n\n**Gegenüber den ${v.davor.tage} Tagen davor** ` +
+      `(${tagKurz(v.davor.von)} bis ${tagKurz(v.davor.bis)}): ` +
+      `${v.gesamtMs >= 0 ? '+' : '−'}${dauer(Math.abs(v.gesamtMs))}${rel}`;
+  } else {
+    t += '\n\n_Für einen Vergleich fehlen noch ältere Tage._';
+  }
+
+  if (v.jetzt.ausschuettungen) {
+    t += `\n\n**Ausschüttungen:** ${v.jetzt.ausschuettungen} über ${fmt(v.jetzt.betrag)}`;
+  }
+  // Die Anteile stehen bewusst dabei: danach ließe sich verteilen, wenn der
+  // Inhaber das will. Die Rechnung macht der Bot nicht von selbst.
+  const a = anteile(letzteTage(n));
+  if (a.length > 1 && v.jetzt.gesamtMs) {
+    t += '\n**Anteil an der Gesamtzeit:** ' +
+      a.slice(0, 8).map(p => `${p.name} ${zahl(p.prozent)} %`).join(' · ');
+  }
+  return t;
+}
+
+/**
+ * Wohin die Zeit dieses Spieltags gegangen ist. Für /watcher – die Frage
+ * „warum steht der Ausschüttungszähler so niedrig" lässt sich nur hiermit
+ * beantworten und nicht durch Nachdenken.
+ */
+function zeitkontoText(st) {
+  const k = st.zeitkonto;
+  if (!k) return '\n_Zeitkonto: noch kein Durchlauf seit dem Update._\n';
+  const gesamt = k.gezaehlt + k.pausiert + k.niemand + k.luecke;
+  if (!gesamt) return '\n_Zeitkonto: noch nichts erfasst._\n';
+  const teil = (x) => `${dauer(x)} (${Math.round(x / gesamt * 100)} %)`;
+  return `\n**Zeitkonto ${tagKurz(k.tag)}** – wohin jede Minute ging\n` +
+    `Gezählt: ${teil(k.gezaehlt)}\n` +
+    `Niemand online: ${teil(k.niemand)}\n` +
+    `Firma pausiert: ${teil(k.pausiert)}\n` +
+    `Watcher lief nicht: ${teil(k.luecke)}` +
+    (k.ausfaelle ? ` in ${k.ausfaelle} Lücke${k.ausfaelle === 1 ? '' : 'n'}` : '') + '\n';
+}
+
+/* ========================= SCHALTZENTRALE ========================= */
+
+/**
+ * Eine Nachricht, an der sich alle Meldungen umstellen lassen.
+ *
+ * Statt neun Feldern in einem Befehl: eine Tafel, die man anpinnt. Sie zeigt
+ * die Übersicht, man wählt ein Thema aus dem Menü, und für dieses Thema
+ * stehen dann Knöpfe da. Nach jedem Klick wird dieselbe Nachricht neu
+ * gezeichnet – es sammelt sich nichts an.
+ *
+ * Der Zustand steckt in den Kennungen der Knöpfe, nicht im Speicher: welches
+ * Thema gerade offen ist, steht in jeder custom_id. So funktioniert die Tafel
+ * auch Wochen später und nach einem Neustart des Dienstes weiter.
+ */
+const ZT = 'zt:';                       // Vorsilbe aller Kennungen der Tafel
+
+const ztId = (was, thema = '') => ZT + was + (thema ? '|' + thema : '');
+
+/** Kurzer Zustand eines Themas für die Übersicht. */
+function ztZeile(schluessel, name, regeln) {
+  const eigen = regeln[schluessel];
+  const r = empfaenger(schluessel, regeln);
+  const zeichen = r.ziel === 'aus' ? '🔇'
+    : eigen ? '✏️' : '·';
+  const zusatz = [
+    r.ziel === 'kanal' && r.kanal ? `<#${r.kanal}>` : null,
+    r.ping === 'online' ? 'Ping' : null,
+    eigen?.erinnerung ? `Nachfassen ${ERINNERUNG_MIN}′` : null,
+  ].filter(Boolean);
+  return `${zeichen} **${name}**${zusatz.length ? ' — ' + zusatz.join(' · ') : ''}`;
+}
+
+/** Alle Themen, die man wählen kann: die feste Liste plus eigene Vorfallsarten. */
+function ztThemen(regeln) {
+  const arten = Object.keys(regeln)
+    .filter(k => k.startsWith('event_') && k !== 'event_')
+    .map(k => [k, `Vorfall: ${k.slice('event_'.length)}`]);
+  return [...THEMEN, ...arten];
+}
+
+/** Die Übersicht: alle Themen, dazu das Menü zum Auswählen. */
+function ztUebersicht() {
+  const regeln = ladeRegeln();
+  const themen = ztThemen(regeln);
+  const zeilen = themen.map(([k, name]) => ztZeile(k, name, regeln));
+
+  let text = zeilen.join('\n') +
+    '\n\n`·` Voreinstellung · `✏️` von dir geändert · `🔇` abgeschaltet' +
+    `\n\nJede Meldung kommt höchstens alle ${CFG.ERINNERUNG_MIN} Min. Gepingt ` +
+    'wird nur bei Vorfällen, und nur, wer gerade ingame online ist.';
+  if (!kanaele().vorfall) {
+    text += '\n\n⚠️ Kein eigener Vorfall-Kanal eingetragen – Vorfälle gehen ' +
+      'dorthin, wo die Zeile oben hinzeigt. Hier änderbar, oder dauerhaft mit ' +
+      '`UC_DISCORD_VORFALL_KANAL` in der `.env`.';
+  }
+
+  return {
+    titel: '🎛️ Meldungen – Schaltzentrale',
+    text,
+    fuss: 'Diese Nachricht bleibt. Anpinnen, dann ist sie immer da.',
+    reihen: [
+      [{ auswahl: 'Thema zum Umstellen wählen', id: ztId('waehle'),
+         optionen: themen.slice(0, 24).map(([k, name]) => ({
+           name, value: k,
+           beschreibung: regelText(empfaenger(k, regeln))
+             .replace(/<#(\d+)>/g, 'Kanal').slice(0, 100),
+         })) }],
+      [{ knopf: 'Vorfallsart hinzufügen', id: ztId('neueart'), stil: 2, emoji: '➕' },
+       { knopf: 'Neu laden', id: ztId('laden'), stil: 2, emoji: '🔄' }],
+    ],
+  };
+}
+
+/** Die Ansicht eines Themas: was gilt, und die Knöpfe dafür. */
+function ztThema(schluessel) {
+  const regeln = ladeRegeln();
+  const eintrag = ztThemen(regeln).find(([k]) => k === schluessel);
+  if (!eintrag) return ztUebersicht();
+  const [, name] = eintrag;
+  const eigen = regeln[schluessel] || {};
+  const r = empfaenger(schluessel, regeln);
+  const aus = r.ziel === 'aus';
+  const darfPingen = pingbar(schluessel);
+  const darfNachfassen = schluessel === 'event_' || schluessel.startsWith('event_');
+
+  // Nur das Ziel, nicht den ganzen Regeltext: Ping und Nachfassen bekommen
+  // eigene Zeilen, und zweimal dasselbe zu lesen hilft niemandem.
+  const wohin = r.ziel === 'aus' ? '—'
+    : r.ziel === 'kanal' && r.kanal ? `<#${r.kanal}>`
+    : r.ziel === 'team' ? (kanaele().team ? `<#${kanaele().team}>` : 'ins Team')
+    : kanaele().chef ? `<#${kanaele().chef}>` : 'an dich (als DM)';
+
+  const text = [
+    `**${name}**`,
+    '',
+    aus ? '📭 Geht nirgendwohin.' : `📬 Geht nach ${wohin}`,
+    '',
+    aus ? '🔇 Diese Meldung ist abgeschaltet – auch aufs Handy kommt nichts.' : null,
+    darfPingen
+      ? (r.ping === 'online'
+          ? '🔔 Pingt, wer gerade ingame online ist.'
+          : '🔕 Pingt niemanden.')
+      : '_Ping gibt es hier nicht: kein Vorfall, also keine Frist._',
+    darfNachfassen
+      ? (eigen.erinnerung
+          ? `⏰ Bleibt der Vorfall offen, kommt nach ${ERINNERUNG_MIN} Min. eine Erinnerung.`
+          : '⏰ Es wird nicht nachgefasst. Der Knopf „Ich kümmere mich" hängt trotzdem an jeder Meldung.')
+      : null,
+    Object.keys(eigen).length
+      ? null
+      : '_Hier ist nichts von dir eingestellt – es gilt die Voreinstellung._',
+  ].filter(x => x !== null).join('\n');
+
+  const schalter = [
+    { knopf: aus ? 'Wieder einschalten' : 'Abschalten',
+      id: ztId(aus ? 'an' : 'aus', schluessel), stil: aus ? 3 : 4,
+      emoji: aus ? '🔊' : '🔇' },
+    darfPingen
+      ? { knopf: r.ping === 'online' ? 'Ping aus' : 'Ping an',
+          id: ztId('ping', schluessel), stil: 1,
+          emoji: r.ping === 'online' ? '🔕' : '🔔' }
+      : null,
+    darfNachfassen
+      ? { knopf: eigen.erinnerung ? 'Nachfassen aus' : 'Nachfassen an',
+          id: ztId('erinnerung', schluessel), stil: 1, emoji: '⏰' }
+      : null,
+    Object.keys(eigen).length
+      ? { knopf: 'Zurücksetzen', id: ztId('standard', schluessel), stil: 2, emoji: '↩️' }
+      : null,
+  ].filter(Boolean);
+
+  return {
+    titel: '🎛️ Meldungen – Schaltzentrale',
+    text,
+    fuss: 'Änderungen gelten sofort.',
+    reihen: [
+      schalter,
+      [{ kanalwahl: 'In einen anderen Kanal schicken', id: ztId('kanal', schluessel) }],
+      [{ knopf: 'Zurück zur Übersicht', id: ztId('laden'), stil: 2, emoji: '◀️' }],
+    ],
+  };
+}
+
+/**
+ * Ein Klick auf der Tafel. Gibt die neu gezeichnete Tafel zurück – und wo es
+ * etwas zu sagen gibt, einen Satz dazu, den nur der Klickende sieht.
+ */
+function ztKlick(id, werte) {
+  const [was, schluessel = ''] = id.slice(ZT.length).split('|');
+
+  if (was === 'laden') return { tafel: ztUebersicht() };
+  if (was === 'waehle') return { tafel: ztThema(werte[0]) };
+
+  if (was === 'neueart') {
+    return { fenster: {
+      id: ztId('neueart_fertig'),
+      titel: 'Vorfallsart hinzufügen',
+      felder: [{ id: 'art', name: 'Art, z. B. ABWERBUNG', hinweis: 'ABWERBUNG',
+                 max: 30 }],
+    } };
+  }
+  if (was === 'neueart_fertig') {
+    const art = artSchluessel(werte[0] || '');
+    // artSchluessel macht aus allem Unerlaubten Unterstriche – aus reinen
+    // Leerzeichen also '___'. Das ist kein Name, sondern eine leere Eingabe.
+    if (!/[A-Z0-9]/.test(art)) {
+      return { tafel: ztUebersicht(),
+               text: '❌ Das war kein Name. Erwartet wird etwas wie `ABWERBUNG`.' };
+    }
+    const thema = `event_${art}`;
+    const regeln = ladeRegeln();
+    // Anlegen, damit die Art in der Liste auftaucht. Ohne Eintrag gälte
+    // ohnehin die allgemeine Vorfallsregel – der leere Eintrag ändert daran
+    // nichts, macht die Art aber wählbar.
+    if (!regeln[thema]) { regeln[thema] = {}; speichereRegeln(regeln); }
+    return { tafel: ztThema(thema),
+             text: `✅ **${art}** ist jetzt einzeln einstellbar.` };
+  }
+
+  const regeln = ladeRegeln();
+  const regel = { ...(regeln[schluessel] || {}) };
+  let hinweis = '';
+
+  switch (was) {
+    case 'aus':  regel.aus = true;  hinweis = 'Abgeschaltet – auch aufs Handy kommt nichts mehr.'; break;
+    case 'an':   delete regel.aus;  hinweis = 'Wieder eingeschaltet.'; break;
+    case 'ping':
+      if (!pingbar(schluessel)) {
+        return { tafel: ztThema(schluessel),
+                 text: '❌ Ping gibt es nur bei Vorfällen – alles andere hat keine Frist.' };
+      }
+      regel.ping = empfaenger(schluessel, regeln).ping !== 'online';
+      break;
+    case 'erinnerung':
+      if (!schluessel.startsWith('event_')) {
+        return { tafel: ztThema(schluessel),
+                 text: '❌ Nachfassen gibt es nur beim Vorfall im Unternehmen.' };
+      }
+      regel.erinnerung = !regel.erinnerung;
+      hinweis = regel.erinnerung
+        ? `Nachgefasst wird nach ${ERINNERUNG_MIN} Minuten, höchstens ` +
+          `${CFG.VORFALL_ERINNERUNG_MAX}-mal. Der Knopf „Ich kümmere mich" beendet es.`
+        : 'Es wird nicht mehr nachgefasst. Der Knopf bleibt trotzdem dran.';
+      break;
+    case 'kanal':
+      regel.kanal = werte[0];
+      hinweis = `Geht jetzt nach <#${werte[0]}>.`;
+      break;
+    case 'standard':
+      delete regeln[schluessel];
+      speichereRegeln(regeln);
+      return { tafel: ztThema(schluessel), text: '↩️ Wieder auf Voreinstellung.' };
+    default:
+      return { tafel: ztUebersicht() };
+  }
+
+  regeln[schluessel] = regel;
+  speichereRegeln(regeln);
+  return { tafel: ztThema(schluessel), text: hinweis || undefined };
+}
+
+const BEFEHLE = {
+  firma: {
+    beschreibung: 'Zustand der Firma: Status, Lager, Personal, wer online ist',
+    oeffentlich: true,
+    async ausfuehren() {
+      const f = await firmaFrisch();
+      const online = (f.members || []).filter(m => m.online);
+      let t = `**${f.name}** · Level ${f.level} · ${sauber(f.status)}\n` +
+        `Lager: ${f.stock?.total} / ${f.stock?.capacity}\n` +
+        `Personal: ${Array.isArray(f.employees) ? f.employees.length : '?'} / ${f.maxEmployees ?? '?'}\n` +
+        `Team online: ${online.length} von ${(f.members || []).length}` +
+        (online.length ? ` (${online.map(m => m.name).join(', ')})` : '');
+      if (f.wagesUnpaid) t += '\n⚠️ Die Löhne konnten nicht gezahlt werden.';
+      if (f.rentStrikes > 0) t += `\n⚠️ Mietmahnungen: ${f.rentStrikes} von ${f.rentStrikesMax}`;
+      // Gewinn seit 0 Uhr, nicht seit der letzten Ausschüttung: abgeschöpft
+      // wird stündlich, dort stünde also immer nur die angebrochene Stunde.
+      const g = gewinnHeute(f.kasse?.profitSincePayout);
+      t += `\n\nKasse: ${fmt(f.kasse?.balance)}\n` +
+        `Gewinn heute (seit 0 Uhr): **${g.ohneMessung ? 'mind. ' : ''}${fmt(g.summe)}**`;
+      if (g.abschoepfungen) {
+        t += `\n_${fmt(g.ausgeschuettet)} davon ausgeschüttet (aus dem System ` +
+          `heraus), ${fmt(g.behalten)} geblieben._`;
+      } else {
+        t += `\n_Heute noch nichts abgeschöpft._`;
+      }
+      return t;
+    },
+  },
+
+  lager: {
+    beschreibung: 'Wo fehlt Ware: Firmenlager und Zoohandlung',
+    oeffentlich: true,
+    async ausfuehren() {
+      // Beide Bestände in einer Antwort. Es ist eine Frage – „wo muss ich
+      // nachfüllen" –, und wer sie stellt, soll sich nicht zwischen zwei
+      // Befehlen entscheiden müssen.
+      const [firma, betrieb] = await Promise.all([lagerText(), betriebText()]);
+      return betrieb ? `${firma}\n\n${betrieb}` : firma;
+    },
+  },
+  zeiten: {
+    beschreibung: 'Wer ist online, wie lange war ich heute da',
+    oeffentlich: true,
+    async ausfuehren({ nutzer }) {
+      const st = load();
+      const online = Object.entries(st.spieler || {})
+        .filter(([, p]) => p.online).map(([n]) => n);
+
+      // Wer gerade spielt, darf jeder wissen – das steht ohnehin im Spiel.
+      // Wie lange wer da war, gehört in den Tagesbericht, nicht hierhin.
+      let t = online.length
+        ? `🟢 **Gerade online (${online.length}):** ${online.join(', ')}`
+        : '⚪ **Gerade ist niemand aus der Firma online.**';
+
+      // Der 12-Stunden-Zähler ist mit der Balance-Änderung bedeutungslos
+      // geworden: abgeschöpft wird jetzt stündlich, unabhängig von der
+      // Team-Onlinezeit. Was abgeflossen ist, zeigt /ausschuettung.
+      if (st.gewinn !== null) t += `\n\nGewinn bisher: ${fmt(st.gewinn)}`;
+      if (st.letzteAusschuettung) {
+        t += `\nLetzte Ausschüttung: ` +
+          new Date(st.letzteAusschuettung).toLocaleString('de-DE');
+      }
+
+      {
+        const meinName = ladeZuordnung()[nutzer.id];
+        if (meinName) {
+          const p = st.spieler[Object.keys(st.spieler || {})
+            .find(k => k.toLowerCase() === String(meinName).toLowerCase()) || ''];
+          t += p
+            ? `\n\n**Du (${meinName}):** heute ${dauer(p.gesamtMs || 0)}`
+            : `\n\n_Für **${meinName}** liegen heute noch keine Zeiten vor._`;
+        } else {
+          t += '\n\n_Für deine eigene Zeit muss dein Konto zugeordnet sein – ' +
+               'sag dem Inhaber Bescheid._';
+        }
+      }
+      return t;
+    },
+  },
+
+
+
+
+
+
+  ausschuettung: {
+    beschreibung: 'Wie viel Gewinn der Server abgeschöpft hat – heute, seit dem Neustart, an einem Tag',
+    oeffentlich: true,
+    optionen: [
+      { name: 'tag', description: 'Welcher Kalendertag? Leer = heute und seit dem Neustart',
+        type: 3, required: false, autocomplete: true },
+    ],
+
+    vorschlaege(feld, eingabe) {
+      if (feld !== 'tag') return [];
+      const e = String(eingabe || '').toLowerCase();
+      const heute = budgetTag();
+      const liste = [{ name: `heute (${tagKurz(heute)})`, value: heute }];
+      for (let i = 1; i <= 23; i++) {
+        const t = tagMinus(heute, i);
+        liste.push({ name: i === 1 ? `gestern (${tagKurz(t)})` : tagLang(t), value: t });
+      }
+      return liste
+        .filter(x => !e || x.name.toLowerCase().includes(e) || x.value.includes(e))
+        .slice(0, 25);
+    },
+
+    async ausfuehren({ optionen }) {
+      const fenster = (tag) => {
+        const [j, m, t] = tag.split('-').map(Number);
+        const von = new Date(j, m - 1, t).getTime();
+        return [von, von + 24 * 3_600_000];
+      };
+      const zeile = (z) => `**${fmt(z.summe)}** in ${z.anzahl} ` +
+        `${z.anzahl === 1 ? 'Ausschüttung' : 'Ausschüttungen'}` +
+        (z.anzahl > 1 ? ` · Schnitt ${fmt(z.schnitt)} · größte ${fmt(z.groesste)}` : '');
+
+      // Ein bestimmter Tag
+      if (optionen.tag) {
+        const tag = String(optionen.tag).trim();
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(tag)) {
+          return `❌ \`${tag}\` ist kein Datum. Erwartet wird JJJJ-MM-TT, ` +
+                 'oder du nimmst einen Vorschlag aus der Liste.';
+        }
+        const eintraege = ausschuettungenIm(...fenster(tag));
+        const z = ausschuettungSumme(eintraege);
+        if (!z.anzahl) return `_Am ${tagLang(tag)} wurde nichts ausgeschüttet._`;
+        return `💸 **Ausschüttungen am ${tagLang(tag)}**\n${zeile(z)}` +
+               bilanzText(eintraege);
+      }
+
+      // Ohne Angabe: heute und seit dem Neustart
+      const heute = budgetTag();
+      const heuteEin = ausschuettungenIm(...fenster(heute));
+      const h = ausschuettungSumme(heuteEin);
+      const seit = Date.now() - process.uptime() * 1000;
+      const n = ausschuettungSumme(ausschuettungenIm(seit, Date.now()));
+
+      let t = `💸 **Ausschüttungen**\n\n` +
+        `**Heute** (seit 0 Uhr): ${h.anzahl ? zeile(h) : '_noch nichts ausgeschüttet_'}\n` +
+        `**Seit dem Neustart** (vor ${dauer(Date.now() - seit)}): ` +
+        (n.anzahl ? zeile(n) : '_noch nichts_');
+
+      if (n.letzte) {
+        t += `\n\nZuletzt ${fmt(Math.abs(n.letzte.betrag))} um ${uhr(n.letzte.stamp)} Uhr.`;
+      }
+
+      t += bilanzText(heuteEin);
+
+      const archiv = alleTage();
+      if (!archiv.length) {
+        t += '\n\n_Das Archiv ist noch leer – gezählt wird ab jetzt._';
+      }
+      return t;
+    },
+  },
+
+  kasse: {
+    beschreibung: 'Kasse, Gewinn, Tagesbudget und die letzten Buchungen',
+    // Der Befehl selbst ist offen: der freie Betrag des Tagesbudgets war immer
+    // für alle da und soll es bleiben. Die Firmenzahlen darin hängen weiter am
+    // Schalter – so nimmt die Zusammenlegung niemandem etwas weg, in keiner
+    // Einstellung.
+    oeffentlich: true,
+    optionen: [
+      { name: 'aufschluesselung', description: 'Welche Buchungen zehren am Tagesbudget?',
+        type: 5, required: false },
+    ],
+    async ausfuehren({ optionen, oeffentlich }) {
+      const st = load();
+      const topf = auszahlungTopf(st);
+      let t = '';
+
+      // --- Tagesbudget: für alle ---
+      // Zwei Grenzen, nicht eine: 50.000 duerfen am Tag ueberhaupt raus,
+      // davon sind 20.000 steuerfrei. Wer nur die eine kennt, zahlt ueber dem
+      // Freibetrag 45 % drauf, ohne es zu merken.
+      if (!topf.limit) {
+        t += `**Heute ausgezahlt: ${fmt(topf.genutzt)}**\n` +
+          '_Es ist kein Tagesbudget eingestellt (`UC_AUSZAHLUNG_LIMIT`)._';
+      } else {
+        const anteil = Math.round(topf.genutzt / topf.limit * 100);
+        t += `**Tagesbudget – noch frei: ${fmt(topf.frei)}**\n` + balken(anteil) + '\n' +
+          `${fmt(topf.genutzt)} von ${fmt(topf.limit)} sind heute raus (${anteil} %).`;
+        if (!topf.frei) t += '\n🔴 Aufgebraucht.';
+        else if (anteil >= 80) t += '\n⚠️ Es wird knapp.';
+
+        // Der Freibetrag ist die Grenze, die wirklich Geld kostet.
+        const steuerfrei = Math.max(0, CFG.AUSZAHLUNG_FREI - topf.genutzt);
+        const g = Math.round(CFG.AUSZAHLUNG_GEBUEHR * 100);
+        const st = Math.round(CFG.AUSZAHLUNG_STEUER * 100);
+        t += steuerfrei
+          ? `\n\n💶 **Steuerfrei noch ${fmt(steuerfrei)}** von ${fmt(CFG.AUSZAHLUNG_FREI)}.\n` +
+            `_Davon gehen ${g} % Gebühr ab – du bekommst ${100 - g} %. ` +
+            `Darüber kommen ${st} % Steuer dazu, dann nur noch ` +
+            `${Math.round((1 - CFG.AUSZAHLUNG_STEUER) * (1 - CFG.AUSZAHLUNG_GEBUEHR) * 100)} %._`
+          : `\n\n⚠️ **Der Freibetrag von ${fmt(CFG.AUSZAHLUNG_FREI)} ist ausgeschöpft.**\n` +
+            `_Jeder weitere Dollar bringt nur noch ` +
+            `${Math.round((1 - CFG.AUSZAHLUNG_STEUER) * (1 - CFG.AUSZAHLUNG_GEBUEHR) * 100)} Cent ` +
+            `(${st} % Steuer, ${g} % Gebühr). Morgen auszahlen lohnt sich mehr._`;
+
+        t += `\n_Beides setzt sich täglich um ` +
+          `${String(CFG.AUSZAHLUNG_RESET_STD).padStart(2, '0')}:00 Uhr zurück._`;
+      }
+
+      // Von Haus aus nur die Summe: wer wann wie viel gezogen hat, ist für die
+      // Frage „wie viel geht noch" ohne Belang. Auf Wunsch die Aufschlüsselung,
+      // damit prüfbar ist, was gezählt wurde.
+      if (optionen.aufschluesselung) {
+        if (oeffentlich) {
+          // In der Aufschlüsselung stehen die Buchungstexte und damit Namen.
+          // Summen und Kategorien dürfen im Kanal stehen, Namen nicht.
+          t += '\n\n_Die Aufschlüsselung kommt nur in einer privaten Antwort – ' +
+               'in ihr stehen Namen. Frag außerhalb des Befehlskanals._';
+        } else if (!topf.buchungen.length) {
+          t += '\n\n_Heute wurde noch keine Auszahlung verbucht._';
+        } else {
+          t += '\n' + freibetragListe(topf.buchungen);
+        }
+      }
+
+      // --- Firmenzahlen ---
+      try {
+        const f = await firmaFrisch();
+        t += `\n\n**Kasse:** ${fmt(f.kasse?.balance)}\n` +
+          `Gewinn heute (seit 0 Uhr): ${(() => {
+            const g = gewinnHeute(f.kasse?.profitSincePayout);
+            return `${g.ohneMessung ? 'mind. ' : ''}${fmt(g.summe)}` +
+              (g.abschoepfungen
+                ? ` · davon ${fmt(g.ausgeschuettet)} ausgeschüttet, ` +
+                  `${fmt(g.behalten)} geblieben`
+                : '');
+          })()}`;
+        try {
+          const l = await ledgerFrisch(f.id);
+          const letzte = (l.entries || []).slice(-5).reverse()
+            .map(b => `${new Date(b.stamp).toLocaleTimeString('de-DE').slice(0, 5)} ` +
+                      `${sauber(b.category).padEnd(20).slice(0, 20)} ${fmt(b.amount).padStart(14)}`);
+          if (letzte.length) t += '\n\n**Letzte Buchungen**\n' + tabelle(letzte);
+        } catch (e) { t += `\n\n_Kassenbuch nicht abrufbar: ${e.message}_`; }
+      } catch (e) {
+        t += `\n\n_Kasse nicht abrufbar: ${e.message}_`;
+      }
+      return t;
+    },
+  },
+
+
+  tagesbericht: {
+    beschreibung: 'Onlinezeiten eines Spieltags – oder mehrerer, mit Vergleich',
+    oeffentlich: true,
+    optionen: [
+      { name: 'tag', description: 'Welcher Spieltag? Leer = heute',
+        type: 3, required: false, autocomplete: true },
+      { name: 'tage', description: 'Statt eines Tages: die letzten n Spieltage mit Vergleich',
+        type: 4, required: false, min_value: 2, max_value: 90 },
+    ],
+
+    // Vorgeschlagen wird, was auch wirklich im Archiv liegt – so kann man
+    // keinen Tag auswählen, für den es nichts zu zeigen gibt.
+    vorschlaege(feld, eingabe) {
+      if (feld !== 'tag') return [];
+      const e = String(eingabe || '').toLowerCase();
+      const heute = spieltag();
+      const namen = [
+        { name: `heute (${tagKurz(heute)})`, value: heute },
+        { name: `gestern (${tagKurz(tagMinus(heute, 1))})`, value: tagMinus(heute, 1) },
+        ...alleTage().reverse().slice(0, 23)
+          .map(t => ({ name: tagLang(t), value: t })),
+      ];
+      // Doppelte entfernen: heute und gestern stehen auch im Archiv.
+      const gesehen = new Set();
+      return namen.filter(x => !gesehen.has(x.value) && gesehen.add(x.value))
+        .filter(x => !e || x.name.toLowerCase().includes(e) || x.value.includes(e))
+        .slice(0, 25);
+    },
+
+    async ausfuehren({ optionen }) {
+      // Mit tage: die Übersicht über mehrere Spieltage – derselbe Bestand,
+      // nur anders zusammengefasst. Früher war das ein eigener Befehl.
+      if (optionen.tage) return zeitraumText(optionen.tage);
+
+      const heute = spieltag();
+      const tag = String(optionen.tag || heute).trim() || heute;
+
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(tag)) {
+        return `❌ \`${tag}\` ist kein Spieltag. Erwartet wird JJJJ-MM-TT, ` +
+               'oder du nimmst einen Vorschlag aus der Liste.';
+      }
+
+      // Der heutige Tag läuft noch: erst den aktuellen Stand nachtragen,
+      // damit die Antwort nicht eine Minute hinterherhinkt.
+      if (tag === heute) {
+        const st = load();
+        merkeZeiten(st.tag, st.spieler, st.firmaTagMs);
+      }
+
+      const e = holeTag(tag);
+      if (!e) {
+        const da = alleTage();
+        return `_Für den Spieltag ${tagLang(tag)} liegen keine Zahlen vor._` +
+          (da.length ? `\nVorhanden: ${tagLang(da[0])} bis ${tagLang(da[da.length - 1])}.`
+                     : '\nDas Archiv ist noch leer.');
+      }
+
+      const online = tag === heute ? load().spieler || {} : {};
+      const zeilen = Object.entries(e.spieler)
+        .sort((a, b) => (b[1].ms || 0) - (a[1].ms || 0))
+        .map(([name, p]) => `${online[name]?.online ? '🟢' : '⚪'} ${name.padEnd(18)} ` +
+          `${dauer(p.ms || 0).padStart(14)}  ${p.rolle || ''}`);
+      const gesamt = Object.values(e.spieler).reduce((n, p) => n + (p.ms || 0), 0);
+
+      let t = `**Spieltag ${tagLang(tag)}** (04:00 bis 04:00)` +
+        (tag === heute ? ' _– läuft noch_' : '') + '\n' + tabelle(zeilen) +
+        `\nSumme: ${dauer(gesamt)} · Firma gelaufen: ${dauer(e.firmaMs)}`;
+      if (e.ausschuettungen.length) {
+        const betrag = e.ausschuettungen.reduce((a, x) => a + (x.betrag || 0), 0);
+        t += `\nAusschüttungen: ${e.ausschuettungen.length} über ${fmt(betrag)}`;
+      }
+      return t;
+    },
+  },
+
+
+
+  watcher: {
+    beschreibung: 'Läuft der Watcher, und wie viel Rechenleistung belegt er',
+    verbergen: CFG.BEFEHLE_VERBERGEN,
+    nurChef: true,
+    async ausfuehren() {
+      const st = load();
+      const r = rechenlast();
+
+      const einschaetzung =
+        r.anteilMaschine < 1 ? 'praktisch nichts'
+        : r.anteilMaschine < 5 ? 'wenig'
+        : r.anteilMaschine < 25 ? 'spürbar'
+        : 'viel';
+
+      return `**Watcher läuft** seit ${dauer(r.laufzeitS * 1000)}\n` +
+        `Intervall: ${CFG.INTERVALL_MS / 1000}s\n` +
+        `Token gültig bis: ${zugang.exp ? new Date(zugang.exp).toLocaleTimeString('de-DE') : 'unbekannt'}\n` +
+        `UnicaCity erreichbar: ${st.apiWegSeit ? `nein, seit ${dauer(Date.now() - st.apiWegSeit)}` : 'ja'}\n` +
+        `Wiki-Artikel bekannt: ${Object.keys(st.wiki || {}).length}\n` +
+        zeitkontoText(st) + '\n' +
+
+        `**Rechenlast** (${r.kerne} ${r.kerne === 1 ? 'Kern' : 'Kerne'})\n` +
+        `Der Watcher: ${zahl(r.anteilMaschine, 2)} % der Maschine ` +
+        `(${zahl(r.anteilKern, 1)} % eines Kerns) – ${einschaetzung}.\n` +
+        `Verbrauchte Rechenzeit: ${dauer(r.cpuSekunden * 1000)} in ${dauer(r.laufzeitS * 1000)}\n` +
+        `Arbeitsspeicher: ${zahl(r.rssMB, 0)} MB von ${zahl(r.ramGesamtMB / 1024, 1)} GB\n` +
+        `Systemlast: ${zahl(r.last[0], 2)} / ${zahl(r.last[1], 2)} / ${zahl(r.last[2], 2)} ` +
+        `(1/5/15 Min)` +
+        (r.lastProKern > 1
+          ? `\n⚠️ Über ${zahl(r.lastProKern, 1)} Aufgaben je Kern – der Server ist ausgelastet, ` +
+            'aber nicht unbedingt durch den Watcher.'
+          : '');
+    },
+  },
+
+  zuordnen: {
+    beschreibung: 'Ein Discord-Konto einem UnicaCity-Namen zuordnen',
+    verbergen: CFG.BEFEHLE_VERBERGEN,
+    nurChef: true,
+    optionen: [
+      { name: 'nutzer', description: 'Wen im Discord?', type: 6, required: false },
+      { name: 'name', description: 'Wie heißt die Person in UnicaCity?', type: 3, required: false },
+      { name: 'entfernen', description: 'Die Zuordnung dieser Person löschen', type: 5, required: false },
+    ],
+
+    async ausfuehren({ optionen }) {
+      const zuordnung = { ...zuordnungEigen() };
+      const ausEnv = ladeZuordnung();
+      const st = load();
+      const spieler = st.spieler || {};
+      const istOnline = (n) => Object.entries(spieler)
+        .find(([k]) => k.toLowerCase() === String(n).toLowerCase())?.[1]?.online;
+
+      // Ohne Angaben: zeigen, was zugeordnet ist.
+      if (!optionen.nutzer) {
+        const alle = Object.entries(ausEnv);
+        if (!alle.length) {
+          return '_Noch niemand zugeordnet._\n\n' +
+            'Zuordnen mit `/zuordnen nutzer:@Name name:UC-Name`. Danach kannst du ' +
+            'Meldungen so einstellen, dass nur angepingt wird, wer gerade spielt: ' +
+            '`/melden thema:… ping:nur wer gerade ingame online ist`';
+        }
+        const zeilen = alle.map(([id, name]) => {
+          const on = istOnline(name);
+          const woher = zuordnung[id] ? '' : ' _(aus der .env)_';
+          return `${on ? '🟢' : on === false ? '⚪' : '·'} <@${id}> → **${name}**${woher}`;
+        });
+        return `**Zuordnungen** (${alle.length})\n` + zeilen.join('\n') +
+          '\n\n🟢 spielt gerade · ⚪ offline · · dem Watcher noch nicht begegnet';
+      }
+
+      const id = String(optionen.nutzer);
+
+      if (optionen.entfernen) {
+        if (!zuordnung[id]) {
+          return ausEnv[id]
+            ? `<@${id}> steht in \`UC_DISCORD_SPIELER\` in der .env – das kann ich ` +
+              'hier nicht löschen. Entweder dort entfernen, oder mit ' +
+              '`/zuordnen` einen anderen Namen setzen, der sie überschreibt.'
+            : `Für <@${id}> war nichts eingetragen.`;
+        }
+        const weg = zuordnung[id];
+        delete zuordnung[id];
+        speichereZuordnung(zuordnung);
+        return `✅ Zuordnung von <@${id}> zu **${weg}** entfernt.`;
+      }
+
+      // Nur den Nutzer genannt: dessen Eintrag zeigen.
+      if (!optionen.name) {
+        return ausEnv[id]
+          ? `<@${id}> → **${ausEnv[id]}**${istOnline(ausEnv[id]) ? ' (spielt gerade)' : ''}`
+          : `Für <@${id}> ist nichts eingetragen.\n\n` +
+            '_Setzen mit `/zuordnen nutzer:… name:UC-Name`._';
+      }
+
+      const name = optionen.name.trim();
+      if (!name) return '❌ Der Name ist leer.';
+
+      // Denselben Namen zweimal zu vergeben wäre ein Tippfehler, kein Wunsch.
+      const schonVergeben = Object.entries(ausEnv)
+        .find(([anderer, n]) => anderer !== id && String(n).toLowerCase() === name.toLowerCase());
+      if (schonVergeben) {
+        return `❌ **${name}** ist schon <@${schonVergeben[0]}> zugeordnet. ` +
+          'Erst dort entfernen (`/zuordnen nutzer:… entfernen:True`), dann neu setzen.';
+      }
+
+      const vorher = zuordnung[id];
+      zuordnung[id] = name;
+      speichereZuordnung(zuordnung);
+
+      let t = vorher && vorher !== name
+        ? `✅ <@${id}> → **${name}** (vorher ${vorher})`
+        : `✅ <@${id}> → **${name}**`;
+
+      // Der Watcher kennt nur Namen, die er im Team schon gesehen hat. Ein
+      // unbekannter Name ist meist ein Tippfehler – aber nicht immer, bei einer
+      // Neueinstellung ist er einfach noch nicht aufgetaucht.
+      const bekannt = Object.keys(spieler).find(k => k.toLowerCase() === name.toLowerCase());
+      if (!bekannt) {
+        t += '\n\n⚠️ Diesen Namen hat der Watcher im Team noch nicht gesehen. ' +
+             'Prüfe die Schreibweise – oder ignoriere den Hinweis, wenn die Person ' +
+             'gerade erst eingestellt wurde.';
+        const aehnlich = Object.keys(spieler)
+          .filter(k => k.toLowerCase().startsWith(name.slice(0, 3).toLowerCase()))
+          .slice(0, 5);
+        if (aehnlich.length) t += `\nIm Team gibt es: ${aehnlich.join(', ')}`;
+      } else if (spieler[bekannt].online) {
+        t += '\n\nSpielt gerade – wird bei „nur wer online ist" also angepingt.';
+      }
+      return t + '\n\n_Gilt sofort, auch nach einem Neustart._';
+    },
+  },
+
+  testvorfall: {
+    beschreibung: 'Einen Vorfall vortäuschen, um Kanal und Ping zu prüfen',
+    verbergen: CFG.BEFEHLE_VERBERGEN,
+    nurChef: true,
+    optionen: [
+      { name: 'art', description: 'Welche Vorfallsart soll geprüft werden?',
+        type: 3, required: false, autocomplete: true },
+    ],
+
+    // Eigene Liste, seit /melden keine Optionen mehr hat: gesehene Arten mit
+    // der Zahl der Sichtungen, dann die, für die eine Regel besteht, dann die
+    // Startliste. Getipptes wird immer angeboten.
+    vorschlaege(feld, eingabe) {
+      if (feld !== 'art') return [];
+      const gesehen = load().vorfallArten || {};
+      const ausRegeln = Object.keys(ladeRegeln())
+        .filter(k => k.startsWith('event_') && k !== 'event_')
+        .map(k => k.slice('event_'.length));
+
+      const such = artSchluessel(eingabe || '');
+      const arten = [...new Set([...Object.keys(gesehen), ...ausRegeln, ...VORFALL_BEKANNT])]
+        .filter(a => !such || a.includes(such))
+        .sort((a, b) => (gesehen[b]?.zuletzt || 0) - (gesehen[a]?.zuletzt || 0));
+
+      const liste = arten.map(a => ({
+        name: (gesehen[a] ? `${a} (${gesehen[a].anzahl}× gesehen)`
+              : ausRegeln.includes(a) ? `${a} (eingestellt)`
+              : `${a} (Startliste)`).slice(0, 100),
+        value: a,
+      }));
+
+      // Der Watcher kennt nur Arten, die er selbst gesehen hat – ohne das wäre
+      // das Feld vor dem ersten Vorfall kaum brauchbar.
+      if (such && !arten.includes(such)) liste.unshift({ name: `${such} (eingetippt)`, value: such });
+      return liste.slice(0, 25);
+    },
+
+    async ausfuehren({ optionen }) {
+      const art = artSchluessel(optionen.art || 'ABWERBUNG');
+
+      // Ein echtes Ereignis nachbauen, damit Schlüssel, Regel und Ping genau
+      // so bestimmt werden wie im Ernstfall. Nur der Inhalt sagt, dass es
+      // eine Probe ist – niemand soll wegen einer Übung in Panik geraten.
+      const ereignis = {
+        type: art,
+        name: `Probe: ${art}`,
+        description: 'Das ist ein Testvorfall des Watchers. Es ist nichts passiert.',
+        minutesLeft: 10,
+      };
+
+      const state = load();
+      // Den Schlüssel auf einem eigenen, leeren Zustand bilden: sonst würde
+      // die Probe den gerade offenen echten Vorfall verdrängen und dessen
+      // Erinnerungen abreißen.
+      const schluessel = vorfallSchluessel({ offenerVorfall: null, vorfallLauf: 0 },
+                                           ereignis);
+      const regel = empfaenger(schluessel, ladeRegeln());
+
+      // Die Sperre gegen Wiederholungen darf eine Probe nicht verschlucken.
+      delete state.lastPush[schluessel];
+
+      const gepingt = regel.ping === 'online' ? onlineDiscordIds(state) : [];
+
+      const knopf = erledigtKnopf(schluessel);
+      await push(schluessel, '🧪 Testvorfall (keine echte Meldung)',
+        ereignisText(ereignis) +
+        '\n\nWenn du das siehst, kommen Vorfälle hier an.',
+        state, 'urgent', { knopf });
+      // Bewusst nicht speichern: eine Probe soll den Zustand nicht verändern.
+
+      // Bericht, damit man nicht raten muss, was passiert ist.
+      let t = `✅ Testvorfall **${art}** verschickt.\n\n` +
+        `**Regel:** ${regelText(regel)}`;
+
+      if (regel.ziel === 'aus') {
+        t += '\n\n⚠️ Diese Art ist abgeschaltet – es wurde nichts verschickt.';
+        return t;
+      }
+
+      if (regel.ping === 'online') {
+        const zuordnung = ladeZuordnung();
+        const online = Object.entries(state.spieler || {})
+          .filter(([, p]) => p.online).map(([n]) => n);
+        t += `\n\n**Ping:** ${gepingt.length} Konto${gepingt.length === 1 ? '' : 'en'}`;
+        if (gepingt.length) {
+          t += ` – ${gepingt.map(id => `<@${id}>`).join(', ')}`;
+        } else if (!online.length) {
+          t += '\n⚠️ Gerade ist niemand aus der Firma ingame online – deshalb ' +
+               'wurde niemand gepingt. Das ist richtig so, sagt aber nichts ' +
+               'darüber, ob die Zuordnung stimmt.';
+        } else if (!Object.keys(zuordnung).length) {
+          t += '\n⚠️ Online sind: ' + online.join(', ') + ' – aber **niemand ist ' +
+               'zugeordnet**. Mit `/zuordnen nutzer:… name:…` nachholen, sonst ' +
+               'pingt diese Einstellung nie.';
+        } else {
+          t += '\n⚠️ Online sind: ' + online.join(', ') + ' – davon ist keiner ' +
+               'einem Discord-Konto zugeordnet. `/zuordnen` prüfen, die ' +
+               'Schreibweise der Namen muss passen.';
+        }
+      } else if (regel.ping && regel.ping !== 'keiner') {
+        t += '\n\n**Ping:** ' + (regel.ping === 'everyone' ? '@everyone'
+          : regel.ping === 'here' ? '@here' : `<@&${regel.ping}>`) +
+          '\nKam er nicht an, fehlt dem Bot im Kanal das Recht „Everyone erwähnen".';
+      } else {
+        t += '\n\n**Ping:** keiner – so ist es eingestellt.';
+      }
+
+      t += knopf
+        ? '\n\n**Knopf:** „Ich kümmere mich" hängt an der Meldung. Ein Druck ' +
+          'zeigt dem Team, dass jemand dran ist' +
+          (regel.erinnerung
+            ? ` – und beendet die Erinnerungen (alle ${ERINNERUNG_MIN} Min.) für diesen Vorfall.`
+            : '. Nachfassen ist für diese Art aus, es gibt also nichts zu beenden.')
+        : '\n\n**Knopf:** keiner – dieser Vorfall ist schon übernommen.';
+
+      return t + '\n\n_Die Probe verändert nichts: keine Erinnerung, keine ' +
+        'gespeicherte Sperre, kein Eintrag in den Vorfallsarten._';
+    },
+  },
+
+  melden: {
+    beschreibung: 'Die Schaltzentrale aufstellen: welche Meldung wohin geht',
+    verbergen: CFG.BEFEHLE_VERBERGEN,
+    nurChef: true,
+
+    async ausfuehren({ kanal }) {
+      // Die Tafel geht in den Kanal, in dem der Befehl benutzt wurde – dort
+      // will man sie ja anpinnen.
+      if (!kanal) {
+        return '❌ Das geht nur in einem Kanal, nicht in einer DM – die ' +
+               'Schaltzentrale ist eine Nachricht, die stehen bleibt.';
+      }
+      try {
+        const m = await tafelSenden(kanal, ztUebersicht());
+        return '🎛️ Die Schaltzentrale steht jetzt in diesem Kanal.\n\n' +
+          '**Pinne sie an**, dann findest du sie immer wieder: Rechtsklick auf ' +
+          'die Nachricht → Anpinnen. Sie funktioniert dauerhaft, auch nach einem ' +
+          'Neustart des Watchers.' +
+          (m?.id ? `\n\n_Falls du sie doch verlierst: einfach nochmal /melden._` : '');
+      } catch (e) {
+        // 50013 heißt: der Kanal selbst verbietet es. Die serverweite Rolle
+        // reicht dann nicht – die Sperre des Kanals überschreibt sie.
+        if (/50013|403/.test(e.message)) {
+          return `❌ Der Bot darf in <#${kanal}> nicht schreiben.\n\n` +
+            '**So gibst du ihm das Recht:** Rechtsklick auf den Kanal → ' +
+            '*Kanal bearbeiten* → *Berechtigungen* → bei **Rollen/Mitglieder** ' +
+            'auf **+**, die Rolle des Bots wählen und diese drei auf ✓ stellen:\n' +
+            '• Kanal ansehen\n• Nachrichten senden\n• Links einbetten\n\n' +
+            'Am Handy: Kanal lange drücken → *Bearbeiten* → *Berechtigungen*.\n\n' +
+            '_Bei einem gesperrten Kanal reicht die serverweite Rolle nicht – ' +
+            'die Sperre des Kanals überschreibt sie._\n' +
+            'Oder du rufst `/melden` einfach in einem anderen Kanal auf.';
+        }
+        return `❌ Die Schaltzentrale ließ sich nicht aufstellen: ${e.message}`;
+      }
+    },
+  },
+  hilfe: {
+    beschreibung: 'Welche Befehle es gibt',
+    async ausfuehren({ istChef, darf }) {
+      const erlaubt = Object.entries(BEFEHLE)
+        .filter(([, b]) => !b.nurChef || istChef);
+      const gesperrt = Object.keys(BEFEHLE).length - erlaubt.length;
+      return '**Befehle des UC-Watchers**\n' +
+        erlaubt.map(([name, b]) => `/${name} – ${b.beschreibung}`).join('\n') +
+        (gesperrt && !istChef
+          ? `\n\n_${gesperrt} weitere sind dem Firmeninhaber vorbehalten._`
+          : '');
+    },
+  },
+};
+
+/* ========================= START ========================= */
+
+const args = process.argv.slice(2);
+
+if (args.includes('--zeiten')) {
+  const s = load(); const rows = {};
+  for (const [name, p] of Object.entries(s.spieler)) {
+    rows[name] = {
+      Rolle: p.rolle || '', Status: p.online ? 'online' : 'offline',
+      Sitzung: p.online ? dauer(Date.now() - p.seit) : dauer(p.sitzungMs),
+      Heute: dauer(p.gesamtMs),
+      Zuletzt: p.zuletzt ? new Date(p.zuletzt).toLocaleString('de-DE') : '–',
+    };
+  }
+  console.table(rows); process.exit(0);
+}
+
+if (args.includes('--tagesbericht')) {
+  const s = load();
+  merkeZeiten(s.tag, s.spieler, s.firmaTagMs);       // den laufenden Tag nachtragen
+  const i = args.indexOf('--tagesbericht');
+  const tag = (args[i + 1] && !args[i + 1].startsWith('--')) ? args[i + 1] : spieltag();
+  console.log(tagesText(tag));
+  process.exit(0);
+}
+
+if (args.includes('--woche')) {
+  const s = load();
+  merkeZeiten(s.tag, s.spieler, s.firmaTagMs);
+  const i = args.indexOf('--woche');
+  const n = +args[i + 1] > 1 ? +args[i + 1] : 7;
+  const v = vergleich(n);
+  if (!v.jetzt.tage) { console.log('Das Archiv ist noch leer.'); process.exit(0); }
+  console.log(`Letzte ${v.jetzt.tage} Spieltage (${v.jetzt.von} bis ${v.jetzt.bis})`);
+  console.table(Object.fromEntries(v.spieler.map(p => [p.name, {
+    Rolle: p.rolle, Gesamt: dauer(p.ms), Tage: p.tage,
+    'Schnitt/Tag': dauer(p.schnitt),
+    ...(v.davor.tage
+      ? { Veraenderung: (p.diff >= 0 ? '+' : '-') + dauer(Math.abs(p.diff)) }
+      : {}),
+  }])));
+  console.log('Summe:', dauer(v.jetzt.gesamtMs),
+              '· Firma gelaufen:', dauer(v.jetzt.firmaMs),
+              v.davor.tage ? `· gegenüber davor: ${v.gesamtMs >= 0 ? '+' : '-'}${dauer(Math.abs(v.gesamtMs))}` : '');
+  process.exit(0);
+}
+
+if (args.includes('--freibetrag')) {
+  const s = load();
+  const topf = auszahlungTopf(s);
+  console.log(`Freibetrag ${topf.tag} (0-24 Uhr)`);
+  console.log(`  Gezählt:  ${fmt(topf.genutzt)} von ${fmt(topf.limit)}`);
+  console.log(`  Frei:     ${fmt(topf.frei)}\n`);
+  if (!topf.buchungen.length) {
+    console.log('Heute wurde noch keine passende Buchung gesehen.');
+  } else {
+    console.table(Object.fromEntries(topf.buchungen.map((b, i) => [i + 1, {
+      Zeit: new Date(b.stamp).toLocaleString('de-DE'),
+      Kategorie: b.kategorie,
+      Betrag: fmt(b.betrag),
+      Gezaehlt: b.gezaehlt === false ? 'nein' : 'ja',
+      Grund: b.grund || '',
+      Text: String(b.detail || '').slice(0, 40),
+    }])));
+  }
+  const g = s.auszahlungGestern;
+  if (g) {
+    console.log(`\nVortag ${g.tag}: ${fmt(g.genutzt)} von ${fmt(g.limit)} genutzt` +
+                ` (${(g.buchungen || []).length} Buchungen vermerkt)`);
+  }
+  console.log('\nGezählt wird eine Buchung, deren Kategorie eines dieser Wörter ' +
+              'enthält:\n  ' + AUSZAHLUNG_KATEGORIEN.join(', ') +
+              '\nÜbergangen wird sie, wenn Kategorie oder Text eines dieser ' +
+              'Wörter enthält:\n  ' + AUSZAHLUNG_AUSNAHMEN.join(', ') +
+              '\nAnpassen mit UC_AUSZAHLUNG_KATEGORIEN bzw. UC_AUSZAHLUNG_AUSNAHMEN.');
+  process.exit(0);
+}
+
+if (args.includes('--archiv')) {
+  const s = load();
+  merkeZeiten(s.tag, s.spieler, s.firmaTagMs);
+  const tage = holeTage();
+  console.log('Archiv:', archivDatei(), archivAktiv() ? '' : '(abgeschaltet)');
+  console.log('Der laufende Spieltag ist eingerechnet, aber nicht geschrieben – ' +
+              'das macht nur der Dienst selbst.\n');
+  if (!tage.length) { console.log('Noch keine Spieltage erfasst.'); process.exit(0); }
+  console.table(Object.fromEntries(tage.map(t => [t.tag, {
+    Spieler: Object.keys(t.spieler).length,
+    Summe: dauer(Object.values(t.spieler).reduce((a, p) => a + (p.ms || 0), 0)),
+    'Firma gelaufen': dauer(t.firmaMs),
+    Ausschuettungen: t.ausschuettungen.length,
+    Freibetrag: t.auszahlung?.summe ? fmt(t.auszahlung.summe) : '-',
+  }])));
+  process.exit(0);
+}
+
+if (args.includes('--ausschuettung')) { console.table(ausschuettungStand(load())); process.exit(0); }
+
+// Die einzelnen erfassten Ausschüttungen eines Tages, mit Uhrzeit und Betrag.
+// Gebaut, weil die Tagessumme nicht zur Stundengrenze passte: an der Summe
+// allein lässt sich nicht erkennen, ob zu viele Einträge drinstehen oder zu
+// große.
+if (args.includes('--ausschuettung-liste')) {
+  const i = args.indexOf('--ausschuettung-liste');
+  const tag = (args[i + 1] && !args[i + 1].startsWith('--')) ? args[i + 1] : budgetTag();
+  const [j, m, t] = tag.split('-').map(Number);
+  const von = new Date(j, m - 1, t).getTime();
+  const liste = ausschuettungenIm(von, von + 24 * 3_600_000);
+  console.log(`Erfasste Ausschüttungen am ${tag} (0–24 Uhr):`);
+  if (!liste.length) { console.log('keine'); process.exit(0); }
+  console.table(liste.map((a, n) => ({
+    Nr: n + 1,
+    Uhrzeit: new Date(a.stamp).toLocaleTimeString('de-DE'),
+    Richtung: a.betrag >= 0 ? 'erhalten' : 'ausgeschüttet',
+    Ausgeschuettet: fmt(Math.abs(a.betrag)),
+    // Die gewürfelte Grenze dieser Stunde, aus dem Buchungstext gelesen.
+    Grenze: Number.isFinite(a.grenze) ? fmt(a.grenze) : 'nicht im Text',
+    Kasse: Number.isFinite(a.kassenstand) ? fmt(a.kassenstand) : '?',
+    // Der rohe Gewinnzähler. Nur zum Ansehen: er läuft über die Abschöpfung
+    // hinweg weiter, taugt also für keine Summe. Vielleicht lässt sich an der
+    // Spalte ablesen, wann er zurückgesetzt wird.
+    Zaehler: Number.isFinite(a.gewinnZaehler) ? fmt(a.gewinnZaehler)
+      : Number.isFinite(a.gewinnVorher) ? fmt(a.gewinnVorher) : '?',
+  })));
+  console.log('');
+  console.table(ausschuettungBilanz(liste));
+  if (liste.some(a => a.betrag < 0 && !Number.isFinite(a.grenze))) {
+    console.log('\nFür mindestens eine Stunde fehlt die Grenze. ' +
+                '--ausschuettung-texte zeigt, was im Buchungstext steht.');
+  }
+  process.exit(0);
+}
+
+// Die rohen Buchungstexte der Ausschüttungen – und was der Leser daraus macht.
+//
+// Die gewürfelte Stundengrenze ist nur hier zu holen: aus dem Gewinnzähler
+// lässt sie sich nicht rechnen. Ändert das Spiel die Formulierung, fällt die
+// Messung still aus, und dann zeigt dieser Befehl, woran es liegt. Ohne ihn
+// wäre die nächste Fehlersuche wieder Raten.
+if (args.includes('--ausschuettung-texte')) {
+  const i = args.indexOf('--ausschuettung-texte');
+  const tag = (args[i + 1] && !args[i + 1].startsWith('--')) ? args[i + 1] : budgetTag();
+  const [j, m, t] = tag.split('-').map(Number);
+  const von = new Date(j, m - 1, t).getTime();
+  const liste = ausschuettungenIm(von, von + 24 * 3_600_000);
+  console.log(`Buchungstexte der Ausschüttungen am ${tag}:`);
+  if (!liste.length) { console.log('keine'); process.exit(0); }
+  console.table(liste.map((a, n) => ({
+    Nr: n + 1,
+    Uhrzeit: new Date(a.stamp).toLocaleTimeString('de-DE'),
+    Betrag: fmt(a.betrag),
+    Text: a.detail || '(nicht gespeichert)',
+    // Zweimal getrennt: was beim Erfassen gelesen wurde, und was der Leser
+    // heute aus demselben Text macht. Läuft eine Änderung am Leser schief,
+    // fällt es hier auf, ohne dass ein Tag Daten verloren geht.
+    Gelesen: Number.isFinite(a.grenze) ? fmt(a.grenze) : '–',
+    Jetzt: (() => { const g = grenzeAusText(a.detail); return g === null ? '–' : fmt(g); })(),
+  })));
+  const ohne = liste.filter(a => a.betrag < 0 && !a.detail).length;
+  if (ohne) {
+    console.log(`\n${ohne} Einträge stammen aus der Zeit vor dieser Fassung – ` +
+                'dort wurde der Text noch nicht mitgeschrieben. ' +
+                'Ab jetzt steht er dabei.');
+  }
+  process.exit(0);
+}
+
+// Das rohe Kassenbuch, nach Kategorie gruppiert. Zeigt, unter welchem Namen
+// das Spiel die stündliche Abschöpfung wirklich verbucht – und was der
+// Watcher daraus macht.
+// Einmalige Korrektur der Alt-Einträge: bis zur Vorzeichen-Korrektur wurde
+// jeder Betrag positiv gespeichert. Ohne --ja wird nur gerechnet – und das
+// sollte man auch erst tun: Zuflüsse unter derselben Kategorie gibt es
+// wirklich, und einer ohne Kassenstand würde hier mit umgedreht.
+if (args.includes('--archiv-vorzeichen')) {
+  const schreiben = args.includes('--ja');
+  const r = vorzeichenKorrektur({ schreiben });
+  if (!r.anzahl) {
+    console.log('Keine Alt-Einträge gefunden – es gibt nichts zu korrigieren.');
+    process.exit(0);
+  }
+  console.log(`${r.anzahl} Einträge aus der Zeit vor der Korrektur ` +
+              `(positiv gespeichert, ohne Kassenstand), zusammen ${fmt(r.summe)}:`);
+  console.table(r.eintraege.map(x => ({
+    Tag: x.tag,
+    Uhrzeit: new Date(x.stamp).toLocaleTimeString('de-DE'),
+    Bisher: fmt(x.vorher),
+    Neu: fmt(-x.vorher),
+  })));
+  console.log(r.geschrieben
+    ? '\n✅ Geschrieben. Die Einträge zählen jetzt als Abfluss.'
+    : '\n⚠️  Nichts geändert – und erst prüfen, dann schreiben.\n' +
+      'Zuflüsse unter derselben Kategorie gibt es wirklich. Fehlt einem der\n' +
+      'Kassenstand, wird er hier mit umgedreht und zählt danach falsch.\n' +
+      'Sieh die Liste oben durch: gehören diese Beträge in den Abfluss?\n\n' +
+      'Wenn ja:\n' +
+      '  node --env-file=.env watcher.mjs --archiv-vorzeichen --ja');
+  process.exit(0);
+}
+
+if (args.includes('--buchungen')) {
+  try {
+    // Den gespeicherten Zugang laden, nicht nur die Umgebung lesen: der Dienst
+    // bekommt sein Cookie aus der Unit, nicht aus .env – ohne das hier scheitert
+    // jeder Abruf von der Kommandozeile mit KEIN_COOKIE, obwohl der Watcher
+    // läuft.
+    const s0 = load(); ladeZugang(s0);
+    const f = (await holeFirma()).company;
+    sichereZugang(s0); save(s0);
+    const l = await holeLedger(f.id);
+    const alle = (l.entries || []).slice().sort((a, b) => a.stamp - b.stamp);
+    console.log(`Kassenbuch der Firma ${f.name}: ${alle.length} Buchungen\n`);
+    console.table(alle.map(b => {
+      const kat = sauber(b.category).toLowerCase();
+      const ausschuettung = kat.includes('ausschütt') || kat.includes('ausschuett');
+      const w = zaehltGegenFreibetrag(kat, sauber(b.detail));
+      return {
+        Uhrzeit: new Date(b.stamp).toLocaleString('de-DE'),
+        Kategorie: sauber(b.category),
+        Text: sauber(b.detail).slice(0, 30),
+        Betrag: fmt(b.amount),
+        'Als Ausschüttung': ausschuettung ? 'JA' : '',
+        'Zählt am Limit': w.zaehlt ? 'JA' : (w.grund || ''),
+      };
+    }));
+    const je = {};
+    for (const b of alle) {
+      const k = sauber(b.category) || '(leer)';
+      je[k] = je[k] || { Anzahl: 0, Summe: 0 };
+      je[k].Anzahl++;
+      je[k].Summe += Math.abs(b.amount || 0);
+    }
+    console.log('\nNach Kategorie:');
+    console.table(Object.fromEntries(Object.entries(je)
+      .map(([k, v]) => [k, { Anzahl: v.Anzahl, Summe: fmt(v.Summe) }])));
+  } catch (e) {
+    console.error('❌ Kassenbuch nicht abrufbar:', e.message);
+    process.exit(1);
+  }
+  process.exit(0);
+}
+
+
+if (args.includes('--betrieb-probe')) {
+  const s0 = load(); ladeZugang(s0);
+  try { await erneuere(); } catch (e) { console.error('Kein Zugang:', e.message); process.exit(1); }
+
+
+  console.log('Suche die Betriebsübersicht …\n');
+
+  // Absichtlich ohne api(): dort werden 401 und 403 zu "AUTH" zusammengefasst,
+  // und ein 404 sähe anders aus als ein 403. Genau dieser Unterschied sagt uns,
+  // ob der Pfad falsch ist oder nur die Rechte fehlen.
+  const roh = async (pfad) => {
+    const res = await fetch(CFG.API + pfad, {
+    signal: AbortSignal.timeout(ABRUF_MS),
+      headers: {
+        Authorization: 'Bearer ' + zugang.token,
+        Cookie: zugang.cookie || '',
+        'User-Agent': CFG.USER_AGENT,
+        'Accept': 'application/json',
+        'Origin': 'https://unicacity.eu',
+        'Referer': 'https://unicacity.eu/',
+      },
+    });
+    let koerper = null;
+    try { koerper = await res.json(); } catch { /* kein JSON */ }
+    return { status: res.status, koerper };
+  };
+
+  let gefunden = null;
+  const trefferListe = [];
+  const statistik = {};
+  for (const pfad of BETRIEB_PFADE) {
+    try {
+      const { status, koerper } = await roh(pfad);
+      statistik[status] = (statistik[status] || 0) + 1;
+      if (status === 200 && koerper) {
+        console.log(`✅ ${status} ${pfad}`);
+        console.log('   ' + umriss(koerper).slice(0, 900) + '\n');
+        gefunden ||= { pfad, daten: koerper };
+        trefferListe.push([pfad, koerper]);
+      } else {
+        const grund = { 401: 'nicht angemeldet', 403: 'keine Rechte',
+                        404: 'gibt es nicht', 500: 'Serverfehler' }[status] || '';
+        console.log(`❌ ${status} ${pfad}${grund ? ' – ' + grund : ''}`);
+      }
+    } catch (e) {
+      console.log(`❌ ${pfad} — ${e.message}`);
+    }
+  }
+
+  // Was die Statuscodes über die API verraten
+  if (gefunden) {
+    // Wurde ein Wert mitgegeben, suchen wir genau den – als Zahl, als Text und
+    // als Summe einer Liste. Sonst listen wir alles Zahlenartige auf.
+    const gesucht = Number(args[args.indexOf('--betrieb-probe') + 1]);
+    const suchen = Number.isFinite(gesucht);
+
+    for (const [pfad, daten] of trefferListe) {
+      const funde = [], summen = [], alles = [];
+      const gesehen = new WeakSet();
+
+      const geh = (o, weg) => {
+        if (!o || typeof o !== 'object') return;
+        if (gesehen.has(o)) return;      // Ringe im Datensatz abfangen
+        gesehen.add(o);
+
+        if (Array.isArray(o)) {
+          // Summiert sich die Liste auf den gesuchten Wert?
+          if (suchen) {
+            const zahlen = o.map(x => typeof x === 'number' ? x : null).filter(x => x !== null);
+            if (zahlen.length && Math.abs(zahlen.reduce((a, b) => a + b, 0) - gesucht) <= 1) {
+              summen.push(`${weg} (Summe von ${zahlen.length} Zahlen)`);
+            }
+            // Auch Listen von Objekten: jedes Zahlenfeld einzeln aufsummieren
+            const felder = new Set();
+            for (const x of o) if (x && typeof x === 'object' && !Array.isArray(x)) {
+              for (const [k, v] of Object.entries(x)) if (typeof v === 'number') felder.add(k);
+            }
+            for (const f of felder) {
+              const summe = o.reduce((a, x) => a + (typeof x?.[f] === 'number' ? x[f] : 0), 0);
+              if (Math.abs(summe - gesucht) <= 1) summen.push(`Summe von ${weg}[].${f} = ${summe}`);
+            }
+          }
+          o.forEach((x, i) => geh(x, `${weg}[${i}]`));
+          return;
+        }
+
+        for (const [k, v] of Object.entries(o)) {
+          const pfadHier = `${weg}.${k}`;
+          if (typeof v === 'number') {
+            alles.push(`${pfadHier} = ${v}`);
+            if (suchen && Math.abs(v - gesucht) <= 1) funde.push(`${pfadHier} = ${v}`);
+          } else if (typeof v === 'string') {
+            if (suchen && v.replace(/[^0-9]/g, '') === String(gesucht)) {
+              funde.push(`${pfadHier} = "${v}"  (als Text)`);
+            }
+          } else geh(v, pfadHier);
+        }
+      };
+      geh(daten, '');
+
+      console.log(`\n=== ${pfad} ===`);
+      if (suchen) {
+        if (funde.length) {
+          console.log(`🎯 ${gesucht} steht hier:`);
+          for (const f of funde) console.log('   ' + f);
+        }
+        if (summen.length) {
+          console.log(`🎯 ${gesucht} ergibt sich als Summe:`);
+          for (const f of summen) console.log('   ' + f);
+        }
+        if (!funde.length && !summen.length) console.log(`   ${gesucht} kommt nicht vor.`);
+      }
+      console.log(`   (${alles.length} Zahlenfelder insgesamt)`);
+      if (!suchen || (!funde.length && !summen.length)) {
+        const auswahl = alles.filter(z => {
+          const n = Number(z.split(' = ').pop());
+          return n > 20 && n < 100_000;
+        });
+        console.log('   ' + (auswahl.slice(0, 60).join('\n   ') || '(keine passenden)'));
+      }
+    }
+
+    if (!suchen) {
+      console.log('\nTipp: Den gesuchten Wert direkt mitgeben, dann wird gezielt');
+      console.log('gesucht – auch als Text und als Summe einer Liste:');
+      console.log('   node --env-file=.env watcher.mjs --betrieb-probe 219');
+    }
+  }
+
+  if (!gefunden) {
+    console.log('\nAntworten: ' + Object.entries(statistik)
+      .map(([k, v]) => `${v}× ${k}`).join(', '));
+    if (statistik[404]) {
+      console.log('Immerhin: ein 404 zeigt, dass unbekannte Pfade als solche');
+      console.log('gemeldet werden. Die Adresse ist also schlicht eine andere.');
+    } else if (statistik[401] || statistik[403]) {
+      console.log('Alle Pfade werden abgewiesen, keiner als "gibt es nicht".');
+      console.log('Die API antwortet unbekannten Pfaden also mit 401/403 – durch');
+      console.log('Raten kommen wir nicht weiter, die echte Adresse muss her.');
+    }
+  }
+
+  if (!gefunden) {
+    console.log('\nKeine der Adressen hat geantwortet. Öffne die Seite');
+    console.log('https://unicacity.eu/dashboard/businesses im Browser, drücke F12,');
+    console.log('gehe auf "Netzwerk", lade neu und schau, welche Adresse mit /api/');
+    console.log('abgefragt wird. Die dann eintragen: UC_BETRIEB_PFAD=/api/…');
+    process.exit(1);
+  }
+
+  console.log(`\nBrauchbar: ${gefunden.pfad}`);
+  const st = betriebStand(gefunden.daten);
+  if (!st.gefunden) {
+    console.log(`\n⚠️ Ein Betrieb namens "${CFG.BETRIEB}" kommt darin nicht vor.`);
+    console.log('   Vorhandene Namen:');
+    const namen = [];
+    const suche = (o, t = 0) => {
+      if (!o || t > 6) return;
+      if (Array.isArray(o)) return o.forEach(x => suche(x, t + 1));
+      if (typeof o !== 'object') return;
+      const n = o.name ?? o.title ?? o.businessName;
+      if (typeof n === 'string') namen.push(sauber(n));
+      for (const v of Object.values(o)) suche(v, t + 1);
+    };
+    suche(gefunden.daten);
+    console.log('   ' + ([...new Set(namen)].join(', ') || '(keine gefunden)'));
+    console.log('\n   Passenden Namen eintragen: UC_BETRIEB=…');
+  } else if (st.bestand === null) {
+    console.log(`\n⚠️ "${st.name}" gefunden, aber kein bekanntes Bestandsfeld.`);
+    console.log('   Der Eintrag sieht so aus:');
+    console.log('   ' + umriss(findeBetrieb(gefunden.daten, CFG.BETRIEB)).slice(0, 600));
+    console.log('\n   Schick mir diese Zeile, dann ergänze ich das Feld.');
+  } else {
+    console.log(`\n✅ ${st.name}: angezeigt ${st.angezeigt}, entnehmbar ${st.bestand} von ${st.max}`);
+    console.log(`   (Abzug ${CFG.BETRIEB_ABZUG}, Warnschwelle ${CFG.BETRIEB_SCHWELLE})`);
+    if (gefunden.pfad !== BETRIEB_PFADE[0]) {
+      console.log(`\n   Zum Festlegen in die .env: UC_BETRIEB_PFAD=${gefunden.pfad}`);
+    }
+  }
+  process.exit(0);
+}
+
+if (args.includes('--gehalt')) {
+  const st = load();
+  const topf = auszahlungTopf(st);
+  console.log(`Topf für Auszahlungen und Gehälter – Tag ${topf.tag}`);
+  console.log(`  Zurücksetzung um ${String(CFG.AUSZAHLUNG_RESET_STD).padStart(2, '0')}:00 Uhr`);
+  console.log(`  Grenze:  ${fmt(topf.limit)}`);
+  console.log(`  Genutzt: ${fmt(topf.genutzt)}`);
+  console.log(`  Frei:    ${fmt(topf.frei)}`);
+  // Hier – anders als in Discord – mit Einzelposten, denn damit lässt sich
+  // prüfen, ob die richtigen Kategorien gezählt werden.
+  if (topf.buchungen.length) {
+    console.table(topf.buchungen.map(b => ({
+      Zeit: new Date(b.stamp).toLocaleTimeString('de-DE'),
+      Kategorie: b.kategorie, Detail: b.detail, Betrag: fmt(b.betrag),
+    })));
+  } else console.log('\n  Heute wurde noch nichts entnommen.');
+  console.log('\nGezählt werden Buchungen der Kategorien: ' + AUSZAHLUNG_KATEGORIEN.join(', '));
+  console.log('Anpassbar über UC_AUSZAHLUNG_KATEGORIEN und UC_AUSZAHLUNG_LIMIT.');
+  process.exit(0);
+}
+
+if (args.includes('--last')) {
+  const r = rechenlast();
+  console.log(`Maschine:      ${r.kerne} ${r.kerne === 1 ? 'Kern' : 'Kerne'}, ` +
+              `${zahl(r.ramGesamtMB / 1024, 1)} GB RAM, davon ${zahl(r.ramFreiMB, 0)} MB frei`);
+  console.log(`Systemlast:    ${zahl(r.last[0], 2)} / ${zahl(r.last[1], 2)} / ${zahl(r.last[2], 2)}  (1/5/15 Min)`);
+  console.log(`               ${zahl(r.lastProKern, 2)} Aufgaben je Kern` +
+              (r.lastProKern > 1 ? '  ← ausgelastet' : ''));
+  console.log('');
+  console.log('Dieser Vorgang (nur die von Hand gestartete Abfrage, nicht der Dienst):');
+  console.log(`  Laufzeit:    ${dauer(r.laufzeitS * 1000)}`);
+  console.log(`  Rechenzeit:  ${zahl(r.cpuSekunden, 2)} s`);
+  console.log(`  Speicher:    ${zahl(r.rssMB, 0)} MB`);
+  console.log('');
+  console.log('Für den laufenden Dienst – da zählt die Zeit seit dem Start:');
+  console.log('  systemctl status uc-watcher        (Memory und CPU stehen dort)');
+  console.log('  systemd-cgtop -1 --order=cpu       (alle Dienste nach Last sortiert)');
+  console.log('  Im Discord: /watcher               (dieselben Zahlen, aber vom Dienst)');
+  process.exit(0);
+}
+
+if (args.includes('--einstellungen')) {
+  const st = load();
+  const geheim = (v) => v ? `gesetzt (${String(v).length} Zeichen)` : '—';
+  const zeig = (v) => v || '—';
+
+  // Nur zeigen, was von der Voreinstellung abweicht – sonst sieht man vor
+  // lauter Vorgaben nicht, was man selbst entschieden hat.
+  const VORGABEN = [
+    ['UC_LAGER_SCHWELLE', '500'], ['UC_LAGER_EINBRUCH_PCT', '15'],
+    ['UC_PREIS_SPRUNG_PCT', '20'], ['UC_ERINNERUNG_MIN', '60'],
+    ['UC_TAGESWECHSEL_STD', '4'],
+    ['UC_INTERVALL_MS', '60000'], ['UC_LUECKE_MIN', '10'],
+    ['UC_API_WEG_MELDUNG_MIN', '30'], ['UC_WIKI_INTERVALL_STD', '24'],
+    ['UC_NOTION_INTERVALL_STD', '168'], ['UC_AUSZAHLUNG_LIMIT', '35000'],
+    ['UC_AUSZAHLUNG_RESET_STD', '0'], ['UC_AUSZAHLUNG_KATEGORIEN', 'auszahlung,gehalt'],
+    ['UC_BETRIEB', 'Zoohandlung'], ['UC_BETRIEB_ABZUG', '0'],
+    ['UC_BETRIEB_MAX', '240'], ['UC_BETRIEB_SCHWELLE', '40'],
+    ['UC_NACHKAUF_FENSTER_MIN', '90'], ['UC_VORFALL_ERINNERUNG_MIN', '5'],
+    ['UC_VORFALL_ERINNERUNG_MAX', '3'], ['UC_UNBEKANNTE_BUCHUNGEN', '0'],
+    ['UC_TAGESBERICHT', '1'], ['UC_AUSSCHUETTUNG_STUNDENMELDUNG', '1'],
+  ];
+
+  console.log('═══ Zugang ═══');
+  console.log('  UC_COOKIE:            ' + geheim(process.env.UC_COOKIE));
+  console.log('  UC_NTFY_TOPIC:        ' + (process.env.UC_NTFY_TOPIC ? 'gesetzt' : '— (keine Handy-Meldungen)'));
+  console.log('  UC_NOTION_TOKEN:      ' + geheim(process.env.UC_NOTION_TOKEN));
+
+  console.log('\n═══ Discord ═══');
+  console.log('  Bot-Token:            ' + geheim(process.env.UC_DISCORD_TOKEN));
+  console.log('  Server:               ' + zeig(process.env.UC_DISCORD_GUILD));
+  console.log('  Team-Kanal:           ' + zeig(process.env.UC_DISCORD_TEAM_KANAL));
+  console.log('  Vorfall-Kanal:        ' + (process.env.UC_DISCORD_VORFALL_KANAL || '— (Vorfälle gehen wie früher)'));
+  console.log('  Inhaber-Kanal:        ' + (process.env.UC_DISCORD_CHEF_KANAL || '— (dann per DM)'));
+  console.log('  Befehlskanal:         ' + (process.env.UC_DISCORD_BEFEHL_KANAL || '— (alle Antworten privat)'));
+  console.log('  Deine Discord-ID:     ' + zeig(process.env.UC_DISCORD_CHEF_ID));
+  if (process.env.UC_BETRIEB_ID) console.log('  Betrieb (ID):         ' + process.env.UC_BETRIEB_ID);
+  else console.log('  Betrieb (ID):         — (wird am Namen gesucht)');
+
+  const abweichend = VORGABEN.filter(([k, v]) => process.env[k] !== undefined && process.env[k] !== v);
+  console.log('\n═══ Von der Vorgabe abweichend ═══');
+  if (!abweichend.length) console.log('  (nichts – überall die Voreinstellung)');
+  for (const [k, v] of abweichend) {
+    console.log(`  ${k.padEnd(32)} ${process.env[k]}   (Vorgabe ${v})`);
+  }
+
+  console.log('\n═══ Regeln aus /melden ═══');
+  const regeln = ladeRegeln();
+  const namen = Object.keys(regeln);
+  if (!namen.length) console.log('  (keine – überall die Voreinstellung)');
+  for (const k of namen) {
+    const bez = k.startsWith('event_') && k !== 'event_'
+      ? `Vorfall: ${k.slice('event_'.length)}` : themaName(k);
+    console.log(`  ${bez}`);
+    console.log(`     ${regelText(regeln[k]).replace(/<#(\d+)>/g, 'Kanal $1').replace(/<@&(\d+)>/g, 'Rolle $1')}`);
+  }
+
+  console.log('\n═══ Zuordnung aus /zuordnen ═══');
+  const zu = ladeZuordnung(), eigen = zuordnungEigen();
+  if (!Object.keys(zu).length) {
+    console.log('  (niemand – "nur wer online ist" pingt damit nie)');
+  }
+  for (const [id, name] of Object.entries(zu)) {
+    const treffer = Object.keys(st.spieler || {}).find(k => k.toLowerCase() === String(name).toLowerCase());
+    console.log(`  ${id}  ->  ${name}` +
+      (treffer ? (st.spieler[treffer].online ? '   [online]' : '') : '   [im Team NICHT gefunden]') +
+      (eigen[id] ? '' : '   (aus der .env)'));
+  }
+
+  console.log('\n═══ Befehle ═══');
+  console.log('  Für alle:    ' +
+    Object.keys(BEFEHLE).filter(n => !BEFEHLE[n].nurChef).map(n => '/' + n).join(' '));
+  console.log('  Nur Inhaber: ' +
+    Object.keys(BEFEHLE).filter(n => BEFEHLE[n].nurChef).map(n => '/' + n).join(' '));
+
+  console.log('\n═══ Gesehene Vorfallsarten ═══');
+  const arten = Object.entries(st.vorfallArten || {})
+    .sort((a, b) => (b[1].zuletzt || 0) - (a[1].zuletzt || 0));
+  if (!arten.length) {
+    console.log('  (noch keine – die Auswahl in /melden bietet bis dahin nur ' +
+                'die Liste aus UC_VORFALL_ARTEN an)');
+  }
+  for (const [art, v] of arten) {
+    console.log(`  ${art.padEnd(18)} ${String(v.anzahl).padStart(3)}× ` +
+      `zuletzt ${new Date(v.zuletzt).toLocaleString('de-DE')}`);
+  }
+
+  console.log('\n═══ Laufender Zustand ═══');
+  console.log('  Spieltag:             ' + (st.tag || '—'));
+  console.log('  Firma gelaufen heute: ' + dauer(st.firmaTagMs || 0));
+
+  const k = st.zeitkonto;
+  if (k) {
+    const gesamt = k.gezaehlt + k.pausiert + k.niemand + k.luecke;
+    const anteil = (x) => gesamt ? ` (${Math.round(x / gesamt * 100)} %)` : '';
+    console.log(`\n  Zeitkonto für ${k.tag} – wohin jede Minute ging:`);
+    console.log(`    gezählt:          ${dauer(k.gezaehlt).padStart(16)}${anteil(k.gezaehlt)}`);
+    console.log(`    niemand online:   ${dauer(k.niemand).padStart(16)}${anteil(k.niemand)}`);
+    console.log(`    Firma pausiert:   ${dauer(k.pausiert).padStart(16)}${anteil(k.pausiert)}`);
+    console.log(`    Watcher lief nicht: ${dauer(k.luecke).padStart(14)}${anteil(k.luecke)}` +
+                (k.ausfaelle ? `  in ${k.ausfaelle} Lücke(n)` : ''));
+    console.log(`    ────────────────────────────────`);
+    console.log(`    erfasst:          ${dauer(gesamt).padStart(16)}`);
+    console.log('  Passt „gezählt" nicht zum Spiel, sagt diese Aufstellung, wohin');
+    console.log('  der Rest gegangen ist.');
+  } else {
+    console.log('  Zeitkonto:            — (noch kein Durchlauf seit dem Update)');
+  }
+  console.log('  Lager zuletzt:        ' + (st.lager ?? '—'));
+  console.log('  Zoohandlung zuletzt:  ' + (st.betriebBestand ?? '— (noch nicht gelesen)'));
+  console.log('  Letzter Einkauf:      ' +
+    (st.letzterEinkauf ? `vor ${dauer(Date.now() - st.letzterEinkauf)}` : '— (Nachkauf unbekannt)'));
+  process.exit(0);
+}
+
+if (args.includes('--zuordnung')) {
+  const st = load();
+  const zu = ladeZuordnung();
+  const eigen = zuordnungEigen();
+  const wuerdenGepingt = onlineDiscordIds(st);
+
+  if (!Object.keys(zu).length) {
+    console.log('Keine Zuordnung eingetragen.');
+    console.log('Im Discord: /zuordnen nutzer:@Name name:UC-Name');
+    process.exit(0);
+  }
+  const zeilen = {};
+  for (const [id, name] of Object.entries(zu)) {
+    const treffer = Object.keys(st.spieler || {}).find(k => k.toLowerCase() === name.toLowerCase());
+    zeilen[id] = {
+      'UC-Name': name,
+      'im Team gefunden': treffer ? (treffer === name ? 'ja' : `ja, als "${treffer}"`) : 'NEIN',
+      Online: treffer ? (st.spieler[treffer].online ? 'ja' : 'nein') : '?',
+      'wird gepingt': wuerdenGepingt.includes(id) ? 'ja' : 'nein',
+      Quelle: eigen[id] ? '/zuordnen' : '.env',
+    };
+  }
+  console.table(zeilen);
+  console.log(`Bei "nur wer online ist" würden jetzt ${wuerdenGepingt.length} Leute gepingt.`);
+  const fehlend = Object.values(zu).filter(n =>
+    !Object.keys(st.spieler || {}).some(k => k.toLowerCase() === n.toLowerCase()));
+  if (fehlend.length) {
+    console.log(`\nNicht im Team gefunden: ${fehlend.join(', ')}`);
+    console.log('Entweder Tippfehler, oder die Person war noch nie online, seit der');
+    console.log('Watcher läuft. Im Team bekannt sind: ' +
+      (Object.keys(st.spieler || {}).join(', ') || '(noch niemand)'));
+  }
+  process.exit(0);
+}
+
+if (args.includes('--discord-pruefe')) {
+  const t = pruefeToken();
+  console.log('Prüfung von UC_DISCORD_TOKEN (der Token selbst wird nicht angezeigt)\n');
+
+  if (!t.gesetzt) {
+    console.log('❌ UC_DISCORD_TOKEN ist leer oder steht nicht in der .env.');
+    console.log('   Der Wert kommt aus dem Developer Portal → links "Bot" → "Reset Token".');
+    process.exit(1);
+  }
+
+  const zeile = (ok, text) => console.log(`${ok ? '✅' : '❌'} ${text}`);
+  zeile(!t.anfuehrungszeichen, t.anfuehrungszeichen
+    ? 'Der Wert kommt mit Anführungszeichen an – die gehören nicht dazu.'
+    : 'keine Anführungszeichen');
+  zeile(!t.randLeerzeichen, t.randLeerzeichen
+    ? 'Leerzeichen am Anfang oder Ende – entfernen.'
+    : 'keine Leerzeichen am Rand');
+  zeile(!t.leerzeichenInnen, t.leerzeichenInnen
+    ? 'Leerzeichen oder Zeilenumbruch mitten im Wert – beim Kopieren zerrissen.'
+    : 'keine Umbrüche im Wert');
+  zeile(t.teile === 3, `${t.teile} durch Punkte getrennte Teile (ein Bot-Token hat 3)`);
+  zeile(t.laenge >= 55 && t.laenge <= 100, `${t.laenge} Zeichen lang (üblich sind 60–75)`);
+
+  if (t.nurZiffern) {
+    console.log('\n❌ Der Wert besteht nur aus Ziffern. Das ist die Client-ID (die');
+    console.log('   öffentliche Anwendungs-ID), nicht der Bot-Token.');
+  }
+  if (t.anwendungsId) {
+    console.log(`\n✅ Der Token gehört zur Anwendung ${t.anwendungsId}.`);
+    console.log('   Form ist in Ordnung. Wird er trotzdem abgelehnt (401/4004), wurde er');
+    console.log('   inzwischen zurückgesetzt – dann im Developer Portal einen neuen holen.');
+    process.exit(0);
+  }
+
+  console.log('\n❌ Aus dem ersten Teil lässt sich keine Anwendungs-ID lesen.');
+  console.log('   Das ist kein Bot-Token. Häufigste Verwechslungen:');
+  console.log('   • Client-ID (nur Ziffern) – falsch');
+  console.log('   • Client-Secret (ein Block, ~32 Zeichen) – falsch');
+  console.log('   • die Einladungs-URL – falsch');
+  console.log('\n   Richtig: Developer Portal → deine Anwendung → links "Bot" →');
+  console.log('   "Reset Token" → der angezeigte Wert (3 Teile, durch Punkte getrennt).');
+  process.exit(1);
+}
+
+if (args.includes('--discord-test')) {
+  if (!discordAktiv()) {
+    console.error('UC_DISCORD_TOKEN ist nicht gesetzt – siehe DISCORD.md.');
+    process.exit(1);
+  }
+  console.log('Registriere Befehle …');
+  await discordStart(BEFEHLE, { ohneGateway: true });
+  console.log('Schicke je eine Probemeldung …');
+  await discordSende({
+    ziel: 'chef', prio: 'default',
+    titel: '🔔 Probe: Meldung für den Inhaber',
+    text: 'Wenn du das siehst, kommen die Meldungen an, die nur dich betreffen ' +
+          '(Kasse, Personal, Zugang, Technik).',
+  });
+  await discordSende({
+    ziel: 'team', prio: 'default',
+    titel: '🔔 Probe: Meldung fürs Team',
+    text: 'Wenn das im Team-Kanal steht, sind die Betriebsmeldungen richtig ' +
+          'eingerichtet (Lager, Lieferengpass, Ausschüttung, Vorfälle).',
+  });
+  if (process.env.UC_DISCORD_VORFALL_KANAL) {
+    await discordSende({
+      ziel: 'kanal', kanal: process.env.UC_DISCORD_VORFALL_KANAL, prio: 'default',
+      titel: '🔔 Probe: Meldung für Vorfälle',
+      text: 'Hier landen Vorfälle im Unternehmen, Kassenvorfälle und unbekannte ' +
+            'Buchungen – ohne Kassenstand und ohne Namenslisten. Die vollständige ' +
+            'Fassung bekommt nur der Inhaber.',
+    });
+    console.log('Gesendet. Prüfe alle drei Kanäle.');
+  } else {
+    console.log('Gesendet. Prüfe beide Kanäle – und dass im Team-Kanal *nur* die zweite steht.');
+  }
+  // Kurz warten, damit die Zustellung durch ist, dann Verbindung schließen.
+  await new Promise(r => setTimeout(r, 1500));
+  discordStop();
+  process.exit(0);
+}
+
+{
+  const s = load(); ladeZugang(s);
+  if (!zugang.cookie) {
+    console.error('FEHLER: UC_COOKIE ist nicht gesetzt – ohne Cookie kann sich der');
+    console.error('Watcher keine Token holen. Siehe README, Abschnitt "Zugang besorgen".');
+    process.exit(1);
+  }
+}
+
+if (args.includes('--push-test')) {
+  const s = load(); s.lastPush.selftest = 0;
+  await push('selftest', '✅ UC-Watcher Test',
+    'Wenn du das auf dem Handy siehst, funktioniert die Benachrichtigung.', s, 'default');
+  process.exit(0);
+}
+
+// Sucht die Wiki-Endpunkte, die Anmeldung verlangen. Einmalig zum Erkunden.
+if (args.includes('--notion')) {
+  const st = load();
+  if (!CFG.NOTION_TOKEN) { console.error('UC_NOTION_TOKEN ist nicht gesetzt.'); process.exit(1); }
+  console.log('Wiki wird abgerufen …');
+  const artikel = await holeWiki();
+  console.log(`${Object.keys(artikel).length} Artikel. Notion wird verglichen …\n`);
+  try {
+    const e = await vergleicheNotion(st, artikel);
+    const zeig = (t, l, f) => { console.log(`\n${t}: ${l.length}`); l.slice(0, 40).forEach(x => console.log('   ' + f(x))); };
+    zeig('Fehlen in Notion', e.fehlen, a => `${a.kategorie} · ${a.titel}  →  ${wikiLink(a)}`);
+    zeig('Veraltet', e.veraltet, a => `${a.kategorie} · ${a.titel}  (Wiki ${a.updatedAt.slice(0,10)}, Notion ${String(a.notionStand).slice(0,10)})`);
+
+    if (e.katFehlen.length) zeig('Kategorien fehlen', e.katFehlen, k => k);
+  } catch (err) {
+    console.error(
+      err.message === 'NOTION_TOKEN' ? '❌ Zugangsschlüssel abgelehnt.' :
+      err.message === 'NOTION_FREIGABE' ? '❌ Seite ist für die Integration nicht freigegeben.' :
+      '❌ ' + err.message);
+    process.exit(1);
+  }
+  process.exit(0);
+}
+
+if (args.includes('--wiki-probe')) {
+  const s0 = load(); ladeZugang(s0);
+  try { await erneuere(); } catch (e) { console.error('Kein Zugang:', e.message); process.exit(1); }
+
+  const kandidaten = [
+    '/api/wiki', '/api/wiki/pages', '/api/wiki/articles', '/api/wiki/index',
+    '/api/wiki/recent', '/api/wiki/changes', '/api/wiki/updates',
+    '/api/wiki/articles?categoryId=16', '/api/wiki/articles?category=befehlsliste',
+    '/api/wiki/categories/befehlsliste', '/api/wiki/category/16',
+    '/api/wiki/article/arena-108', '/api/wiki/articles/arena-108',
+  ];
+
+
+  for (const pfad of kandidaten) {
+    try {
+      const d = await api(pfad);
+      console.log(`\n✅ ${pfad}`);
+      console.log('   ' + umriss(d, 0, 1, 12, 8).slice(0, 600));
+    } catch (e) {
+      console.log(`❌ ${pfad} — ${e.message}`);
+    }
+  }
+  const s1 = load(); sichereZugang(s1); save(s1);
+  process.exit(0);
+}
+
+if (args.includes('--test')) {
+  try {
+    const s0 = load(); ladeZugang(s0);
+    await erneuere();
+    console.log('Token gültig bis:', new Date(zugang.exp).toLocaleString('de-DE'));
+    const d = await holeFirma(); const f = d.company;
+    console.log('Firma:      ', f.name, '· Level', f.level, '·', f.status);
+    console.log('Lager:      ', f.stock.total, '/', f.stock.capacity);
+    console.log('Personal:   ', f.employees.length, '/', f.maxEmployees);
+    console.log('Firmenkasse:', fmt(f.kasse.balance));
+    console.log('Gewinn Std.:', fmt(f.kasse.profitSincePayout));
+    console.log('Gewinn heute:', fmt(gewinnHeute(f.kasse.profitSincePayout).summe));
+    console.log('Team:       ', f.members.length, '/', f.maxMembers);
+    console.table(f.members.map(m => ({ Name: m.name, Rolle: m.roleName, Online: m.online ? '🟢' : '⚪' })));
+    const l = await holeLedger(f.id);
+    console.log('Kategorien: ', (l.summary?.categories || []).map(c => c.category).join(', '));
+    const s1 = load(); sichereZugang(s1); save(s1);
+    console.log('\n✅ Zugang funktioniert und wurde gespeichert.');
+  } catch (e) {
+    console.error(
+      e.message === 'KEIN_COOKIE' ? '❌ UC_COOKIE ist leer.' :
+      e.message === 'REFRESH_OHNE_TOKEN' ? '❌ Erneuerung lieferte kein Token – Cookie abgelaufen?' :
+      e.message === 'AUTH' ? '❌ Zugang abgelehnt (401/403) – Cookie abgelaufen.' :
+      e.message.startsWith('HTTP') ? `❌ Seite antwortet nicht (${e.message}) – meist der Server selbst, geht von allein vorbei.` :
+      '❌ Fehler: ' + e.message);
+    process.exit(1);
+  }
+  process.exit(0);
+}
+
+info(`UC-Watcher läuft – Intervall ${CFG.INTERVALL_MS / 1000}s, Zustand: ${CFG.STATE_FILE}`);
+
+if (discordAktiv()) {
+  // Schlägt die Anmeldung fehl, läuft der Watcher trotzdem weiter – die
+  // Überwachung ist wichtiger als der Bot.
+  discordStart(BEFEHLE, { knopf: knopfGedrueckt })
+    .catch(e => console.error('Discord-Start fehlgeschlagen:', e.message));
+} else {
+  info('Discord nicht eingerichtet (UC_DISCORD_TOKEN fehlt) – Meldungen gehen nur an ntfy.');
+}
+
+// systemd schickt beim Neustart SIGTERM. Dann die Gateway-Verbindung ordentlich
+// schließen, statt sie abreißen zu lassen.
+for (const signal of ['SIGTERM', 'SIGINT']) {
+  process.on(signal, () => { info('Beende …'); discordStop(); process.exit(0); });
+}
+
+/**
+ * Ein Durchlauf zur Zeit.
+ *
+ * setInterval feuert im Takt, ganz gleich ob der vorige Durchlauf fertig ist.
+ * Überlappen sich zwei, liest jeder den Zustand am Anfang und schreibt ihn am
+ * Ende zurück – der spätere Schreibvorgang verwirft, was der andere inzwischen
+ * gezählt hat. Bei einem langsamen Abruf gingen so ganze Minuten der
+ * Team-Onlinezeit verloren, und letzterTick konnte zurückspringen.
+ *
+ * Ein übersprungener Durchlauf kostet keine Zeit: letzterTick bleibt stehen,
+ * der nächste zählt die ganze Lücke auf einmal.
+ */
+let laeuftGerade = false;
+
+async function durchlaufEinzeln() {
+  if (laeuftGerade) {
+    info('Vorheriger Durchlauf läuft noch – dieser wird übersprungen');
+    return;
+  }
+  laeuftGerade = true;
+  try { await durchlauf(); } finally { laeuftGerade = false; }
+}
+
+await durchlaufEinzeln();
+setInterval(() => durchlaufEinzeln().catch(e => console.error('Fehler:', e)),
+            CFG.INTERVALL_MS);
